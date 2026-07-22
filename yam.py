@@ -36,7 +36,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. GESTION DE LA BASE DE DONNÉES SQLITE (PERSISTANCE)
+# 2. GESTION DE LA BASE DE DONNÉES SQLITE (PERSISTANCE & SÉCURITÉ)
 # ==========================================
 def get_connection():
     return sqlite3.connect('agrigestion.db', check_same_thread=False)
@@ -60,6 +60,14 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS irrigation (id INTEGER PRIMARY KEY AUTOINCREMENT, champ_nom TEXT, date TEXT, volume_eau_m3 REAL, methode TEXT, duree_heures REAL)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS alertes_meteo (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, type_risque TEXT, niveau_alerte TEXT, recommandation_ts TEXT)''')
     
+    # SÉCURITÉ : Vérification des colonnes pour éviter les OperationalError
+    cursor.execute("PRAGMA table_info(employes)")
+    colonnes_employes = [col[1] for col in cursor.fetchall()]
+    if "groupe_nom" not in colonnes_employes:
+        cursor.execute("ALTER TABLE employes ADD COLUMN groupe_nom TEXT")
+    if "tarif_journalier" not in colonnes_employes:
+        cursor.execute("ALTER TABLE employes ADD COLUMN tarif_journalier REAL")
+
     conn.commit()
     conn.close()
 
@@ -323,7 +331,7 @@ elif menu == "👥 Groupes & Membres":
     col_g1, col_g2 = st.columns(2)
     
     with col_g1:
-        st.subheader("1️⃣ Créer un Groupe")
+        st.subheader("1️⃣ Gestion des Groupes")
         with st.form("form_creer_groupe"):
             nom_g_input = st.text_input("Nom du Groupe / Équipe (ex: Équipe Semis)")
             chef_g_input = st.text_input("Chef de Groupe (Responsable)")
@@ -336,12 +344,23 @@ elif menu == "👥 Groupes & Membres":
                 else:
                     st.error("❌ Veuillez entrer un nom de groupe valide.")
                     
-        st.subheader("📋 Liste des Groupes")
+        st.subheader("📋 Liste des Groupes & Suppression")
         df_groupes = load_table('equipes')
-        st.dataframe(df_groupes, use_container_width=True)
+        if not df_groupes.empty:
+            for _, grp in df_groupes.iterrows():
+                col_gr1, col_gr2 = st.columns([3, 1])
+                with col_gr1:
+                    st.markdown(f"**{grp['nom_groupe']}** (Chef : *{grp['chef_groupe']}*)")
+                with col_gr2:
+                    if st.button("🗑️ Supprimer", key=f"del_grp_{grp['id']}"):
+                        execute_query("DELETE FROM equipes WHERE id = ?", (grp['id'],))
+                        st.success(f"Groupe supprimé !")
+                        st.rerun()
+        else:
+            st.info("Aucun groupe enregistré.")
 
     with col_g2:
-        st.subheader("2️⃣ Ajouter un Employé (Membre)")
+        st.subheader("2️⃣ Gestion des Employés (Membres)")
         df_groupes_dispos = load_table('equipes')
         
         if df_groupes_dispos.empty:
@@ -365,9 +384,20 @@ elif menu == "👥 Groupes & Membres":
                     else:
                         st.error("❌ Veuillez renseigner le nom de l'employé.")
                         
-        st.subheader("👥 Répertoire des Employés")
+        st.subheader("👥 Répertoire des Employés & Suppression")
         df_employes_tous = load_table('employes')
-        st.dataframe(df_employes_tous, use_container_width=True)
+        if not df_employes_tous.empty:
+            for _, emp in df_employes_tous.iterrows():
+                col_em1, col_em2 = st.columns([3, 1])
+                with col_em1:
+                    st.markdown(f"**{emp['nom']}** — *{emp['role']}* (`{emp['groupe_nom']}`)")
+                with col_em2:
+                    if st.button("🗑️ Retirer", key=f"del_emp_{emp['id']}"):
+                        execute_query("DELETE FROM employes WHERE id = ?", (emp['id'],))
+                        st.success(f"Employé supprimé !")
+                        st.rerun()
+        else:
+            st.info("Aucun employé enregistré.")
 
 elif menu == "⏰ Pointage des Horaires":
     st.title("⏰ Registre de Pointage Global (Tous les Employés)")
@@ -387,14 +417,12 @@ elif menu == "⏰ Pointage des Horaires":
         st.markdown("### 👷 Saisie Groupée des Présences")
         st.info("💡 Cochez la case **Présent**, modifiez la tâche ou les heures si besoin directement dans le tableau ci-dessous, puis cliquez sur enregistrer.")
 
-        # Préparation du DataFrame pour l'éditeur interactif
         df_edition = df_emps[['nom', 'role', 'groupe_nom']].copy()
         df_edition.insert(0, "Présent", True)
         df_edition.insert(4, "Tâche", "Travaux généraux")
         df_edition.insert(5, "Heures", 8.0)
         df_edition.insert(6, "Remarque", "")
 
-        # Affichage du tableau éditable ultra-stable
         edited_df = st.data_editor(
             df_edition,
             column_config={
