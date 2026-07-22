@@ -193,20 +193,6 @@ init_db()
 
 def query_df(query, params=()):
     conn = get_db()
-    try:
-        cursor = conn.cursor()
-        cursor.execute(query, params)
-        data = cursor.fetchall()
-        columns = [description[0] for description in cursor.description] if cursor.description else []
-        df = pd.DataFrame(data, columns=columns)
-    except Exception:
-        df = pd.DataFrame()
-    finally:
-        conn.close()
-    return df
-
-def query_df(query, params=()):
-    conn = get_db()
     df = pd.read_sql_query(query, conn, params=params)
     conn.close()
     return df
