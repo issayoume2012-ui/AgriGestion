@@ -4,7 +4,7 @@ import sqlite3
 import os
 from datetime import datetime, date
 import io
-
+import qrcode
 
 # Cartographie dynamique interactive
 import folium
@@ -180,14 +180,14 @@ st.set_page_config(
 )
 
 # ==========================================
-# 2. AUTHENTIFICATION DYNAMIQUE SECURISEE (MULTI-COMPTES)
+# 2. AUTHENTIFICATION DYNAMIQUE SECURISEE & REINITIALISATION
 # ==========================================
 if "user" not in st.session_state:
     st.session_state.user = None
 
 def auth_system():
     if st.session_state.user is None:
-        tab_login, tab_register = st.tabs(["🔒 Connexion", "📝 Créer un Compte Ferme/Technicien"])
+        tab_login, tab_register, tab_forgot = st.tabs(["🔒 Connexion", "📝 Inscription", "🔑 Mot de passe oublié"])
 
         with tab_login:
             st.subheader("Connexion à votre Espace")
@@ -211,15 +211,15 @@ def auth_system():
                     nom = st.text_input("Nom *")
                     prenom = st.text_input("Prénom *")
                     gmail = st.text_input("Email / Gmail *")
-                    phone = st.text_input("Téléphone")
+                    phone = st.text_input("Téléphone *")
                 with col2:
                     matricule = st.text_input("Code/Matricule Exploitation", value="FERME-01")
                     password = st.text_input("Mot de passe *", type="password")
                     sync_gdocs = st.checkbox("Activer la synchronisation Google Drive", value=True)
 
                 if st.form_submit_button("S'inscrire"):
-                    if not nom or not prenom or not gmail or not password:
-                        st.error("❌ Remplissez tous les champs obligatoires.")
+                    if not nom or not prenom or not gmail or not password or not phone:
+                        st.error("❌ Remplissez tous les champs obligatoires (incluant le téléphone pour la sécurité).")
                     else:
                         try:
                             execute_db("""
@@ -229,6 +229,31 @@ def auth_system():
                             st.success("✅ Compte créé avec succès ! Connectez-vous.")
                         except sqlite3.IntegrityError:
                             st.error("❌ Cet email est déjà utilisé par un autre compte.")
+
+        with tab_forgot:
+            st.subheader("Réinitialisation du mot de passe")
+            st.info("Entrez votre email et votre numéro de téléphone enregistrés pour définir un nouveau mot de passe.")
+            
+            with st.form("form_forgot"):
+                f_email = st.text_input("Votre Email (Gmail)")
+                f_phone = st.text_input("Votre Numéro de Téléphone")
+                new_pwd = st.text_input("Nouveau mot de passe", type="password")
+                confirm_pwd = st.text_input("Confirmer le nouveau mot de passe", type="password")
+                
+                if st.form_submit_button("Mettre à jour le mot de passe"):
+                    if not f_email or not f_phone or not new_pwd:
+                        st.error("❌ Veuillez remplir tous les champs.")
+                    elif new_pwd != confirm_pwd:
+                        st.error("❌ Les mots de passe ne correspondent pas.")
+                    else:
+                        # Vérifier si l'utilisateur existe avec cet email ET ce téléphone
+                        user_check = query_db("SELECT * FROM me_tech WHERE gmail = ? AND phone = ?", (f_email, f_phone), one=True)
+                        if user_check:
+                            execute_db("UPDATE me_tech SET password = ? WHERE gmail = ?", (new_pwd, f_email))
+                            st.success("✅ Votre mot de passe a été réinitialisé avec succès ! Vous pouvez vous connecter.")
+                        else:
+                            st.error("❌ Aucune correspondance trouvée pour cet email et ce numéro de téléphone.")
+                            
         return False
     return True
 
@@ -324,7 +349,7 @@ with st.sidebar:
         st.session_state.selected_parcelle_name = champ_selectionne
         champ_id_actif, champ_lat_actif, champ_lon_actif = liste_champs[champ_selectionne]
     else:
-        champ_id_actif, champ_lat_actif, champ_lon_actif = None, 16.0300, -16.4800
+        champ_id_actif, champ_lat_actif, champ_lon_actif = None, 14.6937, -17.4441
         champ_selectionne = "Aucune parcelle"
 
     if st.button("🚪 Déconnexion", use_container_width=True):
@@ -352,7 +377,10 @@ if menu == "📊 Tableau de Bord":
     
     st.divider()
     st.subheader("📍 Vos Parcelles")
-    st.dataframe(champs_df[["nom", "superficie_ha", "culture_actuelle", "statut"]], use_container_width=True)
+    if not champs_df.empty:
+        st.dataframe(champs_df[["nom", "superficie_ha", "culture_actuelle", "statut"]], use_container_width=True)
+    else:
+        st.info("Aucune parcelle enregistrée pour l'instant.")
 
 # --- B. CARTOGRAPHIE & HISTORIQUE ---
 elif menu == "🌱 Cartographie & Parcelles":
@@ -388,17 +416,20 @@ elif menu == "🌱 Cartographie & Parcelles":
                 surf_p = st.number_input("Superficie (Ha)", min_value=0.1, value=1.0)
                 lat_p = st.number_input("Lat", value=float(click_lat), format="%.6f")
                 lon_p = st.number_input("Lon", value=float(click_lon), format="%.6f")
-                cult_p = st.text_input("Culture Principal")
+                cult_p = st.text_input("Culture Principale")
                 stat_p = st.selectbox("Statut", ["Préparation", "En croissance", "Récolte"])
                 logo_p = st.selectbox("Icône", list(ICON_MAP.keys()))
 
                 if st.form_submit_button("Enregistrer"):
-                    execute_db("""
-                        INSERT INTO me_champs (user_id, nom, superficie_ha, latitude, longitude, culture_actuelle, statut, icone_lieu)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (USER_ID, nom_p, surf_p, lat_p, lon_p, cult_p, stat_p, logo_p))
-                    st.success("Parcelle ajoutée !")
-                    st.rerun()
+                    if nom_p:
+                        execute_db("""
+                            INSERT INTO me_champs (user_id, nom, superficie_ha, latitude, longitude, culture_actuelle, statut, icone_lieu)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (USER_ID, nom_p, surf_p, lat_p, lon_p, cult_p, stat_p, logo_p))
+                        st.success("Parcelle ajoutée !")
+                        st.rerun()
+                    else:
+                        st.error("Le nom de la parcelle est obligatoire.")
 
     with tab_hist:
         st.dataframe(champs_df, use_container_width=True)
@@ -461,7 +492,7 @@ elif menu == "👥 Groupes & Membres (avec Carte QR)":
                     st.success("✅ Employé enregistré avec succès !")
                     st.rerun()
 
-# --- D. ÉLEVAGE & BÉTAIL (FERME INTEGRÉE) ---
+# --- D. ÉLEVAGE & BÉTAIL ---
 elif menu == "🐓 Élevage & Bétail (Ferme Intégrée)":
     st.title("🐓 Suivi du Bétail & Aviculture")
     
@@ -471,7 +502,7 @@ elif menu == "🐓 Élevage & Bétail (Ferme Intégrée)":
     with st.form("form_elevage", clear_on_submit=True):
         col_el1, col_el2 = st.columns(2)
         with col_el1:
-            type_anim = st.selectbox("Type d'élevage", ["Bovins (Vaches/Bœufs)", "Oovins (Moutons)", "Caprins (Chèvres)", "Volaille (Poulets)", "Porcins"])
+            type_anim = st.selectbox("Type d'élevage", ["Bovins (Vaches/Bœufs)", "Ovins (Moutons)", "Caprins (Chèvres)", "Volaille (Poulets)", "Porcins"])
             race = st.text_input("Race / Variété")
             qte = st.number_input("Nombre de têtes", min_value=1, value=10)
         with col_el2:
@@ -486,7 +517,7 @@ elif menu == "🐓 Élevage & Bétail (Ferme Intégrée)":
             st.success("Données d'élevage enregistrées !")
             st.rerun()
 
-# --- E. AQUACULTURE / PISCICULTURE ---
+# --- E. AQUACULTURE ---
 elif menu == "🐟 Aquaculture / Pisciculture":
     st.title("🐟 Suivi Aquacole / Bassins")
     
@@ -518,8 +549,15 @@ elif menu == "💰 Finances & Marges":
     
     with st.form("form_dep", clear_on_submit=True):
         motif = st.text_input("Motif Dépense *")
-        mnt = st.number_input("Montant (FCFA)", min_value=0)
+        mnt = st.number_input("Montant (FCFA)", min_value=0.0)
         if st.form_submit_button("Enregistrer Dépense"):
-            execute_db("INSERT INTO me_depenses (user_id, champ_id, type, montant, date) VALUES (?, ?, ?, ?, ?)",
-                       (USER_ID, champ_id_actif, motif, mnt, str(date.today())))
-            st.rerun()
+            if motif:
+                execute_db("INSERT INTO me_depenses (user_id, champ_id, type, montant, date) VALUES (?, ?, ?, ?, ?)",
+                           (USER_ID, champ_id_actif, motif, mnt, str(date.today())))
+                st.success("Dépense enregistrée avec succès.")
+                st.rerun()
+            else:
+                st.error("Le motif de la dépense est requis.")
+
+else:
+    st.info("Module en cours de développement ou accessible via le menu latéral.")
