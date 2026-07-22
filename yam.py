@@ -377,66 +377,66 @@ elif menu == "⏰ Pointage des Horaires":
     if df_emps.empty:
         st.warning("⚠️ Aucun employé trouvé. Veuillez d'abord ajouter des employés dans le menu **'👥 Groupes & Membres'**.")
     else:
-        with st.form("form_pointage_global_unique"):
-            c_d1, c_d2 = st.columns(2)
-            with c_d1:
-                date_p = st.date_input("Date du pointage", value=date.today())
-            with c_d2:
-                parc_p = st.selectbox("Parcelle concernée", db_champs['nom'].tolist() if not db_champs.empty else ["Général"])
+        c_d1, c_d2 = st.columns(2)
+        with c_d1:
+            date_p = st.date_input("Date du pointage", value=date.today(), key="global_date_pointage")
+        with c_d2:
+            parc_p = st.selectbox("Parcelle concernée", db_champs['nom'].tolist() if not db_champs.empty else ["Général"], key="global_parc_pointage")
+        
+        st.divider()
+        st.markdown("### 👷 Liste de tous les Employés")
+        
+        presences_data = []
+        
+        # Affichage sous forme de tableau interactif ou de lignes fluides sans st.form bloquant
+        for idx, row in df_emps.iterrows():
+            emp_id = row['id']
+            nom_emp = row['nom']
+            groupe_emp = row['groupe_nom']
             
-            st.divider()
-            st.markdown("### 👷 Liste de tous les Employés")
-            
-            # Utilisation de listes temporaires pour capturer les valeurs du formulaire proprement
-            form_inputs = []
-            
-            for idx, row in df_emps.iterrows():
-                nom_emp = row['nom']
-                groupe_emp = row['groupe_nom']
+            with st.container():
+                cols = st.columns([2, 1.5, 2.5, 1, 2.5])
+                with cols[0]:
+                    st.markdown(f"**{nom_emp}**<br><span style='color:gray; font-size:12px;'>{groupe_emp}</span>", unsafe_allow_html=True)
+                with cols[1]:
+                    statut = st.checkbox("Présent", value=True, key=f"pres_{emp_id}")
+                with cols[2]:
+                    tache = st.text_input("Tâche", value="Travaux généraux", key=f"tache_{emp_id}", label_visibility="collapsed")
+                with cols[3]:
+                    heures = st.number_input("Hrs", min_value=0.0, max_value=24.0, value=8.0, key=f"hrs_{emp_id}", label_visibility="collapsed")
+                with cols[4]:
+                    rem = st.text_input("Remarque", value="", key=f"rem_{emp_id}", placeholder="Motif...", label_visibility="collapsed")
                 
-                st.markdown(f"**{nom_emp}** — *{row['role']}* (Groupe : `{groupe_emp}`)")
-                
-                c_p1, c_p2, c_p3, c_p4 = st.columns([1, 2, 1, 2])
-                with c_p1:
-                    statut = st.checkbox("Présent", value=True, key=f"pres_{row['id']}")
-                with c_p2:
-                    tache = st.text_input("Tâche effectuée", value="Travaux généraux", key=f"tache_{row['id']}")
-                with c_p3:
-                    heures = st.number_input("Heures", min_value=0.0, max_value=24.0, value=8.0, key=f"hrs_{row['id']}")
-                with c_p4:
-                    rem = st.text_input("Remarque", value="", key=f"rem_{row['id']}", placeholder="Retard, motif...")
-                
-                form_inputs.append({
+                presences_data.append({
                     "nom": nom_emp,
                     "groupe": groupe_emp,
                     "statut": "Présent" if statut else "Absent",
-                    "tache": tache,
+                    "tache": tache if statut else "-",
                     "heures": heures if statut else 0.0,
                     "remarque": rem
                 })
-                st.markdown("---")
+                st.markdown("<hr style='margin:5px 0;'>", unsafe_allow_html=True)
 
-            submit_pointage = st.form_submit_button("💾 Enregistrer le Pointage de Tous les Employés", use_container_width=True)
-            
-            if submit_pointage:
-                for item in form_inputs:
-                    execute_query(
-                        "INSERT INTO pointage (date, employe_nom, groupe_nom, champ_nom, statut_presence, tache_effectuee, heures_travaillees, remarque) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        (
-                            str(date_p), 
-                            item["nom"], 
-                            item["groupe"], 
-                            parc_p, 
-                            item["statut"], 
-                            item["tache"] if item["statut"] == "Présent" else "-", 
-                            item["heures"], 
-                            item["remarque"]
-                        )
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("💾 Enregistrer le Pointage Global", use_container_width=True, type="primary"):
+            for item in presences_data:
+                execute_query(
+                    "INSERT INTO pointage (date, employe_nom, groupe_nom, champ_nom, statut_presence, tache_effectuee, heures_travaillees, remarque) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        str(date_p), 
+                        item["nom"], 
+                        item["groupe"], 
+                        parc_p, 
+                        item["statut"], 
+                        item["tache"], 
+                        item["heures"], 
+                        item["remarque"]
                     )
-                st.success("✅ Le pointage de tous les employés a été enregistré avec succès !")
-                st.rerun()
+                )
+            st.success("✅ Le pointage de tous les employés a été enregistré avec succès dans la base de données !")
+            st.rerun()
 
-        st.subheader("📋 Historique Global des Pointages")
+        st.subheader("📋 Historique Global des Pointages Récents")
         st.dataframe(load_table('pointage'), use_container_width=True)
 
 elif menu == "📅 Planning & Travaux":
