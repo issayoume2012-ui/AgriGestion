@@ -48,7 +48,7 @@ def init_db():
     
     cursor.execute('''CREATE TABLE IF NOT EXISTS champs (id INTEGER PRIMARY KEY AUTOINCREMENT, nom TEXT, superficie_ha REAL, latitude REAL, longitude REAL, culture_actuelle TEXT, statut TEXT, icone_lieu TEXT)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS equipes (id INTEGER PRIMARY KEY AUTOINCREMENT, nom_groupe TEXT, chef_groupe TEXT, membres TEXT)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS employes (id INTEGER PRIMARY KEY AUTOINCREMENT, nom TEXT, role TEXT, groupe_id INTEGER, tarif_journalier REAL)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS employes (id INTEGER PRIMARY KEY AUTOINCREMENT, nom TEXT, role TEXT, groupe_nom TEXT, tarif_journalier REAL)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS pointage (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, employe_nom TEXT, groupe_nom TEXT, champ_nom TEXT, statut_presence TEXT, heure_arrivee TEXT, heure_debut_pause TEXT, heure_fin_pause TEXT, heure_depart TEXT, heures_effectives REAL, remarque TEXT)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS taches (id INTEGER PRIMARY KEY AUTOINCREMENT, champ_id INTEGER, groupe_id INTEGER, type_travail TEXT, date_tache TEXT, heures_travaillees REAL, statut TEXT)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS recoltes (id INTEGER PRIMARY KEY AUTOINCREMENT, champ_id INTEGER, culture TEXT, date_recolte TEXT, quantite_kg REAL, prix_unitaire REAL)''')
@@ -320,71 +320,119 @@ elif menu == "🌱 Cartographie & Parcelles":
 
 elif menu == "👥 Groupes & Membres":
     st.title("👥 Groupes & Membres")
-    t1, t2 = st.tabs(["👥 Groupes", "👷 Employés"])
+    t1, t2 = st.tabs(["👥 Groupes", "👷 Employés / Membres"])
     with t1:
         st.dataframe(load_table('equipes'), use_container_width=True)
         with st.form("form_groupe"):
-            nom_g = st.text_input("Nom du Groupe")
+            nom_g = st.text_input("Nom du Groupe (ex: Équipe Semis)")
             chef_g = st.text_input("Chef de Groupe")
-            membres_init = st.text_area("Membres (séparés par virgule)")
             if st.form_submit_button("Créer Groupe"):
                 if nom_g:
-                    execute_query("INSERT INTO equipes (nom_groupe, chef_groupe, membres) VALUES (?, ?, ?)", (nom_g, chef_g, membres_init))
-                    st.success("✅ Groupe créé !")
+                    execute_query("INSERT INTO equipes (nom_groupe, chef_groupe, membres) VALUES (?, ?, ?)", (nom_g, chef_g, ""))
+                    st.success("✅ Groupe créé avec succès !")
                     st.rerun()
     with t2:
+        df_eq_list = load_table('equipes')
         st.dataframe(load_table('employes'), use_container_width=True)
         with st.form("form_employe"):
-            nom_e = st.text_input("Nom complet *")
-            role_e = st.text_input("Rôle")
+            nom_e = st.text_input("Nom complet de l'employé *")
+            role_e = st.text_input("Rôle (ex: Ouvrier, Chauffeur)")
+            
+            if not df_eq_list.empty:
+                groupe_associe = st.selectbox("Affecter au Groupe", df_eq_list['nom_groupe'].tolist())
+            else:
+                groupe_associe = "Général"
+                
             tarif_e = st.number_input("Tarif journalier (FCFA)", min_value=0, value=2500)
-            if st.form_submit_button("Ajouter Employé"):
+            if st.form_submit_button("Ajouter Employé au Groupe"):
                 if nom_e:
-                    execute_query("INSERT INTO employes (nom, role, groupe_id, tarif_journalier) VALUES (?, ?, ?, ?)", (nom_e, role_e, 1, tarif_e))
+                    execute_query("INSERT INTO employes (nom, role, groupe_nom, tarif_journalier) VALUES (?, ?, ?, ?)", (nom_e, role_e, groupe_associe, tarif_e))
                     st.success("✅ Employé ajouté !")
                     st.rerun()
 
 elif menu == "⏰ Pointage des Horaires":
-    st.title("⏰ Registre de Pointage des Horaires")
-    df_emp = load_table('employes')
+    st.title("⏰ Registre de Pointage Global (Par Groupe)")
     
-    # Correction : Si aucun employé n'est trouvé dans la table, on offre une option de secours pour saisir directement un nom ou forcer le déblocage
-    liste_employes = df_emp['nom'].tolist() if not df_emp.empty else []
+    df_eqs = load_table('equipes')
+    df_emps = load_table('employes')
     
-    with st.form("form_pointage_complet"):
-        date_p = st.date_input("Date du pointage", value=date.today())
+    if df_eqs.empty and df_emps.empty:
+        st.warning("⚠️ Veuillez d'abord créer des groupes et ajouter des employés dans le menu '👥 Groupes & Membres'.")
+    else:
+        # Sélection du groupe pour le pointage global
+        groupes_dispos = df_eqs['nom_groupe'].tolist() if not df_eqs.empty else ["Général"]
+        groupe_pointe = st.selectbox("🎯 Sélectionner le Groupe à pointer :", groupes_dispos)
         
-        if liste_employes:
-            emp_p = st.selectbox("Employé", liste_employes)
-        else:
-            emp_p = st.text_input("Nom de l'employé (Aucun employé en base, saisie libre)")
+        # Filtrer les membres du groupe sélectionné
+        membres_groupe = df_emps[df_emps['groupe_nom'] == groupe_pointe] if not df_emps.empty else pd.DataFrame()
+        
+        with st.form("form_pointage_global"):
+            c_d1, c_d2 = st.columns(2)
+            with c_d1:
+                date_p = st.date_input("Date du pointage", value=date.today())
+            with c_d2:
+                parc_p = st.selectbox("Parcelle concernée", db_champs['nom'].tolist() if not db_champs.empty else ["Général"])
             
-        parc_p = st.selectbox("Parcelle", db_champs['nom'].tolist() if not db_champs.empty else ["Général"])
-        statut_p = st.selectbox("Présence", ["Présent", "Absent"])
-        
-        c1, c2 = st.columns(2)
-        with c1:
-            h_arr = st.time_input("Arrivée", value=time(8, 0))
-            h_dp = st.time_input("Début Pause", value=time(12, 0))
-        with c2:
-            h_fp = st.time_input("Fin Pause", value=time(13, 0))
-            h_dep = st.time_input("Départ", value=time(17, 0))
-        remarque = st.text_input("Remarques / Retard")
-
-        if st.form_submit_button("💾 Enregistrer le Pointage", use_container_width=True):
-            if not emp_p:
-                st.error("❌ Veuillez renseigner un employé.")
+            st.divider()
+            st.subheader(f"👷 Liste des membres du groupe : {groupe_pointe}")
+            
+            presence_data = {}
+            if not membres_groupe.empty:
+                for idx, row in membres_groupe.iterrows():
+                    nom_emp = row['nom']
+                    col_p1, col_p2, col_p3 = st.columns([2, 1, 2])
+                    with col_p1:
+                        st.markdown(f"**{nom_emp}** *({row['role']})*")
+                    with col_p2:
+                        statut = st.checkbox("Présent", value=True, key=f"pres_{idx}")
+                    with col_p3:
+                        rem = st.text_input("Remarque", value="", key=f"rem_{idx}", placeholder="Retard / Absence...")
+                    presence_data[nom_emp] = {"statut": "Présent" if statut else "Absent", "remarque": rem}
             else:
-                heures_eff = 8.0 if statut_p == "Présent" else 0.0
-                execute_query(
-                    "INSERT INTO pointage (date, employe_nom, groupe_nom, champ_nom, statut_presence, heure_arrivee, heure_debut_pause, heure_fin_pause, heure_depart, heures_effectives, remarque) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (str(date_p), emp_p, "N/A", parc_p, statut_p, h_arr.strftime("%H:%M") if statut_p == "Présent" else "-", h_dp.strftime("%H:%M") if statut_p == "Présent" else "-", h_fp.strftime("%H:%M") if statut_p == "Présent" else "-", h_dep.strftime("%H:%M") if statut_p == "Présent" else "-", heures_eff, remarque)
-                )
-                st.success("✅ Pointage enregistré avec succès !")
-                st.rerun()
+                st.info("Aucun employé enregistré spécifiquement dans ce groupe. Vous pouvez faire une saisie rapide ci-dessous :")
+                nom_libre = st.text_input("Nom de l'employé")
+                statut_libre = st.checkbox("Présent", value=True)
+                presence_data = {nom_libre: {"statut": "Présent" if statut_libre else "Absent", "remarque": ""}} if nom_libre else {}
 
-    st.subheader("📋 Historique des Pointages")
-    st.dataframe(load_table('pointage'), use_container_width=True)
+            st.divider()
+            c_h1, c_h2 = st.columns(2)
+            with c_h1:
+                h_arr = st.time_input("Heure d'arrivée collective", value=time(8, 0))
+                h_dp = st.time_input("Début pause", value=time(12, 0))
+            with c_h2:
+                h_fp = st.time_input("Fin pause", value=time(13, 0))
+                h_dep = st.time_input("Heure de départ", value=time(17, 0))
+
+            submit_pointage = st.form_submit_button("💾 Valider et Enregistrer le Pointage du Groupe", use_container_width=True)
+            
+            if submit_pointage:
+                if not presence_data:
+                    st.error("❌ Aucun employé à pointer.")
+                else:
+                    for emp, info in presence_data.items():
+                        if emp:
+                            heures_eff = 8.0 if info["statut"] == "Présent" else 0.0
+                            execute_query(
+                                "INSERT INTO pointage (date, employe_nom, groupe_nom, champ_nom, statut_presence, heure_arrivee, heure_debut_pause, heure_fin_pause, heure_depart, heures_effectives, remarque) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                (
+                                    str(date_p), 
+                                    emp, 
+                                    groupe_pointe, 
+                                    parc_p, 
+                                    info["statut"], 
+                                    h_arr.strftime("%H:%M") if info["statut"] == "Présent" else "-", 
+                                    h_dp.strftime("%H:%M") if info["statut"] == "Présent" else "-", 
+                                    h_fp.strftime("%H:%M") if info["statut"] == "Présent" else "-", 
+                                    h_dep.strftime("%H:%M") if info["statut"] == "Présent" else "-", 
+                                    heures_eff, 
+                                    info["remarque"]
+                                )
+                            )
+                    st.success("✅ Pointage global du groupe enregistré avec succès !")
+                    st.rerun()
+
+        st.subheader("📋 Historique Global des Pointages")
+        st.dataframe(load_table('pointage'), use_container_width=True)
 
 elif menu == "📅 Planning & Travaux":
     st.title(f"📅 Planning - {champ_selectionne}")
