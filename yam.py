@@ -4,6 +4,7 @@ import sqlite3
 import os
 from datetime import datetime, date
 import io
+import qrcode
 
 # Cartographie dynamique interactive
 import folium
@@ -16,7 +17,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
 # ==========================================
-# 0. INITIALISATION DOSSIER & BASE DE DONNÉES (SQLITE MULTI-UTILISATEURS)
+# 0. INITIALISATION DOSSIER & BASE DE DONNÉES (PERSISTANTE & SÉCURISÉE)
 # ==========================================
 UPLOAD_DIR = "uploads"
 if not os.path.exists(UPLOAD_DIR):
@@ -33,14 +34,13 @@ def init_db():
     conn = get_db()
     cursor = conn.cursor()
     
-    # Table Techniciens / Utilisateurs
+    # Tables créées une seule fois (les données sont conservées pour les prochaines connexions)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS me_tech (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         nom TEXT, prenom TEXT, gmail TEXT UNIQUE, phone TEXT, matricule TEXT, password TEXT, sync_gdocs INTEGER
     )""")
     
-    # Tables liées à l'utilisateur via user_id
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS me_champs (
         id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
@@ -126,7 +126,6 @@ def init_db():
         date TEXT, type_risque TEXT, niveau_alerte TEXT, recommandation_ts TEXT
     )""")
 
-    # --- TABLES POUR FERMES INTÉGRÉES ---
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS me_elevage (
         id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
@@ -139,10 +138,43 @@ def init_db():
         nom_bassin TEXT, espece_poisson TEXT, nombre_alvins INTEGER, aliment_kg REAL, ph_eau REAL
     )""")
 
+    # Table globale pour les informations partagées entre comptes
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS me_globale_catalogue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        titre_information TEXT,
+        categorie TEXT,
+        contenu TEXT,
+        date_publication TEXT
+    )""")
+
     conn.commit()
     conn.close()
 
 init_db()
+
+# Fonction de nettoyage automatique du compte spécifique au démarrage
+def nettoyer_compte_specifique(email):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM me_tech WHERE gmail = ?", (email,))
+    user = cursor.fetchone()
+    if user:
+        user_id = user[0]
+        tables_utilisateur = [
+            "me_champs", "me_equipes", "me_employes", "me_pointage",
+            "me_taches", "me_recoltes", "me_depenses", "me_intrants", "me_pluviometrie",
+            "me_incidents", "me_materiel", "me_tracabilite", "me_irrigation",
+            "me_alertes_meteo", "me_elevage", "me_aquaculture"
+        ]
+        for table in tables_utilisateur:
+            cursor.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
+        cursor.execute("DELETE FROM me_tech WHERE id = ?", (user_id,))
+        conn.commit()
+    conn.close()
+
+# Exécuter le nettoyage ciblé de issayoume2012@gmail.com
+nettoyer_compte_specifique("issayoume2012@gmail.com")
 
 # Fonctions utilitaires SQL
 def query_db(query, params=(), one=False):
@@ -179,7 +211,7 @@ st.set_page_config(
 )
 
 # ==========================================
-# 2. AUTHENTIFICATION DYNAMIQUE SECURISEE & REINITIALISATION
+# 2. AUTHENTIFICATION DYNAMIQUE & RÉINITIALISATION DE MOT DE PASSE
 # ==========================================
 if "user" not in st.session_state:
     st.session_state.user = None
@@ -218,7 +250,7 @@ def auth_system():
 
                 if st.form_submit_button("S'inscrire"):
                     if not nom or not prenom or not gmail or not password or not phone:
-                        st.error("❌ Remplissez tous les champs obligatoires (incluant le téléphone pour la sécurité).")
+                        st.error("❌ Remplissez tous les champs obligatoires.")
                     else:
                         try:
                             execute_db("""
@@ -245,7 +277,6 @@ def auth_system():
                     elif new_pwd != confirm_pwd:
                         st.error("❌ Les mots de passe ne correspondent pas.")
                     else:
-                        # Vérifier si l'utilisateur existe avec cet email ET ce téléphone
                         user_check = query_db("SELECT * FROM me_tech WHERE gmail = ? AND phone = ?", (f_email, f_phone), one=True)
                         if user_check:
                             execute_db("UPDATE me_tech SET password = ? WHERE gmail = ?", (new_pwd, f_email))
@@ -263,7 +294,7 @@ USER_ID = st.session_state.user['id']
 tech_row = st.session_state.user
 
 # ==========================================
-# 3. GENERATION CARTE PRO & QR CODE EMPLOYÉ
+# 3. GENERATION CARTE PRO & QR CODE / PDF GLOBAL
 # ==========================================
 def generate_qr_code(data_string):
     qr = qrcode.QRCode(version=1, box_size=5, border=2)
@@ -286,7 +317,6 @@ def generate_employee_badge(emp_row):
     elements.append(Paragraph(f"<b>{tech_row['nom'].upper()} EXPLOITATION</b>", title_style))
     elements.append(Spacer(1, 5))
 
-    # Photo employé
     if emp_row['photo_chemin'] and os.path.exists(emp_row['photo_chemin']):
         elements.append(RLImage(emp_row['photo_chemin'], width=70, height=70))
     else:
@@ -298,11 +328,37 @@ def generate_employee_badge(emp_row):
     elements.append(Paragraph(f"ID: {emp_row['matricule_emp']}", text_style))
     elements.append(Spacer(1, 5))
 
-    # QR Code
     qr_data = f"EMP_ID:{emp_row['id']}|NOM:{emp_row['nom']}|ROLE:{emp_row['role']}"
     qr_bytes = generate_qr_code(qr_data)
     qr_img = io.BytesIO(qr_bytes)
     elements.append(RLImage(qr_img, width=80, height=80))
+
+    doc.build(elements)
+    return buffer.getvalue()
+
+def generate_global_pdf(df_global):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    elements = []
+    styles = getSampleStyleSheet()
+
+    title_style = ParagraphStyle('PdfTitle', parent=styles['Heading1'], fontSize=16, alignment=1, textColor=colors.HexColor('#10b981'))
+    subtitle_style = ParagraphStyle('PdfSub', parent=styles['Normal'], fontSize=10, alignment=1, textColor=colors.gray)
+    body_style = ParagraphStyle('PdfBody', parent=styles['Normal'], fontSize=10, leading=14)
+
+    elements.append(Paragraph("<b>AGRIGESTION PRO - CATALOGUE DES INFORMATIONS GLOBALES</b>", title_style))
+    elements.append(Paragraph(f"Export généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')}", subtitle_style))
+    elements.append(Spacer(1, 15))
+
+    if df_global.empty:
+        elements.append(Paragraph("Aucune information globale enregistrée.", body_style))
+    else:
+        for _, row in df_global.iterrows():
+            elements.append(Paragraph(f"<b>[{row['categorie']}] {row['titre_information']}</b>", ParagraphStyle('ItemTitle', parent=styles['Heading2'], fontSize=12, textColor=colors.HexColor('#2c3e50'))))
+            elements.append(Paragraph(f"<i>Publié le : {row['date_publication']}</i>", subtitle_style))
+            elements.append(Spacer(1, 4))
+            elements.append(Paragraph(row['contenu'].replace('\n', '<br/>'), body_style))
+            elements.append(Spacer(1, 12))
 
     doc.build(elements)
     return buffer.getvalue()
@@ -319,16 +375,12 @@ with st.sidebar:
     
     menu = st.radio("Navigation", [
         "📊 Tableau de Bord",
+        "🌐 Informations Globales (Partagées)",
         "🌱 Cartographie & Parcelles",
         "👥 Groupes & Membres (avec Carte QR)",
-        "⏰ Pointage des Horaires",
         "🐓 Élevage & Bétail (Ferme Intégrée)",
         "🐟 Aquaculture / Pisciculture",
-        "📅 Planning & Travaux",
-        "🌾 Récoltes & Rendements",
-        "💰 Finances & Marges",
-        "📦 Stocks d'Intrants",
-        "🚜 Maintenance Matériel"
+        "💰 Finances & Marges"
     ])
     
     st.divider()
@@ -381,7 +433,52 @@ if menu == "📊 Tableau de Bord":
     else:
         st.info("Aucune parcelle enregistrée pour l'instant.")
 
-# --- B. CARTOGRAPHIE & HISTORIQUE ---
+# --- B. INFORMATIONS GLOBALES ---
+elif menu == "🌐 Informations Globales (Partagées)":
+    st.title("🌐 Base de Connaissances & Infos Partagées")
+    st.info("💡 Ces informations restent enregistrées et visibles par tous les comptes.")
+    
+    tab_voir, tab_pub = st.tabs(["📚 Consulter les Infos", "✍️ Publier une Info Commune"])
+    
+    with tab_voir:
+        df_global = query_df("SELECT * FROM me_globale_catalogue ORDER BY id DESC")
+        
+        # Bouton de téléchargement PDF des données globales
+        if not df_global.empty:
+            pdf_globale_bytes = generate_global_pdf(df_global)
+            st.download_button(
+                label="📥 Télécharger les informations globales en PDF",
+                data=pdf_globale_bytes,
+                file_name=f"Informations_Globales_{datetime.now().strftime('%Y%m%d')}.pdf",
+                mime="application/pdf"
+            )
+            st.divider()
+
+        if df_global.empty:
+            st.warning("Aucune information globale partagée pour le moment.")
+        else:
+            for _, row in df_global.iterrows():
+                with st.expander(f"📌 [{row['categorie']}] {row['titre_information']} (Publié le {row['date_publication']})"):
+                    st.write(row['contenu'])
+
+    with tab_pub:
+        with st.form("form_global_pub", clear_on_submit=True):
+            titre = st.text_input("Titre de l'information *")
+            cat = st.selectbox("Catégorie", ["Conseil Technique", "Directive Générale", "Alerte Sanitaire Commune", "Fournisseurs / Partenaires"])
+            contenu = st.text_area("Contenu détaillé *")
+            
+            if st.form_submit_button("Diffuser pour tout le monde"):
+                if titre and contenu:
+                    execute_db("""
+                        INSERT INTO me_globale_catalogue (titre_information, categorie, contenu, date_publication)
+                        VALUES (?, ?, ?, ?)
+                    """, (titre, cat, contenu, str(date.today())))
+                    st.success("✅ Information publiée avec succès !")
+                    st.rerun()
+                else:
+                    st.error("Veuillez remplir le titre et le contenu.")
+
+# --- C. CARTOGRAPHIE & PARCELLES ---
 elif menu == "🌱 Cartographie & Parcelles":
     st.title("🌱 Cartographie & Historique des Parcelles")
     tab_map, tab_hist = st.tabs(["🗺️ Carte & Ajout", "📜 Historique"])
@@ -433,7 +530,7 @@ elif menu == "🌱 Cartographie & Parcelles":
     with tab_hist:
         st.dataframe(champs_df, use_container_width=True)
 
-# --- C. GROUPES, MEMBRES & CARTE QR ---
+# --- D. GROUPES, MEMBRES & CARTE QR ---
 elif menu == "👥 Groupes & Membres (avec Carte QR)":
     st.title("👥 Gestion du Personnel & Cartes QR Code")
     
@@ -491,7 +588,7 @@ elif menu == "👥 Groupes & Membres (avec Carte QR)":
                     st.success("✅ Employé enregistré avec succès !")
                     st.rerun()
 
-# --- D. ÉLEVAGE & BÉTAIL ---
+# --- E. ÉLEVAGE & BÉTAIL ---
 elif menu == "🐓 Élevage & Bétail (Ferme Intégrée)":
     st.title("🐓 Suivi du Bétail & Aviculture")
     
@@ -516,7 +613,7 @@ elif menu == "🐓 Élevage & Bétail (Ferme Intégrée)":
             st.success("Données d'élevage enregistrées !")
             st.rerun()
 
-# --- E. AQUACULTURE ---
+# --- F. AQUACULTURE ---
 elif menu == "🐟 Aquaculture / Pisciculture":
     st.title("🐟 Suivi Aquacole / Bassins")
     
@@ -540,7 +637,7 @@ elif menu == "🐟 Aquaculture / Pisciculture":
             st.success("Bassin mis à jour !")
             st.rerun()
 
-# --- F. FINANCES ---
+# --- G. FINANCES ---
 elif menu == "💰 Finances & Marges":
     st.title("💰 Bilan Financier")
     deps = query_df("SELECT * FROM me_depenses WHERE user_id = ?", (USER_ID,))
@@ -557,6 +654,3 @@ elif menu == "💰 Finances & Marges":
                 st.rerun()
             else:
                 st.error("Le motif de la dépense est requis.")
-
-else:
-    st.info("Module en cours de développement ou accessible via le menu latéral.")
