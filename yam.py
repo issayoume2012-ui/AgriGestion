@@ -212,15 +212,19 @@ def export_global_pdf(date_rapport):
     return buffer.getvalue()
 
 # ==========================================
+# ==========================================
 # 5. NAVIGATION TOP BAR
 # ==========================================
-tech = st.session_state.registered_tech
+tech = st.session_state.get('registered_tech', {})
+prenom_tech = tech.get('prenom', 'Utilisateur')
+nom_tech = tech.get('nom', '')
+role_tech = tech.get('role', 'Membre')
+
 st.markdown(f"""
     <div style="display: flex; justify-content: space-between; align-items: center; background-color: #ffffff; padding: 10px 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 15px;">
-        <div><b>🌾 AgriGestion Pro</b> | <span style="color: #10b981;">{tech['prenom']} {tech['nom']}</span> ({tech['role']})</div>
+        <div><b>🌾 AgriGestion Pro</b> | <span style="color: #10b981;">{prenom_tech} {nom_tech}</span> ({role_tech})</div>
     </div>
 """, unsafe_allow_html=True)
-
 menu_options = [
     "📊 Tableau de Bord",
     "🌱 Cartographie & Parcelles",
