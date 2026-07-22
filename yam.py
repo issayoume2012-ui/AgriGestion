@@ -28,7 +28,6 @@ st.markdown("""
     <style>
         .stApp { background-color: #f8f9fa; }
         .tech-badge { background-color: #10b981; color: white; padding: 4px 12px; border-radius: 12px; font-weight: bold; }
-        .gdoc-badge { background-color: #4285F4; color: white; padding: 4px 10px; border-radius: 8px; font-size: 12px; }
         div.stButton > button { width: 100%; border-radius: 8px; font-weight: bold; }
         @media(max-width: 768px) {
             .stMetric { font-size: 14px !important; }
@@ -388,7 +387,9 @@ elif menu == "⏰ Pointage des Horaires":
             st.divider()
             st.markdown("### 👷 Liste de tous les Employés")
             
-            presence_data = {}
+            # Utilisation de listes temporaires pour capturer les valeurs du formulaire proprement
+            form_inputs = []
+            
             for idx, row in df_emps.iterrows():
                 nom_emp = row['nom']
                 groupe_emp = row['groupe_nom']
@@ -397,38 +398,39 @@ elif menu == "⏰ Pointage des Horaires":
                 
                 c_p1, c_p2, c_p3, c_p4 = st.columns([1, 2, 1, 2])
                 with c_p1:
-                    statut = st.checkbox("Présent", value=True, key=f"pres_{idx}")
+                    statut = st.checkbox("Présent", value=True, key=f"pres_{row['id']}")
                 with c_p2:
-                    tache = st.text_input("Tâche effectuée", value="Travaux généraux", key=f"tache_{idx}")
+                    tache = st.text_input("Tâche effectuée", value="Travaux généraux", key=f"tache_{row['id']}")
                 with c_p3:
-                    heures = st.number_input("Heures", min_value=0.0, max_value=24.0, value=8.0, key=f"hrs_{idx}")
+                    heures = st.number_input("Heures", min_value=0.0, max_value=24.0, value=8.0, key=f"hrs_{row['id']}")
                 with c_p4:
-                    rem = st.text_input("Remarque", value="", key=f"rem_{idx}", placeholder="Retard, motif absence...")
+                    rem = st.text_input("Remarque", value="", key=f"rem_{row['id']}", placeholder="Retard, motif...")
                 
-                presence_data[nom_emp] = {
+                form_inputs.append({
+                    "nom": nom_emp,
                     "groupe": groupe_emp,
                     "statut": "Présent" if statut else "Absent",
                     "tache": tache,
                     "heures": heures if statut else 0.0,
                     "remarque": rem
-                }
+                })
                 st.markdown("---")
 
             submit_pointage = st.form_submit_button("💾 Enregistrer le Pointage de Tous les Employés", use_container_width=True)
             
             if submit_pointage:
-                for emp, info in presence_data.items():
+                for item in form_inputs:
                     execute_query(
                         "INSERT INTO pointage (date, employe_nom, groupe_nom, champ_nom, statut_presence, tache_effectuee, heures_travaillees, remarque) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                         (
                             str(date_p), 
-                            emp, 
-                            info["groupe"], 
+                            item["nom"], 
+                            item["groupe"], 
                             parc_p, 
-                            info["statut"], 
-                            info["tache"] if info["statut"] == "Présent" else "-", 
-                            info["heures"], 
-                            info["remarque"]
+                            item["statut"], 
+                            item["tache"] if item["statut"] == "Présent" else "-", 
+                            item["heures"], 
+                            item["remarque"]
                         )
                     )
                 st.success("✅ Le pointage de tous les employés a été enregistré avec succès !")
