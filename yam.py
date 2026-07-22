@@ -31,7 +31,7 @@ APP_URL = "http://localhost:8501"            # Remplacez par votre URL de produc
 # ==========================================
 UPLOAD_DIR = "uploads"
 if not os.path.exists(UPLOAD_DIR):
-   os.makedirs(UPLOAD_DIR, exist_ok=True)
+    os.makedirs(UPLOAD_DIR)
 
 DB_FILE = "agri_database.db"
 
@@ -190,6 +190,14 @@ def init_db():
     conn.close()
 
 init_db()
+
+def query_db(query, params=(), one=False):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(query, params)
+    rv = cursor.fetchall()
+    conn.close()
+    return (rv[0] if rv else None) if one else rv
 
 def query_df(query, params=()):
     conn = get_db()
