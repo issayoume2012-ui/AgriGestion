@@ -45,6 +45,7 @@ def init_db():
     conn = get_connection()
     cursor = conn.cursor()
     
+    # Création des tables de base si elles n'existent pas
     cursor.execute('''CREATE TABLE IF NOT EXISTS champs (id INTEGER PRIMARY KEY AUTOINCREMENT, nom TEXT, superficie_ha REAL, latitude REAL, longitude REAL, culture_actuelle TEXT, statut TEXT, icone_lieu TEXT)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS equipes (id INTEGER PRIMARY KEY AUTOINCREMENT, nom_groupe TEXT, chef_groupe TEXT)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS employes (id INTEGER PRIMARY KEY AUTOINCREMENT, nom TEXT, role TEXT, groupe_nom TEXT, tarif_journalier REAL)''')
@@ -60,17 +61,36 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS irrigation (id INTEGER PRIMARY KEY AUTOINCREMENT, champ_nom TEXT, date TEXT, volume_eau_m3 REAL, methode TEXT, duree_heures REAL)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS alertes_meteo (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, type_risque TEXT, niveau_alerte TEXT, recommandation_ts TEXT)''')
     
-    # SÉCURITÉ : Vérification des colonnes pour éviter les OperationalError
+    # SÉCURITÉ : Vérification et ajout automatique des colonnes pour la table employes
     cursor.execute("PRAGMA table_info(employes)")
-    colonnes_employes = [col[1] for col in cursor.fetchall()]
-    if "groupe_nom" not in colonnes_employes:
+    cols_emp = [col[1] for col in cursor.fetchall()]
+    if "groupe_nom" not in cols_emp:
         cursor.execute("ALTER TABLE employes ADD COLUMN groupe_nom TEXT")
-    if "tarif_journalier" not in colonnes_employes:
+    if "tarif_journalier" not in cols_emp:
         cursor.execute("ALTER TABLE employes ADD COLUMN tarif_journalier REAL")
+
+    # SÉCURITÉ : Vérification et ajout automatique des colonnes pour la table pointage
+    cursor.execute("PRAGMA table_info(pointage)")
+    cols_pointage = [col[1] for col in cursor.fetchall()]
+    if "date" not in cols_pointage:
+        cursor.execute("ALTER TABLE pointage ADD COLUMN date TEXT")
+    if "employe_nom" not in cols_pointage:
+        cursor.execute("ALTER TABLE pointage ADD COLUMN employe_nom TEXT")
+    if "groupe_nom" not in cols_pointage:
+        cursor.execute("ALTER TABLE pointage ADD COLUMN groupe_nom TEXT")
+    if "champ_nom" not in cols_pointage:
+        cursor.execute("ALTER TABLE pointage ADD COLUMN champ_nom TEXT")
+    if "statut_presence" not in cols_pointage:
+        cursor.execute("ALTER TABLE pointage ADD COLUMN statut_presence TEXT")
+    if "tache_effectuee" not in cols_pointage:
+        cursor.execute("ALTER TABLE pointage ADD COLUMN tache_effectuee TEXT")
+    if "heures_travaillees" not in cols_pointage:
+        cursor.execute("ALTER TABLE pointage ADD COLUMN heures_travaillees REAL")
+    if "remarque" not in cols_pointage:
+        cursor.execute("ALTER TABLE pointage ADD COLUMN remarque TEXT")
 
     conn.commit()
     conn.close()
-
 init_db()
 
 def load_table(table_name):
