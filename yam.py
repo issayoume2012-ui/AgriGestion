@@ -31,7 +31,7 @@ APP_URL = "http://localhost:8501"            # Remplacez par votre URL de produc
 # ==========================================
 UPLOAD_DIR = "uploads"
 if not os.path.exists(UPLOAD_DIR):
-    os.makedirs(UPLOAD_DIR)
+   os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 DB_FILE = "agri_database.db"
 
