@@ -4,7 +4,6 @@ import sqlite3
 import os
 from datetime import datetime, date
 import io
-import qrcode
 
 # Cartographie dynamique interactive
 import folium
