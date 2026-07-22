@@ -4,19 +4,20 @@ import sqlite3
 import os
 from datetime import datetime, date
 import io
+import qrcode
 
-# Cartographie dynamique
+# Cartographie dynamique interactive
 import folium
 from streamlit_folium import st_folium
 
 # Exports PDF
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
 # ==========================================
-# 0. BASE DE DONNÉES & AUTO-MIGRATION
+# 0. INITIALISATION DOSSIER & BASE DE DONNÉES (SQLITE MULTI-UTILISATEURS)
 # ==========================================
 UPLOAD_DIR = "uploads"
 if not os.path.exists(UPLOAD_DIR):
@@ -33,26 +34,20 @@ def init_db():
     conn = get_db()
     cursor = conn.cursor()
     
-    # Tables principales
+    # Table Techniciens / Utilisateurs
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS me_tech (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         nom TEXT, prenom TEXT, gmail TEXT UNIQUE, phone TEXT, matricule TEXT, password TEXT, sync_gdocs INTEGER
     )""")
     
+    # Tables liées à l'utilisateur via user_id
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS me_champs (
         id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
         nom TEXT, superficie_ha REAL, latitude REAL, longitude REAL, culture_actuelle TEXT, statut TEXT, icone_lieu TEXT
     )""")
     
-    # Historique des parcelles
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS me_historique_champs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, champ_id INTEGER,
-        culture TEXT, date_debut TEXT, date_fin TEXT, rendement_kg REAL, remarques TEXT
-    )""")
-
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS me_equipes (
         id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
@@ -62,7 +57,7 @@ def init_db():
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS me_employes (
         id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
-        nom TEXT, role TEXT, groupe_id INTEGER, type_contrat TEXT, tarif_journalier REAL, salaire_mensuel REAL, photo_chemin TEXT, matricule_emp TEXT
+        nom TEXT, role TEXT, groupe_id INTEGER, tarif_journalier REAL, photo_chemin TEXT, matricule_emp TEXT
     )""")
 
     cursor.execute("""
@@ -72,18 +67,10 @@ def init_db():
         heure_arrivee TEXT, heure_depart TEXT, heures_effectives REAL, remarque TEXT
     )""")
 
-    # Gestion du Matériel
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS me_materiel (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
-        nom_materiel TEXT, categorie TEXT, etat TEXT, date_acquisition TEXT, remarques TEXT
-    )""")
-
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS me_taches (
         id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
-        champ_id INTEGER, groupe_id INTEGER, employe_id INTEGER, materiel_id INTEGER,
-        type_travail TEXT, description TEXT, date_tache TEXT, heures_travaillees REAL, priorite TEXT, statut TEXT
+        champ_id INTEGER, groupe_id INTEGER, type_travail TEXT, date_tache TEXT, heures_travaillees REAL, statut TEXT
     )""")
 
     cursor.execute("""
@@ -105,6 +92,43 @@ def init_db():
     )""")
 
     cursor.execute("""
+    CREATE TABLE IF NOT EXISTS me_pluviometrie (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
+        champ_id INTEGER, date TEXT, pluie_mm REAL
+    )""")
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS me_incidents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
+        champ_id INTEGER, date TEXT, description TEXT, gravite TEXT, action TEXT
+    )""")
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS me_materiel (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
+        nom_equipement TEXT, categorie TEXT, statut_marche TEXT, date_derniere_revision TEXT, prochaine_revision TEXT
+    )""")
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS me_tracabilite (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
+        lot_code TEXT, champ_nom TEXT, culture TEXT, date_recolte TEXT, norme_certification TEXT, acheteur TEXT
+    )""")
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS me_irrigation (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
+        champ_nom TEXT, date TEXT, volume_eau_m3 REAL, methode TEXT, duree_heures REAL
+    )""")
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS me_alertes_meteo (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
+        date TEXT, type_risque TEXT, niveau_alerte TEXT, recommandation_ts TEXT
+    )""")
+
+    # --- TABLES POUR FERMES INTÉGRÉES ---
+    cursor.execute("""
     CREATE TABLE IF NOT EXISTS me_elevage (
         id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
         type_animaux TEXT, race TEXT, quantite INTEGER, date_arrivee TEXT, statut_sanitaire TEXT
@@ -116,50 +140,12 @@ def init_db():
         nom_bassin TEXT, espece_poisson TEXT, nombre_alvins INTEGER, aliment_kg REAL, ph_eau REAL
     )""")
 
-    # Migrations automatiques
-    migrations = {
-        "me_employes": [
-            ("photo_chemin", "TEXT"), ("matricule_emp", "TEXT"), 
-            ("tarif_journalier", "REAL"), ("salaire_mensuel", "REAL"),
-            ("type_contrat", "TEXT"), ("groupe_id", "INTEGER")
-        ],
-        "me_champs": [("icone_lieu", "TEXT")],
-        "me_taches": [
-            ("groupe_id", "INTEGER"), ("employe_id", "INTEGER"), 
-            ("materiel_id", "INTEGER"), ("description", "TEXT"), ("priorite", "TEXT")
-        ]
-    }
-
-    tables_metier = [
-        "me_champs", "me_historique_champs", "me_equipes", "me_employes", "me_pointage", 
-        "me_materiel", "me_taches", "me_recoltes", "me_depenses", "me_intrants", 
-        "me_elevage", "me_aquaculture"
-    ]
-    
-    for table in tables_metier:
-        cursor.execute(f"PRAGMA table_info({table})")
-        cols = [c[1] for c in cursor.fetchall()]
-        if "user_id" not in cols:
-            try:
-                cursor.execute(f"ALTER TABLE {table} ADD COLUMN user_id INTEGER")
-            except sqlite3.OperationalError:
-                pass
-
-    for table, columns in migrations.items():
-        cursor.execute(f"PRAGMA table_info({table})")
-        existing_cols = [c[1] for c in cursor.fetchall()]
-        for col_name, col_type in columns:
-            if col_name not in existing_cols:
-                try:
-                    cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}")
-                except sqlite3.OperationalError:
-                    pass
-
     conn.commit()
     conn.close()
 
 init_db()
 
+# Fonctions utilitaires SQL
 def query_db(query, params=(), one=False):
     conn = get_db()
     cursor = conn.cursor()
@@ -184,61 +170,65 @@ def execute_db(query, params=()):
     return last_id
 
 # ==========================================
-# 1. CONFIGURATION ET STYLES
+# 1. CONFIGURATION DE LA PAGE
 # ==========================================
 st.set_page_config(
-    page_title="AgriGestion Pro Ultimate",
+    page_title="AgriGestion Pro - Système Intégré",
     page_icon="🌾",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
-st.markdown("""
-    <style>
-        .block-container { padding-top: 1rem; padding-bottom: 2rem; padding-left: 1rem; padding-right: 1rem; }
-        .stButton>button { width: 100%; border-radius: 8px; height: 3em; font-weight: bold; }
-        @media (max-width: 768px) {
-            .stTabs [data-baseweb="tab-list"] { gap: 2px; }
-            .stTabs [data-baseweb="tab"] { font-size: 11px; padding: 4px 6px; }
-        }
-    </style>
-""", unsafe_allow_html=True)
-
 # ==========================================
-# 2. AUTHENTIFICATION
+# 2. AUTHENTIFICATION DYNAMIQUE SECURISEE (MULTI-COMPTES)
 # ==========================================
 if "user" not in st.session_state:
     st.session_state.user = None
 
 def auth_system():
     if st.session_state.user is None:
-        st.title("🌾 AgriGestion Pro")
-        tab_login, tab_register = st.tabs(["🔑 Connexion", "📝 Inscription"])
+        tab_login, tab_register = st.tabs(["🔒 Connexion", "📝 Créer un Compte Ferme/Technicien"])
 
         with tab_login:
-            gmail_in = st.text_input("Email", key="l_email")
-            pwd_in = st.text_input("Mot de passe", type="password", key="l_pwd")
-            if st.button("Se Connecter", type="primary"):
+            st.subheader("Connexion à votre Espace")
+            gmail_in = st.text_input("Adresse Email (Gmail)", key="login_email")
+            pwd_in = st.text_input("Mot de passe", type="password", key="login_pwd")
+            
+            if st.button("Se Connecter", use_container_width=True):
                 user = query_db("SELECT * FROM me_tech WHERE gmail = ? AND password = ?", (gmail_in, pwd_in), one=True)
                 if user:
                     st.session_state.user = dict(user)
+                    st.success(f"Bienvenue, {user['prenom']} !")
                     st.rerun()
                 else:
                     st.error("❌ Email ou mot de passe incorrect.")
 
         with tab_register:
-            with st.form("f_reg"):
-                nom = st.text_input("Nom *")
-                prenom = st.text_input("Prénom *")
-                gmail = st.text_input("Email *")
-                password = st.text_input("Mot de passe *", type="password")
-                if st.form_submit_button("Créer le compte"):
-                    if nom and prenom and gmail and password:
+            st.subheader("Inscription Nouvel Utilisateur")
+            with st.form("form_reg"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    nom = st.text_input("Nom *")
+                    prenom = st.text_input("Prénom *")
+                    gmail = st.text_input("Email / Gmail *")
+                    phone = st.text_input("Téléphone")
+                with col2:
+                    matricule = st.text_input("Code/Matricule Exploitation", value="FERME-01")
+                    password = st.text_input("Mot de passe *", type="password")
+                    sync_gdocs = st.checkbox("Activer la synchronisation Google Drive", value=True)
+
+                if st.form_submit_button("S'inscrire"):
+                    if not nom or not prenom or not gmail or not password:
+                        st.error("❌ Remplissez tous les champs obligatoires.")
+                    else:
                         try:
-                            execute_db("INSERT INTO me_tech (nom, prenom, gmail, password, sync_gdocs) VALUES (?, ?, ?, ?, 1)", (nom, prenom, gmail, password))
-                            st.success("✅ Compte créé ! Connectez-vous.")
+                            execute_db("""
+                                INSERT INTO me_tech (nom, prenom, gmail, phone, matricule, password, sync_gdocs)
+                                VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """, (nom, prenom, gmail, phone, matricule, password, 1 if sync_gdocs else 0))
+                            st.success("✅ Compte créé avec succès ! Connectez-vous.")
                         except sqlite3.IntegrityError:
-                            st.error("❌ Email déjà enregistré.")
+                            st.error("❌ Cet email est déjà utilisé par un autre compte.")
         return False
     return True
 
@@ -246,445 +236,290 @@ if not auth_system():
     st.stop()
 
 USER_ID = st.session_state.user['id']
-USER_DATA = st.session_state.user
+tech_row = st.session_state.user
 
 # ==========================================
-# 3. HEADER ET NAVIGATION
+# 3. GENERATION CARTE PRO & QR CODE EMPLOYÉ
 # ==========================================
-col_h1, col_h2 = st.columns([3, 1])
-with col_h1:
-    st.markdown(f"### 🌾 Exploitation : **{USER_DATA['prenom']} {USER_DATA['nom']}**")
-with col_h2:
-    if st.button("🚪 Déconnexion"):
-        st.session_state.user = None
-        st.rerun()
+def generate_qr_code(data_string):
+    qr = qrcode.QRCode(version=1, box_size=5, border=2)
+    qr.add_data(data_string)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
 
-champs_df = query_df("SELECT * FROM me_champs WHERE user_id = ?", (USER_ID,))
-if not champs_df.empty:
-    liste_champs = {row['nom']: (row['id'], row['latitude'], row['longitude']) for _, row in champs_df.iterrows()}
-    if "selected_parcelle_name" not in st.session_state or st.session_state.selected_parcelle_name not in liste_champs:
-        st.session_state.selected_parcelle_name = list(liste_champs.keys())[0]
-
-    parcelle_active_nom = st.selectbox("📍 **Parcelle Active :**", list(liste_champs.keys()), index=list(liste_champs.keys()).index(st.session_state.selected_parcelle_name))
-    st.session_state.selected_parcelle_name = parcelle_active_nom
-    champ_id_actif, champ_lat_actif, champ_lon_actif = liste_champs[parcelle_active_nom]
-else:
-    champ_id_actif, champ_lat_actif, champ_lon_actif = None, 16.0300, -16.4800
-    parcelle_active_nom = "Aucune parcelle"
-
-main_tabs = st.tabs([
-    "📊 TBD",
-    "🌱 Parcelles & Historique",
-    "👥 Personnel & Équipes",
-    "⏰ Pointages",
-    "📅 Travaux & Matériel",
-    "🐓 Élevage",
-    "🐟 Pisciculture",
-    "🌾 Récoltes",
-    "💰 Finances",
-    "📄 Rapports Automatisés"
-])
-
-# ==========================================
-# FONCTION D'EXPORTATION AUTOMATISÉE ET COMPLÈTE EN PDF
-# ==========================================
-def generate_full_pdf_report(user_data, period_title):
+def generate_employee_badge(emp_row):
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
+    doc = SimpleDocTemplate(buffer, pagesize=(250, 380), rightMargin=10, leftMargin=10, topMargin=10, bottomMargin=10)
     elements = []
     styles = getSampleStyleSheet()
 
-    elements.append(Paragraph(f"<b>RAPPORT GLOBAL D'EXPLOITATION AUTOMATISÉ</b>", styles['Title']))
-    elements.append(Paragraph(f"<b>Période / Titre : {period_title}</b>", styles['Subtitle']))
-    elements.append(Paragraph(f"Exploitant : {user_data['prenom']} {user_data['nom']} | Date de génération : {date.today()}", styles['Normal']))
-    elements.append(Spacer(1, 10))
+    title_style = ParagraphStyle('BadgeTitle', parent=styles['Heading1'], fontSize=12, alignment=1, textColor=colors.HexColor('#10b981'))
+    text_style = ParagraphStyle('BadgeText', parent=styles['Normal'], fontSize=9, alignment=1)
 
-    def add_section(title, df):
-        elements.append(Paragraph(f"<b>{title}</b>", styles['Heading2']))
-        if not df.empty:
-            # Nettoyage pour affichage PDF
-            df_str = df.astype(str)
-            data = [list(df_str.columns)] + df_str.values.tolist()
-            t = Table(data)
-            t.setStyle(TableStyle([
-                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#10b981')),
-                ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-                ('FONTSIZE', (0,0), (-1,-1), 7),
-                ('GRID', (0,0), (-1,-1), 0.5, colors.grey)
-            ]))
-            elements.append(t)
-        else:
-            elements.append(Paragraph("<i>Aucune donnée enregistrée.</i>", styles['Normal']))
-        elements.append(Spacer(1, 10))
+    elements.append(Paragraph(f"<b>{tech_row['nom'].upper()} EXPLOITATION</b>", title_style))
+    elements.append(Spacer(1, 5))
 
-    # Importation globale de toutes les tables
-    add_section("1. Parcelles & Terrains", query_df("SELECT nom, superficie_ha, culture_actuelle, statut FROM me_champs WHERE user_id = ?", (USER_ID,)))
-    add_section("2. Personnel & Salaires", query_df("SELECT nom, role, type_contrat, tarif_journalier, salaire_mensuel FROM me_employes WHERE user_id = ?", (USER_ID,)))
-    add_section("3. Derniers Pointages", query_df("SELECT date, employe_nom, statut_presence, heures_effectives FROM me_pointage WHERE user_id = ? ORDER BY date DESC LIMIT 15", (USER_ID,)))
-    add_section("4. Tâches & Affectations", query_df("SELECT type_travail, description, date_tache, priorite, statut FROM me_taches WHERE user_id = ?", (USER_ID,)))
-    add_section("5. Parc Matériel & Équipements", query_df("SELECT nom_materiel, categorie, etat FROM me_materiel WHERE user_id = ?", (USER_ID,)))
-    add_section("6. Récoltes", query_df("SELECT culture, date_recolte, quantite_kg, prix_unitaire FROM me_recoltes WHERE user_id = ?", (USER_ID,)))
-    add_section("7. Dépenses Financières", query_df("SELECT type, montant, date FROM me_depenses WHERE user_id = ?", (USER_ID,)))
+    # Photo employé
+    if emp_row['photo_chemin'] and os.path.exists(emp_row['photo_chemin']):
+        elements.append(RLImage(emp_row['photo_chemin'], width=70, height=70))
+    else:
+        elements.append(Paragraph("[Pas de Photo]", text_style))
+
+    elements.append(Spacer(1, 5))
+    elements.append(Paragraph(f"<b>{emp_row['nom']}</b>", ParagraphStyle('Name', fontSize=11, alignment=1)))
+    elements.append(Paragraph(f"Rôle: {emp_row['role']}", text_style))
+    elements.append(Paragraph(f"ID: {emp_row['matricule_emp']}", text_style))
+    elements.append(Spacer(1, 5))
+
+    # QR Code
+    qr_data = f"EMP_ID:{emp_row['id']}|NOM:{emp_row['nom']}|ROLE:{emp_row['role']}"
+    qr_bytes = generate_qr_code(qr_data)
+    qr_img = io.BytesIO(qr_bytes)
+    elements.append(RLImage(qr_img, width=80, height=80))
 
     doc.build(elements)
     return buffer.getvalue()
 
-
 # ==========================================
-# 4. MODULES DE L'APPLICATION
+# 4. BARRE LATÉRALE
 # ==========================================
-
-# --- TAB 1 : DASHBOARD ---
-with main_tabs[0]:
-    st.subheader("📊 Aperçu Général de l'Exploitation")
-    k1, k2, k3, k4 = st.columns(4)
-    surf_tot = query_db("SELECT SUM(superficie_ha) as total FROM me_champs WHERE user_id = ?", (USER_ID,), one=True)['total'] or 0
-    emp_tot = query_db("SELECT COUNT(*) as total FROM me_employes WHERE user_id = ?", (USER_ID,), one=True)['total'] or 0
-    anim_tot = query_db("SELECT SUM(quantite) as total FROM me_elevage WHERE user_id = ?", (USER_ID,), one=True)['total'] or 0
-    rec_tot = query_db("SELECT SUM(quantite_kg) as total FROM me_recoltes WHERE user_id = ?", (USER_ID,), one=True)['total'] or 0
+with st.sidebar:
+    st.markdown("### 👨‍🌾 Session Active")
+    st.markdown(f"**{tech_row['prenom']} {tech_row['nom']}**")
+    st.caption(f"📧 {tech_row['gmail']}")
     
-    k1.metric("Superficie Totale", f"{surf_tot:.1f} Ha")
-    k2.metric("Personnel Actif", f"{emp_tot}")
-    k3.metric("Bétail / Animaux", f"{anim_tot}")
-    k4.metric("Récoltes Cumulées", f"{rec_tot/1000:.2f} T")
+    st.divider()
+    
+    menu = st.radio("Navigation", [
+        "📊 Tableau de Bord",
+        "🌱 Cartographie & Parcelles",
+        "👥 Groupes & Membres (avec Carte QR)",
+        "⏰ Pointage des Horaires",
+        "🐓 Élevage & Bétail (Ferme Intégrée)",
+        "🐟 Aquaculture / Pisciculture",
+        "📅 Planning & Travaux",
+        "🌾 Récoltes & Rendements",
+        "💰 Finances & Marges",
+        "📦 Stocks d'Intrants",
+        "🚜 Maintenance Matériel"
+    ])
+    
+    st.divider()
+    
+    champs_df = query_df("SELECT * FROM me_champs WHERE user_id = ?", (USER_ID,))
+    if not champs_df.empty:
+        liste_champs = {row['nom']: (row['id'], row['latitude'], row['longitude']) for _, row in champs_df.iterrows()}
+        
+        if "selected_parcelle_name" not in st.session_state or st.session_state.selected_parcelle_name not in liste_champs:
+            st.session_state.selected_parcelle_name = list(liste_champs.keys())[0]
+
+        champ_selectionne = st.selectbox(
+            "📍 Parcelle Active :", 
+            list(liste_champs.keys()),
+            index=list(liste_champs.keys()).index(st.session_state.selected_parcelle_name)
+        )
+        st.session_state.selected_parcelle_name = champ_selectionne
+        champ_id_actif, champ_lat_actif, champ_lon_actif = liste_champs[champ_selectionne]
+    else:
+        champ_id_actif, champ_lat_actif, champ_lon_actif = None, 16.0300, -16.4800
+        champ_selectionne = "Aucune parcelle"
+
+    if st.button("🚪 Déconnexion", use_container_width=True):
+        st.session_state.user = None
+        st.rerun()
+
+# ==========================================
+# 5. MODULES APPLICATION
+# ==========================================
+
+# --- A. TABLEAU DE BORD ---
+if menu == "📊 Tableau de Bord":
+    st.title("📊 Tableau de Bord de l'Exploitation")
+    
+    m1, m2, m3, m4 = st.columns(4)
+    tot_surf = query_db("SELECT SUM(superficie_ha) as total FROM me_champs WHERE user_id = ?", (USER_ID,), one=True)['total'] or 0
+    tot_ouv = query_db("SELECT COUNT(*) as total FROM me_employes WHERE user_id = ?", (USER_ID,), one=True)['total'] or 0
+    tot_animaux = query_db("SELECT SUM(quantite) as total FROM me_elevage WHERE user_id = ?", (USER_ID,), one=True)['total'] or 0
+    tot_rec = query_db("SELECT SUM(quantite_kg) as total FROM me_recoltes WHERE user_id = ?", (USER_ID,), one=True)['total'] or 0
+    
+    m1.metric("Superficie Totale", f"{tot_surf:.2f} Ha")
+    m2.metric("Effectif Personnel", f"{tot_ouv}")
+    m3.metric("Têtes de Bétail / Volaille", f"{tot_animaux}")
+    m4.metric("Récoltes Cumulées", f"{tot_rec/1000:.2f} T")
+    
+    st.divider()
+    st.subheader("📍 Vos Parcelles")
     st.dataframe(champs_df[["nom", "superficie_ha", "culture_actuelle", "statut"]], use_container_width=True)
 
-# --- TAB 2 : PARCELLES ET HISTORIQUE ---
-with main_tabs[1]:
-    st.subheader("🌱 Gestion des Parcelles & Historique des Cultures")
-    
-    p_tab1, p_tab2, p_tab3 = st.tabs(["📍 Carte & Nouvelle Parcelle", "📜 Historique d'une Parcelle", "🔄 Charger / Basculer Parcelle"])
+# --- B. CARTOGRAPHIE & HISTORIQUE ---
+elif menu == "🌱 Cartographie & Parcelles":
+    st.title("🌱 Cartographie & Historique des Parcelles")
+    tab_map, tab_hist = st.tabs(["🗺️ Carte & Ajout", "📜 Historique"])
 
-    with p_tab1:
-        col_m, col_f = st.columns([2, 1])
-        with col_m:
+    ICON_MAP = {
+        "Feuille / Plant": ("leaf", "green"),
+        "Eau / Irrigation": ("tint", "blue"),
+        "Maison / Dépôt": ("home", "orange"),
+        "Alerte / Repère": ("exclamation-sign", "red")
+    }
+
+    with tab_map:
+        col_map, col_form = st.columns([2, 1])
+        with col_map:
             m = folium.Map(location=[champ_lat_actif, champ_lon_actif], zoom_start=14)
             for _, r in champs_df.iterrows():
-                folium.Marker([r['latitude'], r['longitude']], popup=f"{r['nom']} ({r['culture_actuelle']})").add_to(m)
-            st_folium(m, width="100%", height=350, key="folium_map")
-        with col_f:
+                icon_key = r['icone_lieu'] if r['icone_lieu'] in ICON_MAP else "Feuille / Plant"
+                icon_name, icon_color = ICON_MAP[icon_key]
+                folium.Marker(
+                    location=[r['latitude'], r['longitude']],
+                    popup=r['nom'],
+                    icon=folium.Icon(color=icon_color, icon=icon_name)
+                ).add_to(m)
+            map_data = st_folium(m, width="100%", height=450, key="map_p")
+            click_lat = round(map_data["last_clicked"]["lat"], 6) if map_data and map_data.get("last_clicked") else champ_lat_actif
+            click_lon = round(map_data["last_clicked"]["lng"], 6) if map_data and map_data.get("last_clicked") else champ_lon_actif
+
+        with col_form:
             with st.form("form_p", clear_on_submit=True):
                 nom_p = st.text_input("Nom Parcelle *")
                 surf_p = st.number_input("Superficie (Ha)", min_value=0.1, value=1.0)
-                lat_p = st.number_input("Latitude", value=float(champ_lat_actif), format="%.6f")
-                lon_p = st.number_input("Longitude", value=float(champ_lon_actif), format="%.6f")
-                cult_p = st.text_input("Culture Actuelle")
-                stat_p = st.selectbox("Statut", ["Préparation", "Semé", "En Croissance", "En Récolte", "En Friche"])
-                if st.form_submit_button("Créer la Parcelle"):
-                    if nom_p:
-                        execute_db("INSERT INTO me_champs (user_id, nom, superficie_ha, latitude, longitude, culture_actuelle, statut) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                                   (USER_ID, nom_p, surf_p, lat_p, lon_p, cult_p, stat_p))
-                        st.success("Parcelle ajoutée !")
-                        st.rerun()
+                lat_p = st.number_input("Lat", value=float(click_lat), format="%.6f")
+                lon_p = st.number_input("Lon", value=float(click_lon), format="%.6f")
+                cult_p = st.text_input("Culture Principal")
+                stat_p = st.selectbox("Statut", ["Préparation", "En croissance", "Récolte"])
+                logo_p = st.selectbox("Icône", list(ICON_MAP.keys()))
 
-    with p_tab2:
-        st.write(f"#### Historique des cultures pour : **{parcelle_active_nom}**")
-        
-        # Formulaire d'ajout d'historique
-        with st.expander("➕ Ajouter un enregistrement historique"):
-            with st.form("f_hist_add"):
-                c_hist = st.text_input("Culture cultivée passée", value="Maïs")
-                d_dep = st.date_input("Date Début Plantation", value=date.today())
-                d_fin = st.date_input("Date Fin / Récolte", value=date.today())
-                rend_h = st.number_input("Rendement obtenu (Kg)", value=0.0)
-                rem_h = st.text_area("Remarques / Bilans des intrants")
-                if st.form_submit_button("Enregistrer dans l'Historique"):
-                    if champ_id_actif:
-                        execute_db("""
-                            INSERT INTO me_historique_champs (user_id, champ_id, culture, date_debut, date_fin, rendement_kg, remarques)
-                            VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """, (USER_ID, champ_id_actif, c_hist, str(d_dep), str(d_fin), rend_h, rem_h))
-                        st.success("Historique sauvegardé !")
-                        st.rerun()
-
-        hist_df = query_df("SELECT culture, date_debut, date_fin, rendement_kg, remarques FROM me_historique_champs WHERE champ_id = ? AND user_id = ?", (champ_id_actif, USER_ID))
-        st.dataframe(hist_df, use_container_width=True)
-
-    with p_tab3:
-        st.write("#### 🔄 Charger et Définir la Parcelle Active")
-        st.info("Sélectionnez une parcelle ci-dessous pour changer la zone d'intervention principale dans l'application.")
-        
-        if not champs_df.empty:
-            p_target = st.selectbox("Sélectionner la parcelle à charger :", champs_df['nom'].tolist(), index=list(champs_df['nom']).index(parcelle_active_nom))
-            if st.button("🚀 Charger cette Parcelle"):
-                st.session_state.selected_parcelle_name = p_target
-                st.success(f"Parcelle '{p_target}' chargée avec succès !")
-                st.rerun()
-
-# --- TAB 3 : PERSONNEL & ÉQUIPES ---
-with main_tabs[2]:
-    st.subheader("👥 Gestion du Personnel, Contrats & Équipes")
-    sub_t1, sub_t2, sub_t3 = st.tabs(["📋 Liste du Personnel", "➕ Nouvel Employé", "👨‍👩‍👧‍👦 Équipes & Chefs"])
-
-    with sub_t1:
-        employes = query_df("SELECT e.*, g.nom_groupe FROM me_employes e LEFT JOIN me_equipes g ON e.groupe_id = g.id WHERE e.user_id = ?", (USER_ID,))
-        if not employes.empty:
-            st.dataframe(employes[["id", "nom", "role", "type_contrat", "tarif_journalier", "salaire_mensuel", "matricule_emp", "nom_groupe"]], use_container_width=True)
-        else:
-            st.info("Aucun employé enregistré.")
-
-    with sub_t2:
-        equipes = query_df("SELECT * FROM me_equipes WHERE user_id = ?", (USER_ID,))
-        dict_eq = {e['nom_groupe']: e['id'] for _, e in equipes.iterrows()} if not equipes.empty else {}
-        
-        with st.form("f_add_emp", clear_on_submit=True):
-            col_e1, col_e2 = st.columns(2)
-            with col_e1:
-                n_e = st.text_input("Nom & Prénom *")
-                r_e = st.text_input("Rôle / Fonction", value="Ouvrier Agricole")
-                m_e = st.text_input("Matricule", value=f"EMP-{datetime.now().strftime('%M%S')}")
-                g_e = st.selectbox("Affecter à un groupe", ["Aucun"] + list(dict_eq.keys()))
-            with col_e2:
-                type_c = st.selectbox("Type de Contrat", ["Journalier", "Mensuel"])
-                tarif_j = st.number_input("Tarif par Jour (FCFA)", value=3000 if type_c == "Journalier" else 0)
-                sal_m = st.number_input("Salaire Mensuel Fixe (FCFA)", value=75000 if type_c == "Mensuel" else 0)
-
-            if st.form_submit_button("Enregistrer Employé"):
-                if n_e:
-                    gid = dict_eq[g_e] if g_e != "Aucun" else None
+                if st.form_submit_button("Enregistrer"):
                     execute_db("""
-                        INSERT INTO me_employes (user_id, nom, role, type_contrat, tarif_journalier, salaire_mensuel, photo_chemin, matricule_emp, groupe_id) 
-                        VALUES (?, ?, ?, ?, ?, ?, '', ?, ?)
-                    """, (USER_ID, n_e, r_e, type_c, tarif_j, sal_m, m_e, gid))
-                    st.success("Employé créé !")
+                        INSERT INTO me_champs (user_id, nom, superficie_ha, latitude, longitude, culture_actuelle, statut, icone_lieu)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (USER_ID, nom_p, surf_p, lat_p, lon_p, cult_p, stat_p, logo_p))
+                    st.success("Parcelle ajoutée !")
                     st.rerun()
 
-    with sub_t3:
-        col_g1, col_g2 = st.columns([1, 1])
-        emp_all = query_df("SELECT * FROM me_employes WHERE user_id = ?", (USER_ID,))
-        
-        with col_g1:
-            st.write("#### ➕ Créer / Modifier une Équipe")
-            with st.form("f_team"):
-                nom_g = st.text_input("Nom de l'Équipe *", value="Équipe A")
-                chef_g = st.selectbox("Chef de Groupe *", emp_all['nom'].tolist() if not emp_all.empty else ["Aucun"])
-                membres_g = st.multiselect("Membres du groupe", emp_all['nom'].tolist() if not emp_all.empty else [])
-                
-                if st.form_submit_button("Sauvegarder l'Équipe"):
-                    if nom_g:
-                        m_str = ", ".join(membres_g)
-                        g_id = execute_db("INSERT INTO me_equipes (user_id, nom_groupe, chef_groupe, membres) VALUES (?, ?, ?, ?)", 
-                                          (USER_ID, nom_g, chef_g, m_str))
-                        if membres_g:
-                            for m in membres_g:
-                                execute_db("UPDATE me_employes SET groupe_id = ? WHERE nom = ? AND user_id = ?", (g_id, m, USER_ID))
-                        st.success("Équipe configurée !")
-                        st.rerun()
+    with tab_hist:
+        st.dataframe(champs_df, use_container_width=True)
 
-        with col_g2:
-            st.write("#### 📜 Équipes & Chefs Actuels")
-            eq_df = query_df("SELECT * FROM me_equipes WHERE user_id = ?", (USER_ID,))
-            st.dataframe(eq_df[["nom_groupe", "chef_groupe", "membres"]], use_container_width=True)
-
-# --- TAB 4 : POINTAGES ---
-with main_tabs[3]:
-    st.subheader("⏰ Pointage Journalier des Travailleurs")
-    emp_df = query_df("SELECT * FROM me_employes WHERE user_id = ?", (USER_ID,))
-    if not emp_df.empty:
-        d_p = st.date_input("Date du pointage", value=date.today())
-        grid_data = pd.DataFrame({
-            "Employé": emp_df['nom'], 
-            "Contrat": emp_df['type_contrat'],
-            "Présent": True, 
-            "Remarque": ""
-        })
-        e_grid = st.data_editor(grid_data, use_container_width=True)
-        if st.button("Valider les Pointages du Jour", type="primary"):
-            for _, r in e_grid.iterrows():
-                stt = "Présent" if r["Présent"] else "Absent"
-                hrs = 8.0 if r["Présent"] else 0.0
-                execute_db("""
-                    INSERT INTO me_pointage (user_id, date, employe_nom, champ_nom, statut_presence, heures_effectives, remarque) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (USER_ID, str(d_p), r["Employé"], parcelle_active_nom, stt, hrs, r["Remarque"]))
-            st.success("Pointages enregistrés !")
-            st.rerun()
-            
-    st.divider()
-    st.write("### 📋 Historique des Pointages")
-    st.dataframe(query_df("SELECT * FROM me_pointage WHERE user_id = ? ORDER BY date DESC", (USER_ID,)), use_container_width=True)
-
-# --- TAB 5 : ATTRIBUTION DES TRAVAUX & GESTION DU MATÉRIEL ---
-with main_tabs[4]:
-    st.subheader("📅 Attribution des Travaux & Gestion du Matériel")
+# --- C. GROUPES, MEMBRES & CARTE QR ---
+elif menu == "👥 Groupes & Membres (avec Carte QR)":
+    st.title("👥 Gestion du Personnel & Cartes QR Code")
     
-    t_sub1, t_sub2 = st.tabs(["📝 Affecter / Désigner une Tâche", "🚜 Gestion du Matériel & Équipements"])
+    tab_list, tab_add = st.tabs(["📋 Répertoire du Personnel", "➕ Enregistrer un Employé"])
 
-    equipes_list = query_df("SELECT * FROM me_equipes WHERE user_id = ?", (USER_ID,))
-    employes_list = query_df("SELECT * FROM me_employes WHERE user_id = ?", (USER_ID,))
-    materiel_list = query_df("SELECT * FROM me_materiel WHERE user_id = ?", (USER_ID,))
+    with tab_list:
+        employes = query_df("SELECT * FROM me_employes WHERE user_id = ?", (USER_ID,))
+        if employes.empty:
+            st.info("Aucun employé enregistré.")
+        else:
+            for _, emp in employes.iterrows():
+                with st.expander(f"👤 {emp['nom']} - {emp['role']} ({emp['matricule_emp']})"):
+                    c_img, c_info, c_btn = st.columns([1, 2, 2])
+                    with c_img:
+                        if emp['photo_chemin'] and os.path.exists(emp['photo_chemin']):
+                            st.image(emp['photo_chemin'], width=100)
+                        else:
+                            st.caption("Aucune photo")
+                    with c_info:
+                        st.write(f"**Tarif Journalier :** {emp['tarif_journalier']} FCFA")
+                        st.write(f"**Code Matricule :** {emp['matricule_emp']}")
+                    with c_btn:
+                        badge_pdf = generate_employee_badge(emp)
+                        st.download_button(
+                            "🪪 Imprimer la Carte d'Identité QR",
+                            data=badge_pdf,
+                            file_name=f"Carte_{emp['nom']}.pdf",
+                            mime="application/pdf",
+                            key=f"qr_{emp['id']}"
+                        )
 
-    with t_sub1:
-        col_t1, col_t2 = st.columns([1, 1])
+    with tab_add:
+        with st.form("form_emp", clear_on_submit=True):
+            col_e1, col_e2 = st.columns(2)
+            with col_e1:
+                nom_e = st.text_input("Nom & Prénom *")
+                role_e = st.text_input("Fonction / Rôle", value="Ouvrier Agricole")
+                tarif_e = st.number_input("Tarif Journalier (FCFA)", value=3000)
+            with col_e2:
+                photo_e = st.file_uploader("📸 Photo de l'employé", type=['jpg', 'jpeg', 'png'])
+                mat_e = st.text_input("Matricule Employé", value=f"EMP-{datetime.now().strftime('%M%S')}")
 
-        with col_t1:
-            st.write("#### ➕ Créer et Attribuer une Tâche")
-            with st.form("f_assign_task", clear_on_submit=True):
-                act_type = st.selectbox("Type de Travail", ["Labour", "Semis", "Désherbage", "Irrigation", "Traitement Phytosanitaire", "Récolte", "Entretien Matériel"])
-                desc_tache = st.text_area("Description & Consignes", value="")
-                
-                mode_assign = st.radio("Cible d'affectation :", ["Groupe / Équipe", "Ouvrier Individuel"])
-                
-                target_team = None
-                target_emp = None
-                
-                if mode_assign == "Groupe / Équipe":
-                    if not equipes_list.empty:
-                        selected_team_nom = st.selectbox("Choisir l'Équipe target", equipes_list['nom_groupe'].tolist())
-                        target_team = int(equipes_list[equipes_list['nom_groupe'] == selected_team_nom]['id'].values[0])
-                    else:
-                        st.warning("⚠️ Aucune équipe disponible.")
-                else:
-                    if not employes_list.empty:
-                        selected_emp_nom = st.selectbox("Choisir l'Employé target", employes_list['nom'].tolist())
-                        target_emp = int(employes_list[employes_list['nom'] == selected_emp_nom]['id'].values[0])
-                    else:
-                        st.warning("⚠️ Aucun employé disponible.")
+            if st.form_submit_button("Enregistrer l'employé"):
+                if nom_e:
+                    photo_path = ""
+                    if photo_e:
+                        photo_path = os.path.join(UPLOAD_DIR, f"emp_{USER_ID}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{photo_e.name}")
+                        with open(photo_path, "wb") as f:
+                            f.write(photo_e.getbuffer())
 
-                # Matériel associé
-                dict_mat = {m['nom_materiel']: m['id'] for _, m in materiel_list.iterrows()} if not materiel_list.empty else {}
-                mat_sel = st.selectbox("Matériel / Équipement à utiliser", ["Aucun / Manuel"] + list(dict_mat.keys()))
-                target_mat = dict_mat[mat_sel] if mat_sel != "Aucun / Manuel" else None
+                    execute_db("""
+                        INSERT INTO me_employes (user_id, nom, role, tarif_journalier, photo_chemin, matricule_emp)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (USER_ID, nom_e, role_e, tarif_e, photo_path, mat_e))
+                    st.success("✅ Employé enregistré avec succès !")
+                    st.rerun()
 
-                priorite = st.selectbox("Niveau de Priorité", ["Normale", "Urgente", "Basse"])
-                date_tk = st.date_input("Date d'exécution", value=date.today())
-                hrs_tk = st.number_input("Durée estimée (Heures)", value=4.0)
-
-                if st.form_submit_button("Assigner la Tâche"):
-                    if champ_id_actif:
-                        execute_db("""
-                            INSERT INTO me_taches (user_id, champ_id, groupe_id, employe_id, materiel_id, type_travail, description, date_tache, heures_travaillees, priorite, statut)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'À faire')
-                        """, (USER_ID, champ_id_actif, target_team, target_emp, target_mat, act_type, desc_tache, str(date_tk), hrs_tk, priorite))
-                        st.success("✅ Tâche attribuée avec succès !")
-                        st.rerun()
-
-        with col_t2:
-            st.write("#### 📋 Suivi & Évolution des Tâches")
-            tasks_df = query_df("""
-                SELECT t.id, t.type_travail, t.description, t.date_tache, t.priorite, t.statut, 
-                       g.nom_groupe as equipe, e.nom as employe, m.nom_materiel as materiel
-                FROM me_taches t
-                LEFT JOIN me_equipes g ON t.groupe_id = g.id
-                LEFT JOIN me_employes e ON t.employe_id = e.id
-                LEFT JOIN me_materiel m ON t.materiel_id = m.id
-                WHERE t.user_id = ? ORDER BY t.date_tache DESC
-            """, (USER_ID,))
-            st.dataframe(tasks_df, use_container_width=True)
-
-    with t_sub2:
-        st.write("#### 🚜 Gestion du Parc Matériel & Outillage")
-        
-        col_m1, col_m2 = st.columns([1, 1])
-        with col_m1:
-            with st.form("f_add_mat", clear_on_submit=True):
-                nom_m = st.text_input("Nom de l'équipement / Matériel *", value="Tracteur John Deere")
-                cat_m = st.selectbox("Catégorie", ["Engin Lourd", "Irrigation / Pompe", "Outil Manuel", "Pulvérisateur", "Autre"])
-                etat_m = st.selectbox("État Général", ["Opérationnel", "En Maintenance", "Hors Service"])
-                rem_m = st.text_input("Remarques / Maintenance")
-                if st.form_submit_button("Ajouter au Parc Matériel"):
-                    if nom_m:
-                        execute_db("""
-                            INSERT INTO me_materiel (user_id, nom_materiel, categorie, etat, date_acquisition, remarques)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                        """, (USER_ID, nom_m, cat_m, etat_m, str(date.today()), rem_m))
-                        st.success("Matériel enregistré !")
-                        st.rerun()
-        
-        with col_m2:
-            st.write("#### 📜 Inventaire du Matériel")
-            st.dataframe(materiel_list[["nom_materiel", "categorie", "etat", "remarques"]], use_container_width=True)
-
-# --- TAB 6 : ÉLEVAGE ---
-with main_tabs[5]:
-    st.subheader("🐓 Suivi de l'Élevage")
+# --- D. ÉLEVAGE & BÉTAIL (FERME INTEGRÉE) ---
+elif menu == "🐓 Élevage & Bétail (Ferme Intégrée)":
+    st.title("🐓 Suivi du Bétail & Aviculture")
+    
     st.dataframe(query_df("SELECT * FROM me_elevage WHERE user_id = ?", (USER_ID,)), use_container_width=True)
-    with st.form("f_el"):
-        t_a = st.text_input("Type d'animal", value="Volaille / Poulets")
-        q_a = st.number_input("Quantité", min_value=1, value=20)
-        s_a = st.selectbox("État Sanitaire", ["Sain", "Vacciné", "En Traitement"])
-        if st.form_submit_button("Enregistrer Lot"):
-            execute_db("INSERT INTO me_elevage (user_id, type_animaux, race, quantite, date_arrivee, statut_sanitaire) VALUES (?, ?, '', ?, ?, ?)",
-                       (USER_ID, t_a, q_a, str(date.today()), s_a))
+    
+    st.subheader("➕ Entrée / Suivi d'animaux")
+    with st.form("form_elevage", clear_on_submit=True):
+        col_el1, col_el2 = st.columns(2)
+        with col_el1:
+            type_anim = st.selectbox("Type d'élevage", ["Bovins (Vaches/Bœufs)", "Oovins (Moutons)", "Caprins (Chèvres)", "Volaille (Poulets)", "Porcins"])
+            race = st.text_input("Race / Variété")
+            qte = st.number_input("Nombre de têtes", min_value=1, value=10)
+        with col_el2:
+            date_arr = st.date_input("Date d'intégration", value=date.today())
+            statut_san = st.selectbox("Statut Sanitaire", ["Sain / Vacciné", "En Quarantaine", "Traitement en cours"])
+
+        if st.form_submit_button("Ajouter à la ferme"):
+            execute_db("""
+                INSERT INTO me_elevage (user_id, type_animaux, race, quantite, date_arrivee, statut_sanitaire)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (USER_ID, type_anim, race, qte, str(date_arr), statut_san))
+            st.success("Données d'élevage enregistrées !")
             st.rerun()
 
-# --- TAB 7 : PISCICULTURE ---
-with main_tabs[6]:
-    st.subheader("🐟 Suivi Piscicole")
+# --- E. AQUACULTURE / PISCICULTURE ---
+elif menu == "🐟 Aquaculture / Pisciculture":
+    st.title("🐟 Suivi Aquacole / Bassins")
+    
     st.dataframe(query_df("SELECT * FROM me_aquaculture WHERE user_id = ?", (USER_ID,)), use_container_width=True)
-    with st.form("f_aq"):
-        n_b = st.text_input("Bassin", value="Bassin Principale")
-        e_p = st.text_input("Espèce", value="Tilapia")
-        a_p = st.number_input("Nombre d'alvins", value=500)
-        if st.form_submit_button("Enregistrer Bassin"):
-            execute_db("INSERT INTO me_aquaculture (user_id, nom_bassin, espece_poisson, nombre_alvins, aliment_kg, ph_eau) VALUES (?, ?, ?, ?, 0, 7.0)",
-                       (USER_ID, n_b, e_p, a_p))
+    
+    with st.form("form_aqua", clear_on_submit=True):
+        col_aq1, col_aq2 = st.columns(2)
+        with col_aq1:
+            bassin = st.text_input("Nom du Bassin", value="Bassin 1")
+            espece = st.text_input("Espèce de poisson", value="Tilapia / Clarias")
+            alvins = st.number_input("Nombre d'alvéoles/alvins", min_value=0, value=500)
+        with col_aq2:
+            aliment = st.number_input("Nourriture distribuée (Kg)", min_value=0.0, value=5.0)
+            ph = st.number_input("pH de l'eau", min_value=0.0, max_value=14.0, value=7.2)
+
+        if st.form_submit_button("Mettre à jour le bassin"):
+            execute_db("""
+                INSERT INTO me_aquaculture (user_id, nom_bassin, espece_poisson, nombre_alvins, aliment_kg, ph_eau)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (USER_ID, bassin, espece, alvins, aliment, ph))
+            st.success("Bassin mis à jour !")
             st.rerun()
 
-# --- TAB 8 : RÉCOLTES ---
-with main_tabs[7]:
-    st.subheader("🌾 Récoltes & Pesées")
-    st.dataframe(query_df("SELECT * FROM me_recoltes WHERE user_id = ?", (USER_ID,)), use_container_width=True)
-    with st.form("f_rec"):
-        c_r = st.text_input("Culture", value="Maïs")
-        q_r = st.number_input("Quantité Récoltée (Kg)", value=250.0)
-        p_r = st.number_input("Prix de vente estimé / Kg (FCFA)", value=300)
-        if st.form_submit_button("Enregistrer Récolte"):
-            if champ_id_actif:
-                execute_db("INSERT INTO me_recoltes (user_id, champ_id, culture, date_recolte, quantite_kg, prix_unitaire) VALUES (?, ?, ?, ?, ?, ?)",
-                           (USER_ID, champ_id_actif, c_r, str(date.today()), q_r, p_r))
-                st.rerun()
-
-# --- TAB 9 : FINANCES ---
-with main_tabs[8]:
-    st.subheader("💰 Suivi Financier & Dépenses")
-    col_d1, col_d2 = st.columns([1, 1])
-    with col_d1:
-        with st.form("f_dep"):
-            mot = st.text_input("Motif Dépense")
-            mnt = st.number_input("Montant (FCFA)", value=10000)
-            if st.form_submit_button("Ajouter Dépense"):
-                execute_db("INSERT INTO me_depenses (user_id, champ_id, type, montant, date) VALUES (?, ?, ?, ?, ?)",
-                           (USER_ID, champ_id_actif, mot, mnt, str(date.today())))
-                st.rerun()
-    with col_d2:
-        st.dataframe(query_df("SELECT * FROM me_depenses WHERE user_id = ?", (USER_ID,)), use_container_width=True)
-
-# --- TAB 10 : RAPPORTS ET EXPORTS AUTOMATISÉS ---
-with main_tabs[9]:
-    st.subheader("📄 Génération Automatique des Rapports Globaux")
-    st.write("Téléchargez l'intégralité des données renseignées dans votre exploitation sous format structuré (PDF ou Excel).")
-
-    st.divider()
-
-    col_rep1, col_rep2 = st.columns(2)
-
-    with col_rep1:
-        st.write("### 📊 Exportation Excel Globale")
-        st.write("Génère un classeur Excel contenant une feuille pour chaque module de l'application.")
-        
-        if st.button("📊 Générer le Pack Excel Automatisé"):
-            buf_all = io.BytesIO()
-            with pd.ExcelWriter(buf_all, engine='openpyxl') as writer:
-                query_df("SELECT * FROM me_champs WHERE user_id = ?", (USER_ID,)).to_excel(writer, sheet_name="Parcelles", index=False)
-                query_df("SELECT * FROM me_historique_champs WHERE user_id = ?", (USER_ID,)).to_excel(writer, sheet_name="Historique Parcelles", index=False)
-                query_df("SELECT * FROM me_employes WHERE user_id = ?", (USER_ID,)).to_excel(writer, sheet_name="Personnel", index=False)
-                query_df("SELECT * FROM me_pointage WHERE user_id = ?", (USER_ID,)).to_excel(writer, sheet_name="Pointages", index=False)
-                query_df("SELECT * FROM me_taches WHERE user_id = ?", (USER_ID,)).to_excel(writer, sheet_name="Taches", index=False)
-                query_df("SELECT * FROM me_materiel WHERE user_id = ?", (USER_ID,)).to_excel(writer, sheet_name="Materiel", index=False)
-                query_df("SELECT * FROM me_elevage WHERE user_id = ?", (USER_ID,)).to_excel(writer, sheet_name="Elevage", index=False)
-                query_df("SELECT * FROM me_aquaculture WHERE user_id = ?", (USER_ID,)).to_excel(writer, sheet_name="Pisciculture", index=False)
-                query_df("SELECT * FROM me_recoltes WHERE user_id = ?", (USER_ID,)).to_excel(writer, sheet_name="Recoltes", index=False)
-                query_df("SELECT * FROM me_depenses WHERE user_id = ?", (USER_ID,)).to_excel(writer, sheet_name="Depenses", index=False)
-            
-            st.download_button("📥 Télécharger le fichier Excel Complet", data=buf_all.getvalue(), file_name=f"Rapport_Complet_AgriGestion_{date.today()}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-    with col_rep2:
-        st.write("### 📑 Exportation PDF Synthétique")
-        st.write("Génère un rapport structuré au format PDF contenant l'ensemble des bilans enregistrés.")
-        
-        titre_pdf = st.text_input("Titre du Rapport PDF", value=f"Bilan Global du {date.today()}")
-        
-        if st.button("📑 Générer le Rapport PDF Automatisé"):
-            pdf_bytes = generate_full_pdf_report(USER_DATA, titre_pdf)
-            st.download_button("📥 Télécharger le Rapport PDF", data=pdf_bytes, file_name=f"Rapport_AgriGestion_{date.today()}.pdf", mime="application/pdf")
+# --- F. FINANCES ---
+elif menu == "💰 Finances & Marges":
+    st.title("💰 Bilan Financier")
+    deps = query_df("SELECT * FROM me_depenses WHERE user_id = ?", (USER_ID,))
+    st.dataframe(deps, use_container_width=True)
+    
+    with st.form("form_dep", clear_on_submit=True):
+        motif = st.text_input("Motif Dépense *")
+        mnt = st.number_input("Montant (FCFA)", min_value=0)
+        if st.form_submit_button("Enregistrer Dépense"):
+            execute_db("INSERT INTO me_depenses (user_id, champ_id, type, montant, date) VALUES (?, ?, ?, ?, ?)",
+                       (USER_ID, champ_id_actif, motif, mnt, str(date.today())))
+            st.rerun()
