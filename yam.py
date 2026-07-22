@@ -191,13 +191,19 @@ def init_db():
 
 init_db()
 
-def query_db(query, params=(), one=False):
+def query_df(query, params=()):
     conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute(query, params)
-    rv = cursor.fetchall()
-    conn.close()
-    return (rv[0] if rv else None) if one else rv
+    try:
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        data = cursor.fetchall()
+        columns = [description[0] for description in cursor.description] if cursor.description else []
+        df = pd.DataFrame(data, columns=columns)
+    except Exception:
+        df = pd.DataFrame()
+    finally:
+        conn.close()
+    return df
 
 def query_df(query, params=()):
     conn = get_db()
