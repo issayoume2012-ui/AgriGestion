@@ -60,22 +60,29 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS irrigation (id INTEGER PRIMARY KEY AUTOINCREMENT, champ_nom TEXT, date TEXT, volume_eau_m3 REAL, methode TEXT, duree_heures REAL)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS alertes_meteo (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, type_risque TEXT, niveau_alerte TEXT, recommandation_ts TEXT)''')
     
+    # Table pour la Liste Blanche des utilisateurs autorisés
+    cursor.execute('''CREATE TABLE IF NOT EXISTS whitelist_users (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                        email TEXT UNIQUE, 
+                        password TEXT, 
+                        prenom TEXT, 
+                        nom TEXT, 
+                        role TEXT
+                    )''')
+    
+    # Insertion par défaut de l'administrateur si la table est vide
+    cursor.execute("SELECT COUNT(*) FROM whitelist_users")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute(
+            "INSERT INTO whitelist_users (email, password, prenom, nom, role) VALUES (?, ?, ?, ?, ?)",
+            ("issayoume2012@gmail.com", "issayoume2026", "Issa", "Youme", "Administrateur Principal")
+        )
+
     # Mises à jour de colonnes de sécurité si besoin
     cursor.execute("PRAGMA table_info(employes)")
     cols_emp = [col[1] for col in cursor.fetchall()]
     if "groupe_nom" not in cols_emp: cursor.execute("ALTER TABLE employes ADD COLUMN groupe_nom TEXT")
     if "tarif_journalier" not in cols_emp: cursor.execute("ALTER TABLE employes ADD COLUMN tarif_journalier REAL")
-
-    cursor.execute("PRAGMA table_info(pointage)")
-    cols_pointage = [col[1] for col in cursor.fetchall()]
-    if "date" not in cols_pointage: cursor.execute("ALTER TABLE pointage ADD COLUMN date TEXT")
-    if "employe_nom" not in cols_pointage: cursor.execute("ALTER TABLE pointage ADD COLUMN employe_nom TEXT")
-    if "groupe_nom" not in cols_pointage: cursor.execute("ALTER TABLE pointage ADD COLUMN groupe_nom TEXT")
-    if "champ_nom" not in cols_pointage: cursor.execute("ALTER TABLE pointage ADD COLUMN champ_nom TEXT")
-    if "statut_presence" not in cols_pointage: cursor.execute("ALTER TABLE pointage ADD COLUMN statut_presence TEXT")
-    if "tache_effectuee" not in cols_pointage: cursor.execute("ALTER TABLE pointage ADD COLUMN tache_effectuee TEXT")
-    if "heures_travaillees" not in cols_pointage: cursor.execute("ALTER TABLE pointage ADD COLUMN heures_travaillees REAL")
-    if "remarque" not in cols_pointage: cursor.execute("ALTER TABLE pointage ADD COLUMN remarque TEXT")
 
     conn.commit()
     conn.close()
@@ -96,7 +103,7 @@ def execute_query(query, params=()):
     conn.close()
 
 # ==========================================
-# 3. AUTHENTIFICATION
+# 3. AUTHENTIFICATION DYNAMIQUE (LISTE BLANCHE SQL)
 # ==========================================
 def auth_system():
     if "authenticated" not in st.session_state:
@@ -104,7 +111,7 @@ def auth_system():
 
     if not st.session_state.authenticated:
         st.title("🔒 Accès Sécurisé - Espace Restreint")
-        st.info("Veuillez vous identifier pour accéder à l'application.")
+        st.info("Veuillez vous identifier avec un e-mail autorisé pour accéder à l'application.")
 
         with st.form("form_login_admin"):
             email_input = st.text_input("Adresse e-mail professionnelle *", placeholder="issayoume2012@gmail.com")
@@ -113,31 +120,28 @@ def auth_system():
 
             if submit_login:
                 email_propre = email_input.strip().lower()
-                liste_blanche = {
-                    "issayoume2012@gmail.com": {
-                        "password": "issayoume2026",
-                        "nom": "Youme",
-                        "prenom": "Issa",
-                        "matricule": "TS-ADMIN-01",
-                        "phone": "+221 XX XXX XX XX",
-                        "role": "Administrateur Principal"
-                    }
-                }
+                
+                # Vérification dans la base de données SQLite (whitelist_users)
+                conn = get_connection()
+                cursor = conn.cursor()
+                cursor.execute("SELECT prenom, nom, role, password FROM whitelist_users WHERE LOWER(email) = ?", (email_propre,))
+                user_record = cursor.fetchone()
+                conn.close()
 
-                if email_propre in liste_blanche and password_input == liste_blanche[email_propre]["password"]:
-                    infos_user = liste_blanche[email_propre]
+                if user_record and password_input == user_record[3]:
                     st.session_state.authenticated = True
                     st.session_state.registered_tech = {
-                        "nom": infos_user["nom"],
-                        "prenom": infos_user["prenom"],
+                        "nom": user_record[1],
+                        "prenom": user_record[0],
                         "gmail": email_propre,
-                        "phone": infos_user["phone"],
-                        "matricule": infos_user["matricule"]
+                        "phone": "+221 XX XXX XX XX",
+                        "matricule": "TS-PRO-01",
+                        "role": user_record[2]
                     }
-                    st.success(f"✅ Bienvenue, {infos_user['prenom']} !")
+                    st.success(f"✅ Bienvenue, {user_record[0]} !")
                     st.rerun()
                 else:
-                    st.error("❌ Identifiants incorrects ou e-mail non autorisé.")
+                    st.error("❌ Identifiants incorrects ou e-mail non autorisé dans la liste blanche.")
         return False
     return True
 
@@ -145,10 +149,9 @@ if not auth_system():
     st.stop()
 
 # ==========================================
-# 4. EXPORTATIONS (CSV & PDF SANS DÉPENDANCE EXTERNE LOURDE)
+# 4. EXPORTATIONS (CSV & PDF)
 # ==========================================
 def export_global_to_csv():
-    # Concaténation de résumé en texte CSV global propre
     output = io.StringIO()
     output.write("--- RAPPORT GLOBAL AGRIGESTION ---\n\n")
     tables = ['champs', 'equipes', 'employes', 'pointage', 'taches', 'recoltes', 'depenses', 'intrants', 'materiel']
@@ -174,7 +177,7 @@ def export_global_pdf(date_rapport):
     elements.append(Spacer(1, 8))
     
     date_str = date_rapport.strftime('%d/%m/%Y')
-    header_info = f"<b>JOURNÉE DU : {date_str}</b> | <b>Technicien :</b> {tech['prenom']} {tech['nom']} ({tech['matricule']})<br/>"
+    header_info = f"<b>JOURNÉE DU : {date_str}</b> | <b>Technicien :</b> {tech['prenom']} {tech['nom']} ({tech['role']})<br/>"
     elements.append(Paragraph(header_info, normal_style))
     elements.append(Spacer(1, 10))
 
@@ -214,7 +217,7 @@ def export_global_pdf(date_rapport):
 tech = st.session_state.registered_tech
 st.markdown(f"""
     <div style="display: flex; justify-content: space-between; align-items: center; background-color: #ffffff; padding: 10px 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 15px;">
-        <div><b>🌾 AgriGestion Pro</b> | <span style="color: #10b981;">{tech['prenom']} {tech['nom']}</span></div>
+        <div><b>🌾 AgriGestion Pro</b> | <span style="color: #10b981;">{tech['prenom']} {tech['nom']}</span> ({tech['role']})</div>
     </div>
 """, unsafe_allow_html=True)
 
@@ -234,6 +237,7 @@ menu_options = [
     "💧 Irrigation & Eau",
     "🌤️ Risques & Météo",
     "📈 Rentabilité & ROI",
+    "🔐 Paramètres & Liste Blanche",
     "📑 EXPORT COMPLET"
 ]
 
@@ -490,7 +494,6 @@ elif menu == "💰 Finances & Marges":
                 mnt = st.number_input("Montant (FCFA)", min_value=0.0, value=0.0)
                 date_dep = st.date_input("Date de la dépense", value=date.today())
                 
-                # Option photo/image de facture
                 photo_facture = st.file_uploader("📸 Photo ou Scan de la Facture", type=["png", "jpg", "jpeg", "pdf"])
                 
                 if st.form_submit_button("💾 Enregistrer la Dépense", use_container_width=True):
@@ -612,6 +615,54 @@ elif menu == "📈 Rentabilité & ROI":
     col_r1.metric("Total Dépenses", f"{total_dep:,.0f} FCFA")
     col_r2.metric("Total Ventes", f"{total_rec:,.0f} FCFA")
     col_r3.metric("Marge Nette", f"{marge:,.0f} FCFA", delta="Bénéfice" if marge >= 0 else "Déficit")
+
+elif menu == "🔐 Paramètres & Liste Blanche":
+    st.title("🔐 Gestion de la Liste Blanche (Contrôle d'Accès)")
+    st.info("Ici, vous pouvez ajouter ou supprimer les adresses e-mail autorisées à se connecter à cette application.")
+
+    col_wl1, col_wl2 = st.columns([1, 1])
+
+    with col_wl1:
+        st.subheader("➕ Ajouter un utilisateur autorisé")
+        with st.form("form_add_whitelist"):
+            new_email = st.text_input("Adresse e-mail *", placeholder="exemple@gmail.com")
+            new_password = st.text_input("Mot de passe attribué *", type="password")
+            new_prenom = st.text_input("Prénom")
+            new_nom = st.text_input("Nom")
+            new_role = st.selectbox("Rôle", ["Administrateur", "Technicien", "Gestionnaire de Stock", "Consultant"])
+            
+            if st.form_submit_button("💾 Autoriser cet E-mail", use_container_width=True):
+                if new_email.strip() and new_password.strip():
+                    try:
+                        execute_query(
+                            "INSERT INTO whitelist_users (email, password, prenom, nom, role) VALUES (?, ?, ?, ?, ?)",
+                            (new_email.strip().lower(), new_password.strip(), new_prenom.strip(), new_nom.strip(), new_role)
+                        )
+                        st.success(f"✅ L'e-mail **{new_email}** a été ajouté à la liste blanche avec succès !")
+                        st.rerun()
+                    except sqlite3.IntegrityError:
+                        st.error("⚠️ Cet e-mail est déjà présent dans la liste blanche.")
+                else:
+                    st.warning("⚠️ Veuillez remplir au moins l'e-mail et le mot de passe.")
+
+    with col_wl2:
+        st.subheader("📋 Liste des E-mails Autorisés")
+        df_wl = load_table('whitelist_users')
+        if not df_wl.empty:
+            for _, row in df_wl.iterrows():
+                c_item1, c_item2 = st.columns([3, 1])
+                with c_item1:
+                    st.markdown(f"📧 **{row['email']}**<br>👤 *{row['prenom']} {row['nom']}* (`{row['role']}`)", unsafe_allow_html=True)
+                with c_item2:
+                    # Empêcher la suppression du compte principal admin par sécurité
+                    if row['email'].lower() != "issayoume2012@gmail.com":
+                        if st.button("🗑️ Révoquer", key=f"del_wl_{row['id']}"):
+                            execute_query("DELETE FROM whitelist_users WHERE id = ?", (row['id'],))
+                            st.success("Accès révoqué.")
+                            st.rerun()
+                    else:
+                        st.caption("🔒 Protégé")
+                st.divider()
 
 elif menu == "📑 EXPORT COMPLET":
     st.title("📑 Centre d'Exportation & Validation")
