@@ -347,25 +347,34 @@ elif menu == "👥 Groupes & Membres":
 elif menu == "⏰ Pointage des Horaires":
     st.title("⏰ Registre de Pointage des Horaires")
     df_emp = load_table('employes')
-    if df_emp.empty:
-        st.warning("⚠️ Veuillez d'abord ajouter des employés dans le menu '👥 Groupes & Membres'.")
-    else:
-        with st.form("form_pointage_complet"):
-            date_p = st.date_input("Date du pointage", value=date.today())
-            emp_p = st.selectbox("Employé", df_emp['nom'].tolist())
-            parc_p = st.selectbox("Parcelle", db_champs['nom'].tolist() if not db_champs.empty else ["Général"])
-            statut_p = st.selectbox("Présence", ["Présent", "Absent"])
+    
+    # Correction : Si aucun employé n'est trouvé dans la table, on offre une option de secours pour saisir directement un nom ou forcer le déblocage
+    liste_employes = df_emp['nom'].tolist() if not df_emp.empty else []
+    
+    with st.form("form_pointage_complet"):
+        date_p = st.date_input("Date du pointage", value=date.today())
+        
+        if liste_employes:
+            emp_p = st.selectbox("Employé", liste_employes)
+        else:
+            emp_p = st.text_input("Nom de l'employé (Aucun employé en base, saisie libre)")
             
-            c1, c2 = st.columns(2)
-            with c1:
-                h_arr = st.time_input("Arrivée", value=time(8, 0))
-                h_dp = st.time_input("Début Pause", value=time(12, 0))
-            with c2:
-                h_fp = st.time_input("Fin Pause", value=time(13, 0))
-                h_dep = st.time_input("Départ", value=time(17, 0))
-            remarque = st.text_input("Remarques / Retard")
+        parc_p = st.selectbox("Parcelle", db_champs['nom'].tolist() if not db_champs.empty else ["Général"])
+        statut_p = st.selectbox("Présence", ["Présent", "Absent"])
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            h_arr = st.time_input("Arrivée", value=time(8, 0))
+            h_dp = st.time_input("Début Pause", value=time(12, 0))
+        with c2:
+            h_fp = st.time_input("Fin Pause", value=time(13, 0))
+            h_dep = st.time_input("Départ", value=time(17, 0))
+        remarque = st.text_input("Remarques / Retard")
 
-            if st.form_submit_button("💾 Enregistrer le Pointage", use_container_width=True):
+        if st.form_submit_button("💾 Enregistrer le Pointage", use_container_width=True):
+            if not emp_p:
+                st.error("❌ Veuillez renseigner un employé.")
+            else:
                 heures_eff = 8.0 if statut_p == "Présent" else 0.0
                 execute_query(
                     "INSERT INTO pointage (date, employe_nom, groupe_nom, champ_nom, statut_presence, heure_arrivee, heure_debut_pause, heure_fin_pause, heure_depart, heures_effectives, remarque) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -374,8 +383,8 @@ elif menu == "⏰ Pointage des Horaires":
                 st.success("✅ Pointage enregistré avec succès !")
                 st.rerun()
 
-        st.subheader("📋 Historique des Pointages")
-        st.dataframe(load_table('pointage'), use_container_width=True)
+    st.subheader("📋 Historique des Pointages")
+    st.dataframe(load_table('pointage'), use_container_width=True)
 
 elif menu == "📅 Planning & Travaux":
     st.title(f"📅 Planning - {champ_selectionne}")
