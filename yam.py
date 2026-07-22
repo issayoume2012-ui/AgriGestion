@@ -4,6 +4,7 @@ import sqlite3
 import os
 from datetime import datetime, date
 import io
+import qrcode
 
 # Cartographie dynamique interactive
 import folium
@@ -11,7 +12,7 @@ from streamlit_folium import st_folium
 
 # Exports PDF
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
@@ -150,28 +151,6 @@ def init_db():
 
 init_db()
 
-# Nettoyage automatique du compte spécifique au démarrage
-def nettoyer_compte_specifique(email):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id FROM me_tech WHERE gmail = ?", (email,))
-    user = cursor.fetchone()
-    if user:
-        user_id = user[0]
-        tables_utilisateur = [
-            "me_champs", "me_equipes", "me_employes", "me_pointage",
-            "me_taches", "me_recoltes", "me_depenses", "me_intrants", "me_pluviometrie",
-            "me_incidents", "me_materiel", "me_tracabilite", "me_irrigation",
-            "me_alertes_meteo", "me_elevage", "me_aquaculture"
-        ]
-        for table in tables_utilisateur:
-            cursor.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
-        cursor.execute("DELETE FROM me_tech WHERE id = ?", (user_id,))
-        conn.commit()
-    conn.close()
-
-nettoyer_compte_specifique("issayoume2012@gmail.com")
-
 def query_db(query, params=(), one=False):
     conn = get_db()
     cursor = conn.cursor()
@@ -195,6 +174,17 @@ def execute_db(query, params=()):
     conn.close()
     return last_id
 
+# Création ou récupération d'un utilisateur par défaut pour que l'app fonctionne sans login
+def get_default_user():
+    user = query_db("SELECT * FROM me_tech LIMIT 1", one=True)
+    if not user:
+        execute_db("""
+            INSERT INTO me_tech (nom, prenom, gmail, phone, matricule, password, sync_gdocs)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, ("Gestionnaire", "Principal", "admin@ferme.com", "770000000", "FERME-01", "admin", 1))
+        user = query_db("SELECT * FROM me_tech LIMIT 1", one=True)
+    return dict(user)
+
 # ==========================================
 # 1. CONFIGURATION DE LA PAGE
 # ==========================================
@@ -205,95 +195,11 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ==========================================
-# 2. AUTHENTIFICATION DYNAMIQUE & CORRECTION CONNEXION
-# ==========================================
-if "user" not in st.session_state:
-    st.session_state.user = None
-
-def auth_system():
-    if st.session_state.user is None:
-        tab_login, tab_register, tab_forgot = st.tabs(["🔒 Connexion", "📝 Inscription", "🔑 Mot de passe oublié"])
-
-        with tab_login:
-            st.subheader("Connexion à votre Espace")
-            with st.form("form_login"):
-                gmail_in = st.text_input("Adresse Email (Gmail)")
-                pwd_in = st.text_input("Mot de passe", type="password")
-                submit_login = st.form_submit_button("Se Connecter", use_container_width=True)
-                
-                if submit_login:
-                    # Nettoyage des espaces superflus qui causent souvent l'erreur
-                    clean_email = gmail_in.strip().lower()
-                    user = query_db("SELECT * FROM me_tech WHERE LOWER(gmail) = ? AND password = ?", (clean_email, pwd_in), one=True)
-                    if user:
-                        st.session_state.user = dict(user)
-                        st.success(f"Bienvenue, {user['prenom']} !")
-                        st.rerun()
-                    else:
-                        st.error("❌ Email ou mot de passe incorrect.")
-
-        with tab_register:
-            st.subheader("Inscription Nouvel Utilisateur")
-            with st.form("form_reg"):
-                col1, col2 = st.columns(2)
-                with col1:
-                    nom = st.text_input("Nom *")
-                    prenom = st.text_input("Prénom *")
-                    gmail = st.text_input("Email / Gmail *")
-                    phone = st.text_input("Téléphone *")
-                with col2:
-                    matricule = st.text_input("Code/Matricule Exploitation", value="FERME-01")
-                    password = st.text_input("Mot de passe *", type="password")
-                    sync_gdocs = st.checkbox("Activer la synchronisation Google Drive", value=True)
-
-                if st.form_submit_button("S'inscrire"):
-                    if not nom or not prenom or not gmail or not password or not phone:
-                        st.error("❌ Remplissez tous les champs obligatoires.")
-                    else:
-                        clean_email = gmail.strip().lower()
-                        try:
-                            execute_db("""
-                                INSERT INTO me_tech (nom, prenom, gmail, phone, matricule, password, sync_gdocs)
-                                VALUES (?, ?, ?, ?, ?, ?, ?)
-                            """, (nom, prenom, clean_email, phone, matricule, password, 1 if sync_gdocs else 0))
-                            st.success("✅ Compte créé avec succès ! Veuillez aller dans l'onglet 'Connexion'.")
-                        except sqlite3.IntegrityError:
-                            st.error("❌ Cet email est déjà utilisé par un autre compte.")
-
-        with tab_forgot:
-            st.subheader("Réinitialisation du mot de passe")
-            with st.form("form_forgot"):
-                f_email = st.text_input("Votre Email (Gmail)")
-                f_phone = st.text_input("Votre Numéro de Téléphone")
-                new_pwd = st.text_input("Nouveau mot de passe", type="password")
-                confirm_pwd = st.text_input("Confirmer le nouveau mot de passe", type="password")
-                
-                if st.form_submit_button("Mettre à jour le mot de passe"):
-                    if not f_email or not f_phone or not new_pwd:
-                        st.error("❌ Veuillez remplir tous les champs.")
-                    elif new_pwd != confirm_pwd:
-                        st.error("❌ Les mots de passe ne correspondent pas.")
-                    else:
-                        clean_email = f_email.strip().lower()
-                        user_check = query_db("SELECT * FROM me_tech WHERE LOWER(gmail) = ? AND phone = ?", (clean_email, f_phone), one=True)
-                        if user_check:
-                            execute_db("UPDATE me_tech SET password = ? WHERE LOWER(gmail) = ?", (new_pwd, clean_email))
-                            st.success("✅ Votre mot de passe a été réinitialisé avec succès !")
-                        else:
-                            st.error("❌ Aucune correspondance trouvée pour cet email et ce numéro de téléphone.")
-                            
-        return False
-    return True
-
-if not auth_system():
-    st.stop()
-
-USER_ID = st.session_state.user['id']
-tech_row = st.session_state.user
+USER_ID = get_default_user()['id']
+tech_row = get_default_user()
 
 # ==========================================
-# 3. GENERATION DE DOCUMENTS & QR CODE
+# 2. GENERATION DE DOCUMENTS & QR CODE
 # ==========================================
 def generate_qr_code(data_string):
     qr = qrcode.QRCode(version=1, box_size=5, border=2)
@@ -363,10 +269,10 @@ def generate_global_pdf(df_global):
     return buffer.getvalue()
 
 # ==========================================
-# 4. BARRE LATÉRALE
+# 3. BARRE LATÉRALE
 # ==========================================
 with st.sidebar:
-    st.markdown("### 👨‍🌾 Session Active")
+    st.markdown("### 👨‍🌾 Exploitation Agricole")
     st.markdown(f"**{tech_row['prenom']} {tech_row['nom']}**")
     st.caption(f"📧 {tech_row['gmail']}")
     
@@ -402,12 +308,8 @@ with st.sidebar:
         champ_id_actif, champ_lat_actif, champ_lon_actif = None, 14.6937, -17.4441
         champ_selectionne = "Aucune parcelle"
 
-    if st.button("🚪 Déconnexion", use_container_width=True):
-        st.session_state.user = None
-        st.rerun()
-
 # ==========================================
-# 5. MODULES APPLICATION
+# 4. MODULES APPLICATION
 # ==========================================
 
 if menu == "📊 Tableau de Bord":
@@ -433,7 +335,7 @@ if menu == "📊 Tableau de Bord":
 
 elif menu == "🌐 Informations Globales (Partagées)":
     st.title("🌐 Base de Connaissances & Infos Partagées")
-    st.info("💡 Ces informations restent enregistrées et visibles par tous les comptes.")
+    st.info("💡 Ces informations restent enregistrées et visibles.")
     
     tab_voir, tab_pub = st.tabs(["📚 Consulter les Infos", "✍️ Publier une Info Commune"])
     
