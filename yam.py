@@ -384,56 +384,58 @@ elif menu == "⏰ Pointage des Horaires":
             parc_p = st.selectbox("Parcelle concernée", db_champs['nom'].tolist() if not db_champs.empty else ["Général"], key="global_parc_pointage")
         
         st.divider()
-        st.markdown("### 👷 Liste de tous les Employés")
-        
-        presences_data = []
-        
-        # Affichage sous forme de tableau interactif ou de lignes fluides sans st.form bloquant
-        for idx, row in df_emps.iterrows():
-            emp_id = row['id']
-            nom_emp = row['nom']
-            groupe_emp = row['groupe_nom']
-            
-            with st.container():
-                cols = st.columns([2, 1.5, 2.5, 1, 2.5])
-                with cols[0]:
-                    st.markdown(f"**{nom_emp}**<br><span style='color:gray; font-size:12px;'>{groupe_emp}</span>", unsafe_allow_html=True)
-                with cols[1]:
-                    statut = st.checkbox("Présent", value=True, key=f"pres_{emp_id}")
-                with cols[2]:
-                    tache = st.text_input("Tâche", value="Travaux généraux", key=f"tache_{emp_id}", label_visibility="collapsed")
-                with cols[3]:
-                    heures = st.number_input("Hrs", min_value=0.0, max_value=24.0, value=8.0, key=f"hrs_{emp_id}", label_visibility="collapsed")
-                with cols[4]:
-                    rem = st.text_input("Remarque", value="", key=f"rem_{emp_id}", placeholder="Motif...", label_visibility="collapsed")
-                
-                presences_data.append({
-                    "nom": nom_emp,
-                    "groupe": groupe_emp,
-                    "statut": "Présent" if statut else "Absent",
-                    "tache": tache if statut else "-",
-                    "heures": heures if statut else 0.0,
-                    "remarque": rem
-                })
-                st.markdown("<hr style='margin:5px 0;'>", unsafe_allow_html=True)
+        st.markdown("### 👷 Saisie Groupée des Présences")
+        st.info("💡 Cochez la case **Présent**, modifiez la tâche ou les heures si besoin directement dans le tableau ci-dessous, puis cliquez sur enregistrer.")
+
+        # Préparation du DataFrame pour l'éditeur interactif
+        df_edition = df_emps[['nom', 'role', 'groupe_nom']].copy()
+        df_edition.insert(0, "Présent", True)
+        df_edition.insert(4, "Tâche", "Travaux généraux")
+        df_edition.insert(5, "Heures", 8.0)
+        df_edition.insert(6, "Remarque", "")
+
+        # Affichage du tableau éditable ultra-stable
+        edited_df = st.data_editor(
+            df_edition,
+            column_config={
+                "Présent": st.column_config.CheckboxColumn("Présent ?", default=True),
+                "nom": st.column_config.TextColumn("Employé", disabled=True),
+                "role": st.column_config.TextColumn("Rôle", disabled=True),
+                "groupe_nom": st.column_config.TextColumn("Groupe", disabled=True),
+                "Tâche": st.column_config.TextColumn("Tâche effectuée"),
+                "Heures": st.column_config.NumberColumn("Heures", min_value=0.0, max_value=24.0, step=0.5),
+                "Remarque": st.column_config.TextColumn("Remarque / Motif")
+            },
+            hide_index=True,
+            use_container_width=True,
+            key="editor_pointage_global"
+        )
 
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("💾 Enregistrer le Pointage Global", use_container_width=True, type="primary"):
-            for item in presences_data:
+            compteur = 0
+            for _, row in edited_df.iterrows():
+                statut_str = "Présent" if row["Présent"] else "Absent"
+                tache_str = row["Tâche"] if row["Présent"] else "-"
+                heures_val = float(row["Heures"]) if row["Présent"] else 0.0
+                remarque_str = str(row["Remarque"]) if row["Remarque"] else ""
+
                 execute_query(
                     "INSERT INTO pointage (date, employe_nom, groupe_nom, champ_nom, statut_presence, tache_effectuee, heures_travaillees, remarque) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         str(date_p), 
-                        item["nom"], 
-                        item["groupe"], 
+                        row["nom"], 
+                        row["groupe_nom"], 
                         parc_p, 
-                        item["statut"], 
-                        item["tache"], 
-                        item["heures"], 
-                        item["remarque"]
+                        statut_str, 
+                        tache_str, 
+                        heures_val, 
+                        remarque_str
                     )
                 )
-            st.success("✅ Le pointage de tous les employés a été enregistré avec succès dans la base de données !")
+                compteur += 1
+
+            st.success(f"✅ Le pointage de {compteur} employés a été enregistré avec succès dans la base de données !")
             st.rerun()
 
         st.subheader("📋 Historique Global des Pointages Récents")
