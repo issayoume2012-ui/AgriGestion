@@ -80,17 +80,20 @@ def init_db():
                         role TEXT
                     )''')
     
-    # Table pour la messagerie collaborative asynchrone entre équipes
+    # Table collaborative enrichie (avec support de la pièce jointe/rapport de travail)
     cursor.execute('''CREATE TABLE IF NOT EXISTS messages_collab (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         expéditeur TEXT,
+                        expediteur_email TEXT,
                         role TEXT,
                         date_heure TEXT,
                         destinataire TEXT,
-                        message TEXT
+                        categorie_travail TEXT,
+                        titre TEXT,
+                        message TEXT,
+                        statut_tache TEXT
                     )''')
     
-    # Insertion par défaut de l'administrateur propriétaire si la table est vide
     cursor.execute("SELECT COUNT(*) FROM whitelist_users")
     if cursor.fetchone()[0] == 0:
         cursor.execute(
@@ -103,10 +106,12 @@ def init_db():
     if "code_pin" not in cols_champs: 
         cursor.execute("ALTER TABLE champs ADD COLUMN code_pin TEXT")
 
-    cursor.execute("PRAGMA table_info(employes)")
-    cols_emp = [col[1] for col in cursor.fetchall()]
-    if "groupe_nom" not in cols_emp: cursor.execute("ALTER TABLE employes ADD COLUMN groupe_nom TEXT")
-    if "tarif_journalier" not in cols_emp: cursor.execute("ALTER TABLE employes ADD COLUMN tarif_journalier REAL")
+    cursor.execute("PRAGMA table_info(messages_collab)")
+    cols_msg = [col[1] for col in cursor.fetchall()]
+    if "destinataire" not in cols_msg: cursor.execute("ALTER TABLE messages_collab ADD COLUMN destinataire TEXT")
+    if "categorie_travail" not in cols_msg: cursor.execute("ALTER TABLE messages_collab ADD COLUMN categorie_travail TEXT")
+    if "titre" not in cols_msg: cursor.execute("ALTER TABLE messages_collab ADD COLUMN titre TEXT")
+    if "statut_tache" not in cols_msg: cursor.execute("ALTER TABLE messages_collab ADD COLUMN statut_tache TEXT")
 
     conn.commit()
     conn.close()
@@ -270,7 +275,7 @@ menu_options = [
     "💧 Irrigation & Eau",
     "🌤️ Risques & Météo",
     "📈 Rentabilité & ROI",
-    "💬 Espace Collaboration & Messagerie",
+    "💬 Espace Collaboration & Réunions Meet",
     "🔐 Paramètres & Liste Blanche",
     "📑 EXPORT RAPPORT PARCELLE"
 ]
@@ -288,7 +293,6 @@ if not db_champs.empty:
         champ_selectionne = st.selectbox("📍 Parcelle Active pour les opérations :", list(liste_champs.keys()))
         champ_id_actif = liste_champs[champ_selectionne]
         
-        # --- GESTION DU CODE PIN DE CONFIDENTIALITÉ PARCELLE ---
         row_champ_actuel = db_champs[db_champs['id'] == champ_id_actif].iloc[0]
         pin_enreg = row_champ_actuel.get('code_pin')
         
@@ -317,7 +321,6 @@ if not db_champs.empty:
                     if st.button("🔄 Oublié / Réinitialiser", key=f"btn_reset_pin_{champ_id_actif}", use_container_width=True):
                         st.session_state[f"reset_mode_{champ_id_actif}"] = True
                 
-                # Formulaire de redéfinition immédiate si réinitialisation demandée
                 if st.session_state.get(f"reset_mode_{champ_id_actif}", False):
                     st.info("💡 Saisissez un nouveau code PIN (laissez vide pour supprimer définitivement la protection) :")
                     nouveau_pin_saisi = st.text_input("Nouveau code PIN :", type="password", key=f"new_pin_val_{champ_id_actif}")
@@ -703,45 +706,101 @@ elif menu == "📈 Rentabilité & ROI":
     col_r2.metric("Total Ventes", f"{total_rec:,.0f} FCFA")
     col_r3.metric("Marge Nette", f"{marge:,.0f} FCFA", delta="Bénéfice" if marge >= 0 else "Déficit")
 
-elif menu == "💬 Espace Collaboration & Messagerie":
-    st.title("💬 Espace de Collaboration Asynchrone (En Ligne)")
-    st.info("Échangez en temps réel ou en asynchrone des consignes, observations de terrain et notes entre Techniciens, Gestionnaires, Administrateurs et Propriétaire.")
-    
+elif menu == "💬 Espace Collaboration & Réunions Meet":
+    st.title("💬 Espace Collaboration Professionnelle & Réunions Google Meet")
+    st.info("Espace de travail en ligne et asynchrone hautement performant entre Techniciens, Gestionnaires, Administrateurs et le Propriétaire.")
+
+    # --- SECTION INTÉGRATION GOOGLE MEET ---
+    st.markdown("""
+        <div style="background-color: #e8f4fd; padding: 15px; border-radius: 8px; border-left: 5px solid #1a73e8; margin-bottom: 20px;">
+            <h4 style="margin: 0; color: #174ea6;">🎥 Salle de Réunion Virtuelle (Google Meet)</h4>
+            <p style="margin: 5px 0 10px 0; font-size: 14px; color: #3c4043;">
+                Lancez ou rejoignez instantanément une visioconférence sécurisée avec vos équipes pour un point de terrain en direct.
+            </p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    col_meet1, col_meet2 = st.columns(2)
+    with col_meet1:
+        if st.button("🚀 Ouvrir une réunion Google Meet instantanée", use_container_width=True, type="primary"):
+            st.markdown('<meta http-equiv="refresh" content="0;url=https://meet.google.com/new">', unsafe_allow_html=True)
+            st.markdown("🔗 Cliquez ici si l'ouverture automatique échoue : [Lien Google Meet Direct](https://meet.google.com/new)")
+    with col_meet2:
+        saisie_lien_meet = st.text_input("Ou coller un lien Google Meet programmé :", placeholder="ex: https://meet.google.com/abc-defg-hij")
+        if saisie_lien_meet.strip():
+            st.markdown(f"👉 [Rejoindre la réunion planifiée]({saisie_lien_meet})", unsafe_allow_html=True)
+
+    st.divider()
+
+    # --- SECTION MESSAGERIE & RAPPORTS DE TRAVAIL CIBLÉS ---
     col_m1, col_m2 = st.columns([1, 2])
     
     with col_m1:
-        st.subheader("✍️ Laisser un message")
-        with st.form("form_send_message"):
-            destinataire = st.selectbox("Destinataire / Équipe", ["Tous", "Propriétaire / Admin", "Gestionnaires", "Techniciens de terrain"])
-            texte_msg = st.text_area("Votre note / consigne :")
-            if st.form_submit_button("📨 Envoyer le message", use_container_width=True):
-                if texte_msg.strip():
+        st.subheader("📝 Publier une Consigne / Rapport")
+        df_users_wl = load_table('whitelist_users')
+        # Construction de la liste des destinataires (Soit "Tous (Diffusion générale)", soit un e-mail spécifique)
+        options_destinataires = ["📢 Tous les collaborateurs (Diffusion générale)"]
+        if not df_users_wl.empty:
+            for _, u_w in df_users_wl.iterrows():
+                options_destinataires.append(f"{u_w['prenom']} {u_w['nom']} ({u_w['email']})")
+
+        with st.form("form_send_message_pro"):
+            destinataire_choix = st.selectbox("Destinataire principal *", options_destinataires)
+            cat_travail = st.selectbox("Objet / Type de travail", ["Rapport de Terrain", "Consigne d'Irrigation", "Alerte Urgence / Incident", "Point Financier / Dépense", "Autre communication"])
+            titre_msg = st.text_input("Titre / Sujet *", placeholder="Ex: État de la parcelle GAT")
+            texte_msg = st.text_area("Contenu détaillé du message ou rapport :")
+            statut_t = st.selectbox("Statut de la demande", ["À lire", "En cours de traitement", "Urgent", "Résolu / Validé"])
+            
+            if st.form_submit_button("📤 Diffuser / Envoyer", use_container_width=True):
+                if titre_msg.strip() and texte_msg.strip():
                     auteur_nom = f"{prenom_tech} {nom_tech}"
                     horodatage = datetime.now().strftime("%d/%m/%Y à %H:%M")
+                    
                     execute_query(
-                        "INSERT INTO messages_collab (expéditeur, role, date_heure, destinataire, message) VALUES (?, ?, ?, ?, ?)",
-                        (auteur_nom, role_tech, horodatage, destinataire, texte_msg.strip())
+                        "INSERT INTO messages_collab (expéditeur, expediteur_email, role, date_heure, destinataire, categorie_travail, titre, message, statut_tache) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (auteur_nom, email_connecte, role_tech, horodatage, destinataire_choix, cat_travail, titre_msg.strip(), texte_msg.strip(), statut_t)
                     )
-                    st.success("✅ Message publié en ligne avec succès !")
+                    st.success("✅ Publication enregistrée et partagée avec succès !")
                     st.rerun()
                 else:
-                    st.warning("⚠️ Le message ne peut pas être vide.")
+                    st.warning("⚠️ Veuillez remplir le titre et le contenu du message.")
 
     with col_m2:
-        st.subheader("📋 Fil de Discussion Asynchrone")
+        st.subheader("📋 Fil d'Actualité & Notes de Travail")
+        
+        # Options de filtrage pour booster la performance et la lisibilité
+        filtre_vue = st.radio("Filtrer l'affichage :", ["Tous les messages", "Mes messages / Reçus pour moi"], horizontal=True)
+        
         df_msgs = load_table('messages_collab')
         if not df_msgs.empty:
-            # Affichage du plus récent au plus ancien
-            for _, m_row in df_msgs.iloc[::-1].iterrows():
-                st.markdown(f"""
-                    <div style="background-color: #ffffff; padding: 12px; border-radius: 8px; border-left: 4px solid #10b981; margin-bottom: 10px; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
-                        <b>👤 {m_row['expéditeur']}</b> <span style="font-size: 11px; color: gray;">({m_row['role']})</span> → <span style="color: #1e3d59;"><b>{m_row['destinataire']}</b></span><br>
-                        <span style="font-size: 11px; color: #888;">🕒 {m_row['date_heure']}</span>
-                        <p style="margin-top: 6px; margin-bottom: 0px; font-size: 14px; color: #333;">{m_row['message']}</p>
-                    </div>
-                """, unsafe_allow_html=True)
+            if filtre_vue == "Mes messages / Reçus pour moi":
+                # Filtre intelligent : affiche si "Tous" ou si l'e-mail de l'utilisateur correspond au destinataire
+                df_msgs = df_msgs[df_msgs['destinataire'].str.contains("Tous") | df_msgs['destinataire'].str.contains(email_connecte, case=False)]
+
+            if df_msgs.empty:
+                st.info("Aucun message ne correspond à ce filtre.")
+            else:
+                for _, m_row in df_msgs.iloc[::-1].iterrows():
+                    # Code couleur selon l'urgence/statut
+                    badge_color = "#10b981"
+                    if m_row.get('statut_tache') == "Urgent": badge_color = "#ef4444"
+                    elif m_row.get('statut_tache') == "En cours de traitement": badge_color = "#f59e0b"
+
+                    st.markdown(f"""
+                        <div style="background-color: #ffffff; padding: 14px; border-radius: 8px; border-left: 5px solid {badge_color}; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
+                            <div style="display: flex; justify-content: space-between;">
+                                <b>📌 [{m_row.get('categorie_travail', 'Note')}>] {m_row.get('titre', 'Sans titre')}</b>
+                                <span style="font-size: 11px; background-color: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-weight: bold;">{m_row.get('statut_tache', 'Info')}</span>
+                            </div>
+                            <p style="margin: 6px 0; font-size: 13px; color: #4b5563;">{m_row['message']}</p>
+                            <div style="font-size: 11px; color: #6b7280; display: flex; justify-content: space-between; border-top: 1px solid #f3f4f6; padding-top: 6px; margin-top: 8px;">
+                                <span>👤 <b>{m_row['expéditeur']}</b> ({m_row['role']} — <code>{m_row.get('expediteur_email', 'N/A')}</code>)</span>
+                                <span>🎯 Destinataire : <b>{m_row.get('destinataire', 'Tous')}</b> | 🕒 {m_row['date_heure']}</span>
+                            </div>
+                        </div>
+                    """, unsafe_allow_html=True)
         else:
-            st.info("Aucun message pour le moment. Soyez le premier à lancer une discussion !")
+            st.info("Aucun échange enregistré pour le moment.")
 
 elif menu == "🔐 Paramètres & Liste Blanche":
     st.title("🔐 Gestion de la Liste Blanche (Contrôle d'Accès)")
