@@ -293,14 +293,27 @@ if not db_champs.empty:
                 
             if not st.session_state[f"pin_ok_{champ_id_actif}"]:
                 st.warning(f"🔒 Cette parcelle (**{champ_selectionne}**) est protégée par un code de confidentialité.")
+                
                 saisie_pin = st.text_input("Entrez le code PIN de la parcelle :", type="password", key=f"input_pin_{champ_id_actif}")
-                if st.button("🔓 Déverrouiller la parcelle", key=f"btn_unlock_{champ_id_actif}"):
-                    if saisie_pin == str(pin_enreg):
+                
+                col_btn1, col_btn2 = st.columns(2)
+                with col_btn1:
+                    if st.button("🔓 Déverrouiller", key=f"btn_unlock_{champ_id_actif}", use_container_width=True):
+                        if saisie_pin == str(pin_enreg):
+                            st.session_state[f"pin_ok_{champ_id_actif}"] = True
+                            st.success("✅ Accès autorisé !")
+                            st.rerun()
+                        else:
+                            st.error("❌ Code PIN incorrect.")
+                
+                with col_btn2:
+                    # Option de réinitialisation en cas d'oubli
+                    if st.button("🔄 Oublié / Réinitialiser", key=f"btn_reset_pin_{champ_id_actif}", use_container_width=True):
+                        execute_query("UPDATE champs SET code_pin = NULL WHERE id = ?", (champ_id_actif,))
                         st.session_state[f"pin_ok_{champ_id_actif}"] = True
-                        st.success("✅ Accès autorisé !")
+                        st.success("✅ Code PIN réinitialisé avec succès ! Accès libre rétabli.")
                         st.rerun()
-                    else:
-                        st.error("❌ Code PIN incorrect.")
+                        
                 st.stop() # Bloque l'affichage du reste si non déverrouillé
 
     with col_sel2:
