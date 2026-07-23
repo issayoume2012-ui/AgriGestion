@@ -79,7 +79,7 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS irrigation (id INTEGER PRIMARY KEY AUTOINCREMENT, champ_id INTEGER, date TEXT, volume_eau_m3 REAL, methode TEXT, duree_heures REAL)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS alertes_meteo (id INTEGER PRIMARY KEY AUTOINCREMENT, champ_id INTEGER, date TEXT, type_risque TEXT, niveau_alerte TEXT, recommandation_ts TEXT)''')
     
-    # Espace de travail avec les colonnes email et destinataire_email incluses
+    # Création sécurisée avec toutes les colonnes requises
     cursor.execute('''CREATE TABLE IF NOT EXISTS messages_workspace (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         auteur TEXT,
@@ -96,20 +96,22 @@ def init_db():
                         champ_concerne TEXT
                     )''')
     
-    # Migration automatique de sécurité pour toutes les colonnes requises
+    # Migration robuste colonne par colonne pour éviter toute erreur d'insertion
     colonnes_a_verifier = [
         ("email", "TEXT"),
         ("destinataire_email", "TEXT"),
         ("champ_concerne", "TEXT"),
         ("nom_fichier", "TEXT"),
         ("fichier_path", "TEXT"),
-        ("type_contenu", "TEXT")
+        ("type_contenu", "TEXT"),
+        ("priorite", "TEXT"),
+        ("destinataire", "TEXT")
     ]
     for col_nom, col_type in colonnes_a_verifier:
         try:
             cursor.execute(f"ALTER TABLE messages_workspace ADD COLUMN {col_nom} {col_type}")
         except sqlite3.OperationalError:
-            pass # La colonne existe déjà
+            pass 
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS whitelist_users (
                         id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -372,7 +374,7 @@ if role_tech == "Administration" or email_connecte == "issayoume2012@gmail.com":
     tous_les_menus = menu_commun + menu_administration + menu_gestionnaire + menu_techniciens
 elif role_tech == "Gestionnaire":
     tous_les_menus = menu_commun + menu_gestionnaire + menu_techniciens
-else: # Technicien par défaut
+else: 
     tous_les_menus = menu_commun + menu_techniciens
 
 if "selected_menu" not in st.session_state:
@@ -391,7 +393,6 @@ db_champs = load_table('champs')
 champ_id_actif = None
 champ_selectionne = "Aucune parcelle"
 
-# Sélection globale de la parcelle active (sauf sur la cartographie)
 if menu != "🌱 Cartographie & Parcelles":
     if not db_champs.empty:
         liste_champs = {row['nom']: row['id'] for _, row in db_champs.iterrows()}
@@ -748,7 +749,6 @@ elif menu == "📈 Rentabilité & ROI":
 elif menu == "💬 Espace Collaboration & Workspace":
     st.title("💬 Espace Collaboration & Espace de Travail Multimédia")
     
-    # Espace de gestion des liens Google Meet (Générer ou Coller son propre lien)
     st.markdown("<div class='card-container'>", unsafe_allow_html=True)
     st.subheader("📹 Réunions en Ligne & Liens Google Meet")
     col_meet1, col_meet2 = st.columns(2)
@@ -764,7 +764,6 @@ elif menu == "💬 Espace Collaboration & Workspace":
     
     st.subheader("📁 Partager un rapport, une photo, une vidéo ou un document")
     
-    # Récupération de la liste des utilisateurs enregistrés pour la sélection des e-mails destinataires
     df_users_wl = load_table('whitelist_users')
     emails_disponibles = df_users_wl['email'].tolist() if not df_users_wl.empty else []
     
@@ -838,12 +837,15 @@ elif menu == "💬 Espace Collaboration & Workspace":
             m_champ = msg.get('champ_concerne', 'Aucune')
             m_id = msg.get('id', 0)
             
-            dest_affichage = f"<b>{m_dest}</b>" + (f" &lt;{m_dest_email}&gt;" if m_dest_email else "")
+            # Affichage explicite des e-mails expéditeur et destinataire
+            dest_affichage = f"<b>{m_dest}</b>"
+            if m_dest_email and str(m_dest_email).strip() != "" and str(m_dest_email).strip() != "None":
+                dest_affichage += f" (E-mail destinataire : &lt;{m_dest_email}&gt;)"
             
             st.markdown(f"""
                 <div style="background: white; padding: 15px; border-radius: 10px; border-left: 4px solid #10b981; margin-bottom: 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
                     <div style="display: flex; justify-content: space-between;">
-                        <small style="color: #6b7280;"><b>{m_auteur}</b> &lt;{m_email}&gt; ({m_role}) ➔ Destinataire : {dest_affichage} {f"| 📍 <i>{m_champ}</i>" if m_champ != 'Aucune' else ''}</small>
+                        <small style="color: #6b7280;"><b>{m_auteur}</b> &lt;{m_email}&gt; ({m_role}) ➔ Cible : {dest_affichage} {f"| 📍 <i>{m_champ}</i>" if m_champ != 'Aucune' else ''}</small>
                         <small style="color: #ef4444; font-weight: bold;">{m_priorite}</small>
                     </div>
                     <p style="margin: 10px 0; color: #1f2937; font-size: 14px;">{m_texte}</p>
