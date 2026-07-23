@@ -80,6 +80,16 @@ def init_db():
                         role TEXT
                     )''')
     
+    # Table pour la messagerie collaborative asynchrone entre équipes
+    cursor.execute('''CREATE TABLE IF NOT EXISTS messages_collab (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        expéditeur TEXT,
+                        role TEXT,
+                        date_heure TEXT,
+                        destinataire TEXT,
+                        message TEXT
+                    )''')
+    
     # Insertion par défaut de l'administrateur propriétaire si la table est vide
     cursor.execute("SELECT COUNT(*) FROM whitelist_users")
     if cursor.fetchone()[0] == 0:
@@ -88,7 +98,6 @@ def init_db():
             ("issayoume2012@gmail.com", "issayoume2026", "Issa", "Youme", "Propriétaire")
         )
 
-    # Mises à jour de colonnes de sécurité si besoin
     cursor.execute("PRAGMA table_info(champs)")
     cols_champs = [col[1] for col in cursor.fetchall()]
     if "code_pin" not in cols_champs: 
@@ -182,7 +191,6 @@ def export_parcelle_pdf(champ_nom, date_rapport):
     elements.append(Paragraph(header_info, normal_style))
     elements.append(Spacer(1, 8))
 
-    # Chargement filtré par parcelle
     df_c = load_table('champs')
     champ_info = df_c[df_c['nom'] == champ_nom]
     champ_id = int(champ_info['id'].values[0]) if not champ_info.empty else None
@@ -207,7 +215,6 @@ def export_parcelle_pdf(champ_nom, date_rapport):
     for section_title, df_sec in tables_to_export.items():
         elements.append(Paragraph(section_title, subtitle_style))
         if not df_sec.empty:
-            # Nettoyage colonnes ID techniques superflues
             cols_to_show = [c for c in df_sec.columns if c not in ['id', 'champ_id', 'groupe_id']]
             df_display = df_sec[cols_to_show]
             data = [df_display.columns.tolist()] + df_display.astype(str).values.tolist()
@@ -263,6 +270,7 @@ menu_options = [
     "💧 Irrigation & Eau",
     "🌤️ Risques & Météo",
     "📈 Rentabilité & ROI",
+    "💬 Espace Collaboration & Messagerie",
     "🔐 Paramètres & Liste Blanche",
     "📑 EXPORT RAPPORT PARCELLE"
 ]
@@ -284,7 +292,6 @@ if not db_champs.empty:
         row_champ_actuel = db_champs[db_champs['id'] == champ_id_actif].iloc[0]
         pin_enreg = row_champ_actuel.get('code_pin')
         
-        # On vérifie si un code PIN réel et non vide est défini
         has_pin = pin_enreg is not None and str(pin_enreg).strip() != "" and str(pin_enreg).strip() != "None"
         
         if has_pin:
@@ -307,14 +314,22 @@ if not db_champs.empty:
                             st.error("❌ Code PIN incorrect.")
                 
                 with col_btn2:
-                    # Option de réinitialisation en cas d'oubli
                     if st.button("🔄 Oublié / Réinitialiser", key=f"btn_reset_pin_{champ_id_actif}", use_container_width=True):
-                        execute_query("UPDATE champs SET code_pin = NULL WHERE id = ?", (champ_id_actif,))
+                        st.session_state[f"reset_mode_{champ_id_actif}"] = True
+                
+                # Formulaire de redéfinition immédiate si réinitialisation demandée
+                if st.session_state.get(f"reset_mode_{champ_id_actif}", False):
+                    st.info("💡 Saisissez un nouveau code PIN (laissez vide pour supprimer définitivement la protection) :")
+                    nouveau_pin_saisi = st.text_input("Nouveau code PIN :", type="password", key=f"new_pin_val_{champ_id_actif}")
+                    if st.button("💾 Enregistrer et Accéder", key=f"save_new_pin_{champ_id_actif}", type="primary"):
+                        pin_final = nouveau_pin_saisi.strip() if nouveau_pin_saisi else None
+                        execute_query("UPDATE champs SET code_pin = ? WHERE id = ?", (pin_final, champ_id_actif))
                         st.session_state[f"pin_ok_{champ_id_actif}"] = True
-                        st.success("✅ Code PIN réinitialisé avec succès ! Accès libre rétabli.")
+                        st.session_state[f"reset_mode_{champ_id_actif}"] = False
+                        st.success("✅ Code PIN mis à jour avec succès ! Accès ouvert.")
                         st.rerun()
                         
-                st.stop() # Bloque l'affichage du reste si non déverrouillé
+                st.stop()
 
     with col_sel2:
         if st.button("🚪 Déconnexion"):
@@ -457,7 +472,6 @@ elif menu == "⏰ Pointage des Horaires":
     if df_emps.empty:
         st.warning("⚠️ Aucun employé enregistré dans la base.")
     else:
-        # Filtrer les employés travaillant potentiellement sur cette parcelle (ou tous si non affectés spécifiquement)
         st.info(f"Émargement du personnel affecté pour la parcelle **{champ_selectionne}**.")
         
         c_d1, c_d2 = st.columns(2)
@@ -689,10 +703,49 @@ elif menu == "📈 Rentabilité & ROI":
     col_r2.metric("Total Ventes", f"{total_rec:,.0f} FCFA")
     col_r3.metric("Marge Nette", f"{marge:,.0f} FCFA", delta="Bénéfice" if marge >= 0 else "Déficit")
 
+elif menu == "💬 Espace Collaboration & Messagerie":
+    st.title("💬 Espace de Collaboration Asynchrone (En Ligne)")
+    st.info("Échangez en temps réel ou en asynchrone des consignes, observations de terrain et notes entre Techniciens, Gestionnaires, Administrateurs et Propriétaire.")
+    
+    col_m1, col_m2 = st.columns([1, 2])
+    
+    with col_m1:
+        st.subheader("✍️ Laisser un message")
+        with st.form("form_send_message"):
+            destinataire = st.selectbox("Destinataire / Équipe", ["Tous", "Propriétaire / Admin", "Gestionnaires", "Techniciens de terrain"])
+            texte_msg = st.text_area("Votre note / consigne :")
+            if st.form_submit_button("📨 Envoyer le message", use_container_width=True):
+                if texte_msg.strip():
+                    auteur_nom = f"{prenom_tech} {nom_tech}"
+                    horodatage = datetime.now().strftime("%d/%m/%Y à %H:%M")
+                    execute_query(
+                        "INSERT INTO messages_collab (expéditeur, role, date_heure, destinataire, message) VALUES (?, ?, ?, ?, ?)",
+                        (auteur_nom, role_tech, horodatage, destinataire, texte_msg.strip())
+                    )
+                    st.success("✅ Message publié en ligne avec succès !")
+                    st.rerun()
+                else:
+                    st.warning("⚠️ Le message ne peut pas être vide.")
+
+    with col_m2:
+        st.subheader("📋 Fil de Discussion Asynchrone")
+        df_msgs = load_table('messages_collab')
+        if not df_msgs.empty:
+            # Affichage du plus récent au plus ancien
+            for _, m_row in df_msgs.iloc[::-1].iterrows():
+                st.markdown(f"""
+                    <div style="background-color: #ffffff; padding: 12px; border-radius: 8px; border-left: 4px solid #10b981; margin-bottom: 10px; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+                        <b>👤 {m_row['expéditeur']}</b> <span style="font-size: 11px; color: gray;">({m_row['role']})</span> → <span style="color: #1e3d59;"><b>{m_row['destinataire']}</b></span><br>
+                        <span style="font-size: 11px; color: #888;">🕒 {m_row['date_heure']}</span>
+                        <p style="margin-top: 6px; margin-bottom: 0px; font-size: 14px; color: #333;">{m_row['message']}</p>
+                    </div>
+                """, unsafe_allow_html=True)
+        else:
+            st.info("Aucun message pour le moment. Soyez le premier à lancer une discussion !")
+
 elif menu == "🔐 Paramètres & Liste Blanche":
     st.title("🔐 Gestion de la Liste Blanche (Contrôle d'Accès)")
     
-    # Vérification exclusive si l'utilisateur connecté est le Propriétaire
     est_proprietaire = (email_connecte == "issayoume2012@gmail.com")
 
     if not est_proprietaire:
