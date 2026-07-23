@@ -102,7 +102,6 @@ def init_db():
                         piece_jointe_data BLOB
                     )''')
 
-    # Table dédiée à l'historique des modifications / remplissages
     cursor.execute('''CREATE TABLE IF NOT EXISTS historique_modifications (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         date_heure TEXT,
@@ -144,12 +143,11 @@ def execute_query(query, params=(), action_desc="", user_info=None):
     cursor = conn.cursor()
     cursor.execute(query, params)
     
-    # Enregistrement automatique dans l'historique si une action est décrite
     if action_desc and user_info:
         date_act = datetime.now().strftime("%d/%m/%Y à %H:%M")
         cursor.execute(
             "INSERT INTO historique_modifications (date_heure, utilisateur, email, role, action, details) VALUES (?, ?, ?, ?, ?, ?)",
-            (date_act, f"{user_info.get('prenom', '')} {user_info.get('nom', '')}", user_info.get('gmail', ''), user_info.get('role', ''), action_desc, "Mise à jour des données")
+            (date_act, f"{user_info.get('prenom', '')} {user_info.get('nom', '')}", user_info.get('gmail', ''), user_info.get('role', ''), action_desc, "Mise à jour réussie")
         )
 
     conn.commit()
@@ -311,7 +309,6 @@ tous_les_menus = [
     "📑 EXPORT RAPPORT PARCELLE"
 ]
 
-# Filtrage strict et exact des menus selon les autorisations
 if modules_autorises_user == "TOUS" or email_connecte == "issayoume2012@gmail.com":
     menu_options = tous_les_menus
 else:
@@ -327,8 +324,6 @@ db_champs = load_table('champs')
 champ_id_actif = None
 champ_selectionne = "Aucune parcelle"
 
-# ACCÈS TOTAL : La restriction bloquante d'attribution a été supprimée. 
-# Toutes les parcelles sont accessibles à l'utilisateur connecté.
 if not db_champs.empty:
     liste_champs = {row['nom']: row['id'] for _, row in db_champs.iterrows()}
     col_sel1, col_sel2 = st.columns([3, 1])
@@ -339,17 +334,6 @@ if not db_champs.empty:
         df_p_act = load_table('partage_champs')
         affectations_cette_parcelle = df_p_act[df_p_act['champ_nom'] == champ_selectionne] if not df_p_act.empty else pd.DataFrame()
         
-        st.markdown(f"""
-            <div style="background-color: #f1f5f9; padding: 8px 12px; border-radius: 6px; font-size: 12px; margin-top: 5px;">
-                <b>👥 Équipe affectée à cette parcelle :</b><br>
-        """, unsafe_allow_html=True)
-        if not affectations_cette_parcelle.empty:
-            for _, af in affectations_cette_parcelle.iterrows():
-                st.markdown(f"- ✉️ `{af['technicien_email']}` — Rôle/Accès : **{af['droit']}**")
-        else:
-            st.markdown("- *Aucune affectation spécifique enregistrée pour cette parcelle.*")
-        st.markdown("</div>", unsafe_allow_html=True)
-
         row_champ_actuel = db_champs[db_champs['id'] == champ_id_actif].iloc[0]
         pin_enreg = row_champ_actuel.get('code_pin')
         has_pin = pin_enreg is not None and str(pin_enreg).strip() != "" and str(pin_enreg).strip() != "None"
@@ -375,10 +359,13 @@ if not db_champs.empty:
             st.session_state.authenticated = False
             st.rerun()
 else:
-    st.info("ℹ️ Aucune parcelle enregistrée pour l'instant. Vous pouvez en créer une dans le menu Cartographie.")
-    if st.button("🚪 Déconnexion"):
-        st.session_state.authenticated = False
-        st.rerun()
+    col_n1, col_n2 = st.columns([3, 1])
+    with col_n1:
+        st.info("ℹ️ Aucune parcelle enregistrée. Vous pouvez en créer une dès maintenant ci-dessous ou via le menu Cartographie.")
+    with col_n2:
+        if st.button("🚪 Déconnexion"):
+            st.session_state.authenticated = False
+            st.rerun()
 
 st.divider()
 
@@ -434,8 +421,8 @@ elif menu == "🌱 Cartographie & Parcelles":
 
     with col_form:
         st.subheader("➕ Ajouter une Parcelle & Sécurité")
-        with st.form("form_champ_new"):
-            nom_p = st.text_input("Nom de la parcelle *")
+        with st.form("form_champ_new_fix"):
+            nom_p = st.text_input("Nom de la nouvelle parcelle *")
             surf_p = st.number_input("Superficie (Ha)", min_value=0.1, value=1.0)
             lat_p = st.number_input("Latitude", value=float(st.session_state['lat_active']), format="%.6f")
             lon_p = st.number_input("Longitude", value=float(st.session_state['lon_active']), format="%.6f")
@@ -443,17 +430,19 @@ elif menu == "🌱 Cartographie & Parcelles":
             stat_p = st.selectbox("Statut", ["En préparation", "Semé", "En croissance", "Prêt à récolter"])
             pin_p = st.text_input("Code PIN de confidentialité (optionnel)", type="password")
             
-            if st.form_submit_button("💾 Enregistrer la Parcelle", use_container_width=True):
-                if nom_p:
+            if st.form_submit_button("💾 Enregistrer la Nouvelle Parcelle", use_container_width=True):
+                if nom_p.strip():
                     execute_query(
                         "INSERT INTO champs (nom, superficie_ha, latitude, longitude, culture_actuelle, statut, icone_lieu, code_pin) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        (nom_p, surf_p, lat_p, lon_p, cult_p, stat_p, "leaf", pin_p.strip() if pin_p else ""),
-                        action_desc=f"Ajout/Création de la parcelle '{nom_p}'",
+                        (nom_p.strip(), surf_p, lat_p, lon_p, cult_p, stat_p, "leaf", pin_p.strip() if pin_p else ""),
+                        action_desc=f"Création de la parcelle '{nom_p.strip()}'",
                         user_info=tech
                     )
-                    execute_query("INSERT INTO partage_champs (champ_nom, technicien_email, droit) VALUES (?, ?, ?)", (nom_p, email_connecte, "Propriétaire / Créateur"))
-                    st.success("✅ Parcelle enregistrée avec succès !")
+                    execute_query("INSERT INTO partage_champs (champ_nom, technicien_email, droit) VALUES (?, ?, ?)", (nom_p.strip(), email_connecte, "Propriétaire / Créateur"))
+                    st.success("✅ Nouvelle parcelle enregistrée avec succès !")
                     st.rerun()
+                else:
+                    st.warning("⚠️ Veuillez renseigner un nom de parcelle.")
 
 elif menu == "👥 Groupes & Membres":
     st.title("👥 Gestion des Groupes & des Membres")
@@ -513,7 +502,7 @@ elif menu == "⏰ Pointage des Horaires":
     st.title(f"⏰ Pointage des Horaires — {champ_selectionne}")
     
     if champ_selectionne == "Aucune parcelle":
-        st.warning("⚠️ Veuillez sélectionner une parcelle active pour gérer le pointage.")
+        st.warning("⚠️ Veuillez sélectionner ou créer une parcelle active pour gérer le pointage.")
     else:
         df_employes_global = load_table('employes')
         membres_parcelle = []
@@ -525,7 +514,7 @@ elif menu == "⏰ Pointage des Horaires":
                 })
 
         if not membres_parcelle:
-            st.warning("⚠️ Aucun membre disponible dans le répertoire des employés.")
+            st.warning("⚠️ Aucun membre disponible dans le répertoire des employés. Veuillez en ajouter dans le menu 'Groupes & Membres'.")
         else:
             st.success(f"✅ Pointage actif pour la parcelle : **{champ_selectionne}**")
             
@@ -541,7 +530,7 @@ elif menu == "⏰ Pointage des Horaires":
                     "Présent": True,
                     "Membre / Technicien": m["nom"],
                     "Groupe": m["groupe"],
-                    "Tâche effectuée": "Travaux généraux de parcelle",
+                    "Tâche effectuée": "Travaux généraux",
                     "Heures": 8.0,
                     "Remarque": ""
                 })
@@ -562,27 +551,30 @@ elif menu == "⏰ Pointage des Horaires":
             )
 
             if st.button("💾 Enregistrer le Pointage de cette Parcelle", use_container_width=True, type="primary"):
+                nb_enregistrements = 0
                 for _, row in edited_pointage.iterrows():
-                    execute_query(
-                        "INSERT INTO pointage (date, employe_nom, groupe_nom, champ_nom, statut_presence, tache_effectuee, heures_travaillees, remarque) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        (
-                            str(date_p), 
-                            row["Membre / Technicien"], 
-                            row["Groupe"], 
-                            champ_selectionne, 
-                            "Présent" if row["Présent"] else "Absent", 
-                            row["Tâche effectuée"] if row["Présent"] else "-", 
-                            float(row["Heures"]) if row["Présent"] else 0.0, 
-                            str(row["Remarque"])
-                        ),
-                        action_desc=f"Pointage enregistré pour la parcelle '{champ_selectionne}' (Date: {date_p})",
-                        user_info=tech
-                    )
-                st.success(f"✅ Pointage enregistré avec succès pour la parcelle **{champ_selectionne}** !")
+                    if row["Présent"]:
+                        nb_enregistrements += 1
+                        execute_query(
+                            "INSERT INTO pointage (date, employe_nom, groupe_nom, champ_nom, statut_presence, tache_effectuee, heures_travaillees, remarque) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                            (
+                                str(date_p), 
+                                row["Membre / Technicien"], 
+                                row["Groupe"], 
+                                champ_selectionne, 
+                                "Présent", 
+                                row["Tâche effectuée"], 
+                                float(row["Heures"]), 
+                                str(row["Remarque"])
+                            ),
+                            action_desc=f"Pointage de {row['Membre / Technicien']} ({row['Heures']}h) sur la parcelle '{champ_selectionne}' le {date_p}",
+                            user_info=tech
+                        )
+                st.success(f"✅ Pointage validé et enregistré pour {nb_enregistrements} membre(s) sur la parcelle **{champ_selectionne}** !")
                 st.rerun()
 
         st.divider()
-        st.subheader(f"📋 Historique des Pointages pour : {champ_selectionne}")
+        st.subheader(f"📋 Historique Détaillé des Pointages pour : {champ_selectionne}")
         df_pt_global = load_table('pointage')
         if not df_pt_global.empty:
             df_pt_parcelle = df_pt_global[df_pt_global['champ_nom'] == champ_selectionne]
@@ -866,11 +858,10 @@ elif menu == "💬 Espace Collaboration & Réunions Meet":
 
 elif menu == "📜 Historique des Modifications":
     st.title("📜 Historique des Remplissages et Modifications")
-    st.info("Ce journal trace en temps réel l'ensemble des actions effectuées par les différents utilisateurs sur l'application (ajout de parcelles, pointages, dépenses, récoltes, etc.).")
+    st.info("Ce journal trace en temps réel l'ensemble des actions effectuées par les différents utilisateurs sur l'application (ajout de parcelles, pointages précis, dépenses, récoltes, etc.).")
     
     df_histo = load_table('historique_modifications')
     if not df_histo.empty:
-        # Affichage du plus récent au plus ancien
         st.dataframe(df_histo.iloc[::-1].drop(columns=['id'], errors='ignore'), use_container_width=True)
     else:
         st.info("Aucun historique de modification enregistré pour l'instant.")
