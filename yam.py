@@ -101,6 +101,17 @@ def init_db():
                         piece_jointe_nom TEXT,
                         piece_jointe_data BLOB
                     )''')
+
+    # Table dédiée à l'historique des modifications / remplissages
+    cursor.execute('''CREATE TABLE IF NOT EXISTS historique_modifications (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        date_heure TEXT,
+                        utilisateur TEXT,
+                        email TEXT,
+                        role TEXT,
+                        action TEXT,
+                        details TEXT
+                    )''')
     
     cursor.execute("PRAGMA table_info(whitelist_users)")
     cols_wl = [col[1] for col in cursor.fetchall()]
@@ -128,10 +139,19 @@ def load_table(table_name):
     conn.close()
     return df
 
-def execute_query(query, params=()):
+def execute_query(query, params=(), action_desc="", user_info=None):
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(query, params)
+    
+    # Enregistrement automatique dans l'historique si une action est décrite
+    if action_desc and user_info:
+        date_act = datetime.now().strftime("%d/%m/%Y à %H:%M")
+        cursor.execute(
+            "INSERT INTO historique_modifications (date_heure, utilisateur, email, role, action, details) VALUES (?, ?, ?, ?, ?, ?)",
+            (date_act, f"{user_info.get('prenom', '')} {user_info.get('nom', '')}", user_info.get('gmail', ''), user_info.get('role', ''), action_desc, "Mise à jour des données")
+        )
+
     conn.commit()
     conn.close()
     load_table.clear()
@@ -286,6 +306,7 @@ tous_les_menus = [
     "🌤️ Risques & Météo",
     "📈 Rentabilité & ROI",
     "💬 Espace Collaboration & Réunions Meet",
+    "📜 Historique des Modifications",
     "🔐 Paramètres & Liste Blanche",
     "📑 EXPORT RAPPORT PARCELLE"
 ]
@@ -294,7 +315,7 @@ tous_les_menus = [
 if modules_autorises_user == "TOUS" or email_connecte == "issayoume2012@gmail.com":
     menu_options = tous_les_menus
 else:
-    menu_options = ["📊 Tableau de Bord", "💬 Espace Collaboration & Réunions Meet", "📑 EXPORT RAPPORT PARCELLE"]
+    menu_options = ["📊 Tableau de Bord", "💬 Espace Collaboration & Réunions Meet", "📜 Historique des Modifications", "📑 EXPORT RAPPORT PARCELLE"]
     liste_mod_autorises = [m.strip() for m in modules_autorises_user.split(",") if m.strip()]
     for m in tous_les_menus:
         if any(mod == m for mod in liste_mod_autorises) and m not in menu_options:
@@ -306,21 +327,13 @@ db_champs = load_table('champs')
 champ_id_actif = None
 champ_selectionne = "Aucune parcelle"
 
-if not db_champs.empty:
-    # CORRECTION : Si ce n'est pas le propriétaire, on filtre strictement par rapport aux parcelles qui lui ont été attribuées
-    if email_connecte != "issayoume2012@gmail.com" and not ("administrateur" in role_tech.lower() or "superviseur" in role_tech.lower()):
-        df_partages = load_table('partage_champs')
-        if not df_partages.empty:
-            champs_autorises = df_partages[df_partages['technicien_email'].str.lower() == email_connecte]['champ_nom'].tolist()
-            db_champs = db_champs[db_champs['nom'].isin(champs_autorises)]
-        else:
-            db_champs = pd.DataFrame(columns=db_champs.columns)
-
+# ACCÈS TOTAL : La restriction bloquante d'attribution a été supprimée. 
+# Toutes les parcelles sont accessibles à l'utilisateur connecté.
 if not db_champs.empty:
     liste_champs = {row['nom']: row['id'] for _, row in db_champs.iterrows()}
     col_sel1, col_sel2 = st.columns([3, 1])
     with col_sel1:
-        champ_selectionne = st.selectbox("📍 Parcelle Active (et affectations par rôles) :", list(liste_champs.keys()))
+        champ_selectionne = st.selectbox("📍 Parcelle Active (Accès Libre) :", list(liste_champs.keys()))
         champ_id_actif = liste_champs[champ_selectionne]
         
         df_p_act = load_table('partage_champs')
@@ -362,11 +375,10 @@ if not db_champs.empty:
             st.session_state.authenticated = False
             st.rerun()
 else:
-    st.warning("⚠️ Aucune parcelle ne vous est actuellement attribuée. Veuillez demander au propriétaire de vous affecter une parcelle dans l'espace collaboration.")
+    st.info("ℹ️ Aucune parcelle enregistrée pour l'instant. Vous pouvez en créer une dans le menu Cartographie.")
     if st.button("🚪 Déconnexion"):
         st.session_state.authenticated = False
         st.rerun()
-    st.stop()
 
 st.divider()
 
@@ -435,9 +447,11 @@ elif menu == "🌱 Cartographie & Parcelles":
                 if nom_p:
                     execute_query(
                         "INSERT INTO champs (nom, superficie_ha, latitude, longitude, culture_actuelle, statut, icone_lieu, code_pin) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        (nom_p, surf_p, lat_p, lon_p, cult_p, stat_p, "leaf", pin_p.strip() if pin_p else "")
+                        (nom_p, surf_p, lat_p, lon_p, cult_p, stat_p, "leaf", pin_p.strip() if pin_p else ""),
+                        action_desc=f"Ajout/Création de la parcelle '{nom_p}'",
+                        user_info=tech
                     )
-                    execute_query("INSERT INTO partage_champs (champ_nom, technicien_email, droit) VALUES (?, ?, ?)", (nom_p, "issayoume2012@gmail.com", "Propriétaire"))
+                    execute_query("INSERT INTO partage_champs (champ_nom, technicien_email, droit) VALUES (?, ?, ?)", (nom_p, email_connecte, "Propriétaire / Créateur"))
                     st.success("✅ Parcelle enregistrée avec succès !")
                     st.rerun()
 
@@ -452,7 +466,7 @@ elif menu == "👥 Groupes & Membres":
             chef_g_input = st.text_input("Chef de Groupe")
             if st.form_submit_button("📁 Créer le Groupe", use_container_width=True):
                 if nom_g_input.strip():
-                    execute_query("INSERT INTO equipes (nom_groupe, chef_groupe) VALUES (?, ?)", (nom_g_input.strip(), chef_g_input.strip()))
+                    execute_query("INSERT INTO equipes (nom_groupe, chef_groupe) VALUES (?, ?)", (nom_g_input.strip(), chef_g_input.strip()), action_desc=f"Création du groupe '{nom_g_input.strip()}'", user_info=tech)
                     st.success("✅ Groupe créé !")
                     st.rerun()
                     
@@ -464,7 +478,7 @@ elif menu == "👥 Groupes & Membres":
                 with col_gr1: st.markdown(f"**{grp['nom_groupe']}** (Chef : *{grp['chef_groupe']}*)")
                 with col_gr2:
                     if st.button("🗑️ Supprimer", key=f"del_grp_{grp['id']}"):
-                        execute_query("DELETE FROM equipes WHERE id = ?", (grp['id'],))
+                        execute_query("DELETE FROM equipes WHERE id = ?", (grp['id'],), action_desc=f"Suppression du groupe ID {grp['id']}", user_info=tech)
                         st.rerun()
 
     with col_g2:
@@ -480,7 +494,7 @@ elif menu == "👥 Groupes & Membres":
                 tarif_emp = st.number_input("Tarif journalier (FCFA)", min_value=0, value=2500)
                 if st.form_submit_button("👷 Ajouter le Membre", use_container_width=True):
                     if nom_emp.strip():
-                        execute_query("INSERT INTO employes (nom, role, groupe_nom, tarif_journalier) VALUES (?, ?, ?, ?)", (nom_emp.strip(), role_emp.strip(), groupe_affecte, tarif_emp))
+                        execute_query("INSERT INTO employes (nom, role, groupe_nom, tarif_journalier) VALUES (?, ?, ?, ?)", (nom_emp.strip(), role_emp.strip(), groupe_affecte, tarif_emp), action_desc=f"Ajout de l'employé '{nom_emp.strip()}'", user_info=tech)
                         st.success("✅ Membre ajouté !")
                         st.rerun()
                         
@@ -492,7 +506,7 @@ elif menu == "👥 Groupes & Membres":
                 with col_em1: st.markdown(f"**{emp['nom']}** — *{emp['role']}* (`{emp['groupe_nom']}`)")
                 with col_em2:
                     if st.button("🗑️ Retirer", key=f"del_emp_{emp['id']}"):
-                        execute_query("DELETE FROM employes WHERE id = ?", (emp['id'],))
+                        execute_query("DELETE FROM employes WHERE id = ?", (emp['id'],), action_desc=f"Suppression de l'employé ID {emp['id']}", user_info=tech)
                         st.rerun()
 
 elif menu == "⏰ Pointage des Horaires":
@@ -501,21 +515,9 @@ elif menu == "⏰ Pointage des Horaires":
     if champ_selectionne == "Aucune parcelle":
         st.warning("⚠️ Veuillez sélectionner une parcelle active pour gérer le pointage.")
     else:
-        df_partages = load_table('partage_champs')
-        emails_autorises = df_partages[df_partages['champ_nom'] == champ_selectionne]['technicien_email'].str.lower().tolist()
         df_employes_global = load_table('employes')
-        df_wl_global = load_table('whitelist_users')
-        
         membres_parcelle = []
-        if not df_wl_global.empty and emails_autorises:
-            match_wl = df_wl_global[df_wl_global['email'].str.lower().isin(emails_autorises)]
-            for _, w in match_wl.iterrows():
-                membres_parcelle.append({
-                    "nom": f"{w['prenom']} {w['nom']} ({w['role']})",
-                    "groupe": "Équipe Encadrement"
-                })
-        
-        if not membres_parcelle and not df_employes_global.empty:
+        if not df_employes_global.empty:
             for _, emp in df_employes_global.iterrows():
                 membres_parcelle.append({
                     "nom": f"{emp['nom']} - {emp['role']}",
@@ -523,9 +525,9 @@ elif menu == "⏰ Pointage des Horaires":
                 })
 
         if not membres_parcelle:
-            st.warning("⚠️ Aucun membre disponible pour le pointage.")
+            st.warning("⚠️ Aucun membre disponible dans le répertoire des employés.")
         else:
-            st.success(f"✅ Pointage actif et isolé pour la parcelle : **{champ_selectionne}**")
+            st.success(f"✅ Pointage actif pour la parcelle : **{champ_selectionne}**")
             
             c_d1, c_d2 = st.columns(2)
             with c_d1: date_p = st.date_input("Date du pointage", value=date.today(), key=f"date_pt_{champ_id_actif}")
@@ -572,7 +574,9 @@ elif menu == "⏰ Pointage des Horaires":
                             row["Tâche effectuée"] if row["Présent"] else "-", 
                             float(row["Heures"]) if row["Présent"] else 0.0, 
                             str(row["Remarque"])
-                        )
+                        ),
+                        action_desc=f"Pointage enregistré pour la parcelle '{champ_selectionne}' (Date: {date_p})",
+                        user_info=tech
                     )
                 st.success(f"✅ Pointage enregistré avec succès pour la parcelle **{champ_selectionne}** !")
                 st.rerun()
@@ -602,7 +606,7 @@ elif menu == "📅 Planning & Travaux":
                         st.markdown(f"🔹 **{tache['type_travail']}** | Date : {tache['date_tache']} | Durée : {tache['heures_travaillees']}h | Statut : `{tache['statut']}`")
                     with c_t2:
                         if st.button("🗑️ Suppr", key=f"del_tache_{tache['id']}"):
-                            execute_query("DELETE FROM taches WHERE id = ?", (tache['id'],))
+                            execute_query("DELETE FROM taches WHERE id = ?", (tache['id'],), action_desc=f"Suppression tâche ID {tache['id']}", user_info=tech)
                             st.rerun()
             else:
                 st.info("Aucune tâche planifiée pour cette parcelle.")
@@ -615,7 +619,7 @@ elif menu == "📅 Planning & Travaux":
                 hrs_t = st.number_input("Heures prévues", min_value=1.0, value=8.0)
                 statut_t = st.selectbox("Statut initial", ["Planifié", "En cours", "Terminé"])
                 if st.form_submit_button("💾 Enregistrer la Tâche", use_container_width=True):
-                    execute_query("INSERT INTO taches (champ_id, groupe_id, type_travail, date_tache, heures_travaillees, statut) VALUES (?, ?, ?, ?, ?, ?)", (champ_id_actif, 1, type_trav, str(date_tache), hrs_t, statut_t))
+                    execute_query("INSERT INTO taches (champ_id, groupe_id, type_travail, date_tache, heures_travaillees, statut) VALUES (?, ?, ?, ?, ?, ?)", (champ_id_actif, 1, type_trav, str(date_tache), hrs_t, statut_t), action_desc=f"Planification tâche '{type_trav}' sur parcelle ID {champ_id_actif}", user_info=tech)
                     st.success("✅ Tâche planifiée avec succès !")
                     st.rerun()
 
@@ -631,7 +635,7 @@ elif menu == "🌾 Récoltes & Rendements":
             qte = st.number_input("Quantité (Kg)", min_value=0.0)
             pu = st.number_input("Prix unitaire (FCFA)", min_value=0.0, value=300.0)
             if st.form_submit_button("Enregistrer Récolte", use_container_width=True):
-                execute_query("INSERT INTO recoltes (champ_id, culture, date_recolte, quantite_kg, prix_unitaire) VALUES (?, ?, ?, ?, ?)", (champ_id_actif, cult, str(date.today()), qte, pu))
+                execute_query("INSERT INTO recoltes (champ_id, culture, date_recolte, quantite_kg, prix_unitaire) VALUES (?, ?, ?, ?, ?)", (champ_id_actif, cult, str(date.today()), qte, pu), action_desc=f"Ajout récolte '{cult}' ({qte} Kg) sur parcelle ID {champ_id_actif}", user_info=tech)
                 st.success("✅ Récolte enregistrée !")
                 st.rerun()
 
@@ -658,7 +662,7 @@ elif menu == "💰 Finances & Marges":
                 
                 if st.form_submit_button("💾 Enregistrer la Dépense", use_container_width=True):
                     nom_fic = photo_facture.name if photo_facture else "Aucune facture"
-                    execute_query("INSERT INTO depenses (champ_id, type, montant, date, facture_nom) VALUES (?, ?, ?, ?, ?)", (champ_id_actif, motif, mnt, str(date_dep), nom_fic))
+                    execute_query("INSERT INTO depenses (champ_id, type, montant, date, facture_nom) VALUES (?, ?, ?, ?, ?)", (champ_id_actif, motif, mnt, str(date_dep), nom_fic), action_desc=f"Nouvelle dépense '{motif}' ({mnt} FCFA)", user_info=tech)
                     st.success("✅ Dépense enregistrée avec succès !")
                     st.rerun()
 
@@ -680,7 +684,7 @@ elif menu == "📦 Stocks d'Intrants":
             
             if st.form_submit_button("💾 Enregistrer l'Intrant", use_container_width=True):
                 nom_fic_i = photo_fact_intrant.name if photo_fact_intrant else "Aucune facture"
-                execute_query("INSERT INTO intrants (nom, categorie, stock_actuel, unite, seuil_alerte, facture_nom) VALUES (?, ?, ?, ?, ?, ?)", (nom_i, cat_i, stk_i, unit_i, seuil_i, nom_fic_i))
+                execute_query("INSERT INTO intrants (nom, categorie, stock_actuel, unite, seuil_alerte, facture_nom) VALUES (?, ?, ?, ?, ?, ?)", (nom_i, cat_i, stk_i, unit_i, seuil_i, nom_fic_i), action_desc=f"Ajout intrant '{nom_i}'", user_info=tech)
                 st.success("✅ Intrant enregistré avec succès !")
                 st.rerun()
 
@@ -693,7 +697,7 @@ elif menu == "🌧️ Pluviométrie":
             mm = st.number_input("Hauteur de pluie (mm)", min_value=0.0, format="%.1f")
             date_pluie = st.date_input("Date de relevé", value=date.today())
             if st.form_submit_button("Enregistrer", use_container_width=True):
-                execute_query("INSERT INTO pluviometrie (champ_id, date, pluie_mm) VALUES (?, ?, ?)", (champ_id_actif, str(date_pluie), mm))
+                execute_query("INSERT INTO pluviometrie (champ_id, date, pluie_mm) VALUES (?, ?, ?)", (champ_id_actif, str(date_pluie), mm), action_desc=f"Relevé pluviométrique de {mm} mm", user_info=tech)
                 st.success("✅ Enregistré !")
                 st.rerun()
 
@@ -707,7 +711,7 @@ elif menu == "⚠️ Incidents":
             grav = st.selectbox("Gravité", ["Faible", "Modéré", "Critique"])
             action_corrective = st.text_input("Action corrective")
             if st.form_submit_button("Déclarer l'incident", use_container_width=True):
-                execute_query("INSERT INTO incidents (champ_id, date, description, gravite, action) VALUES (?, ?, ?, ?, ?)", (champ_id_actif, str(date.today()), desc, grav, action_corrective))
+                execute_query("INSERT INTO incidents (champ_id, date, description, gravite, action) VALUES (?, ?, ?, ?, ?)", (champ_id_actif, str(date.today()), desc, grav, action_corrective), action_desc=f"Déclaration incident ({grav})", user_info=tech)
                 st.success("✅ Déclaré !")
                 st.rerun()
 
@@ -719,7 +723,7 @@ elif menu == "🚜 Maintenance Matériel":
         cat_mat = st.selectbox("Catégorie", ["Motorisé", "Outil", "Irrigation"])
         statut_mat = st.selectbox("Statut", ["Opérationnel", "En panne", "En révision"])
         if st.form_submit_button("Ajouter", use_container_width=True):
-            execute_query("INSERT INTO materiel (nom_equipement, categorie, statut_marche, date_derniere_revision, prochaine_revision) VALUES (?, ?, ?, ?, ?)", (nom_mat, cat_mat, statut_mat, str(date.today()), str(date.today())))
+            execute_query("INSERT INTO materiel (nom_equipement, categorie, statut_marche, date_derniere_revision, prochaine_revision) VALUES (?, ?, ?, ?, ?)", (nom_mat, cat_mat, statut_mat, str(date.today()), str(date.today())), action_desc=f"Ajout matériel '{nom_mat}'", user_info=tech)
             st.success("✅ Ajouté !")
             st.rerun()
 
@@ -732,7 +736,7 @@ elif menu == "🏷️ Traçabilité & Lots":
         norme = st.selectbox("Norme / Certification", ["Bio", "GlobalGAP", "Standard"])
         acheteur = st.text_input("Acheteur / Destination")
         if st.form_submit_button("Créer le Lot", use_container_width=True):
-            execute_query("INSERT INTO tracabilite (lot_code, champ_nom, culture, date_recolte, norme_certification, acheteur) VALUES (?, ?, ?, ?, ?, ?)", (code_l, champ_selectionne, cult_l, str(date.today()), norme, acheteur))
+            execute_query("INSERT INTO tracabilite (lot_code, champ_nom, culture, date_recolte, norme_certification, acheteur) VALUES (?, ?, ?, ?, ?, ?)", (code_l, champ_selectionne, cult_l, str(date.today()), norme, acheteur), action_desc=f"Création lot de traçabilité '{code_l}'", user_info=tech)
             st.success("✅ Créé !")
             st.rerun()
 
@@ -746,7 +750,7 @@ elif menu == "💧 Irrigation & Eau":
             methode = st.selectbox("Méthode", ["Aspersion", "Goutte à goutte", "Gravitaire"])
             duree = st.number_input("Durée (heures)", min_value=0.5, value=2.0)
             if st.form_submit_button("Enregistrer", use_container_width=True):
-                execute_query("INSERT INTO irrigation (champ_nom, date, volume_eau_m3, methode, duree_heures) VALUES (?, ?, ?, ?, ?)", (champ_selectionne, str(date.today()), vol, methode, duree))
+                execute_query("INSERT INTO irrigation (champ_nom, date, volume_eau_m3, methode, duree_heures) VALUES (?, ?, ?, ?, ?)", (champ_selectionne, str(date.today()), vol, methode, duree), action_desc=f"Enregistrement irrigation {vol} m³", user_info=tech)
                 st.success("✅ Enregistré !")
                 st.rerun()
 
@@ -758,7 +762,7 @@ elif menu == "🌤️ Risques & Météo":
         niveau = st.selectbox("Niveau", ["Faible", "Modéré", "Élevé", "Critique"])
         reco = st.text_input("Recommandation technique")
         if st.form_submit_button("Publier", use_container_width=True):
-            execute_query("INSERT INTO alertes_meteo (date, type_risque, niveau_alerte, recommandation_ts) VALUES (?, ?, ?, ?)", (str(date.today()), risque, niveau, reco))
+            execute_query("INSERT INTO alertes_meteo (date, type_risque, niveau_alerte, recommandation_ts) VALUES (?, ?, ?, ?)", (str(date.today()), risque, niveau, reco), action_desc=f"Publication alerte météo '{risque}'", user_info=tech)
             st.success("✅ Publié !")
             st.rerun()
 
@@ -776,49 +780,8 @@ elif menu == "📈 Rentabilité & ROI":
     col_r3.metric("Marge Nette", f"{marge:,.0f} FCFA", delta="Bénéfice" if marge >= 0 else "Déficit")
 
 elif menu == "💬 Espace Collaboration & Réunions Meet":
-    st.title("💬 Espace Collaboration & Affectation des Rôles par Parcelle")
+    st.title("💬 Espace Collaboration & Réunions")
     
-    est_proprietaire_principal = (email_connecte == "issayoume2012@gmail.com")
-    est_admin_superviseur = ("administrateur" in role_tech.lower() or "superviseur" in role_tech.lower() or "propriétaire" in role_tech.lower())
-    
-    est_habilite_attribution = est_proprietaire_principal or est_admin_superviseur
-
-    if est_habilite_attribution:
-        with st.expander("🤝 Attribuer un Rôle et une Parcelle (Zone Administrateur)", expanded=True):
-            df_wl_all = load_table('whitelist_users')
-            df_ch_all = load_table('champs')
-            
-            if not df_ch_all.empty and not df_wl_all.empty:
-                with st.form("form_partage_champ_role"):
-                    c_p1 = st.selectbox("Sélectionner la Parcelle", df_ch_all['nom'].tolist())
-                    c_p2 = st.selectbox("Utilisateur / Collaborateur", df_wl_all['email'].tolist())
-                    c_p3 = st.selectbox("Rôle / Droits sur cette parcelle", [
-                        "Propriétaire (Superviseur total)", 
-                        "Gestionnaire Administratif & Financier", 
-                        "Technicien de Terrain & Pointage",
-                        "Consultant / Observateur"
-                    ])
-                    if st.form_submit_button("🔗 Affecter ce Rôle à la Parcelle", use_container_width=True):
-                        execute_query("INSERT INTO partage_champs (champ_nom, technicien_email, droit) VALUES (?, ?, ?)", (c_p1, c_p2, c_p3))
-                        st.success(f"✅ Le rôle **{c_p3}** a été affecté à **{c_p2}** sur la parcelle **{c_p1}** !")
-                        st.rerun()
-                
-                st.subheader("📋 Récapitulatif des Rôles par Parcelle")
-                df_parts = load_table('partage_champs')
-                if not df_parts.empty:
-                    for _, prt in df_parts.iterrows():
-                        col_pr1, col_pr2 = st.columns([4, 1])
-                        with col_pr1:
-                            st.markdown(f"📍 Parcelle : **{prt['champ_nom']}** ➡️ Utilisateur : `{prt['technicien_email']}` | Rôle : *{prt['droit']}*")
-                        with col_pr2:
-                            if st.button("🗑️ Retirer", key=f"del_part_{prt['id']}"):
-                                execute_query("DELETE FROM partage_champs WHERE id = ?", (prt['id'],))
-                                st.rerun()
-    else:
-        st.info("🔒 L'outil d'attribution des rôles et parcelles est restreint au propriétaire et aux administrateurs.")
-
-    st.divider()
-
     col_meet1, col_meet2 = st.columns(2)
     with col_meet1:
         st.link_button("🚀 Ouvrir une réunion Google Meet instantanée", "https://meet.google.com/new", use_container_width=True)
@@ -863,7 +826,9 @@ elif menu == "💬 Espace Collaboration & Réunions Meet":
                     
                     execute_query(
                         "INSERT INTO messages_collab (expéditeur, expediteur_email, role, date_heure, destinataire, categorie_travail, titre, message, statut_tache, piece_jointe_nom, piece_jointe_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        (auteur_nom, email_connecte, role_tech, horodatage, destinataire_choix, cat_travail, titre_msg.strip(), texte_msg.strip(), statut_t, nom_PJ, data_PJ)
+                        (auteur_nom, email_connecte, role_tech, horodatage, destinataire_choix, cat_travail, titre_msg.strip(), texte_msg.strip(), statut_t, nom_PJ, data_PJ),
+                        action_desc=f"Publication d'un message collab : '{titre_msg.strip()}'",
+                        user_info=tech
                     )
                     st.success("✅ Publication enregistrée avec succès !")
                     st.rerun()
@@ -898,6 +863,17 @@ elif menu == "💬 Espace Collaboration & Réunions Meet":
                 """, unsafe_allow_html=True)
         else:
             st.info("Aucun échange enregistré.")
+
+elif menu == "📜 Historique des Modifications":
+    st.title("📜 Historique des Remplissages et Modifications")
+    st.info("Ce journal trace en temps réel l'ensemble des actions effectuées par les différents utilisateurs sur l'application (ajout de parcelles, pointages, dépenses, récoltes, etc.).")
+    
+    df_histo = load_table('historique_modifications')
+    if not df_histo.empty:
+        # Affichage du plus récent au plus ancien
+        st.dataframe(df_histo.iloc[::-1].drop(columns=['id'], errors='ignore'), use_container_width=True)
+    else:
+        st.info("Aucun historique de modification enregistré pour l'instant.")
 
 elif menu == "🔐 Paramètres & Liste Blanche":
     st.title("🔐 Gestion de la Liste Blanche & Accès par Modules")
@@ -948,7 +924,9 @@ elif menu == "🔐 Paramètres & Liste Blanche":
                         try:
                             execute_query(
                                 "INSERT OR REPLACE INTO whitelist_users (email, password, prenom, nom, role, modules_autorises) VALUES (?, ?, ?, ?, ?, ?)",
-                                (new_email.strip().lower(), new_password.strip(), new_prenom.strip(), new_nom.strip(), new_role, str_modules)
+                                (new_email.strip().lower(), new_password.strip(), new_prenom.strip(), new_nom.strip(), new_role, str_modules),
+                                action_desc=f"Mise à jour/Ajout utilisateur whitelist: {new_email.strip()}",
+                                user_info=tech
                             )
                             st.success(f"✅ Accès configurés avec succès pour {new_email.strip()} !")
                             st.rerun()
@@ -968,7 +946,7 @@ elif menu == "🔐 Paramètres & Liste Blanche":
                     with c_item2:
                         if row['email'].lower() != "issayoume2012@gmail.com":
                             if st.button("🗑️ Révoquer", key=f"del_wl_{row['id']}"):
-                                execute_query("DELETE FROM whitelist_users WHERE id = ?", (row['id'],))
+                                execute_query("DELETE FROM whitelist_users WHERE id = ?", (row['id'],), action_desc=f"Révocation utilisateur ID {row['id']}", user_info=tech)
                                 st.rerun()
                     st.divider()
 
