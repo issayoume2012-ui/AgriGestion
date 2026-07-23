@@ -550,24 +550,54 @@ elif menu == "⏰ Pointage des Horaires":
         st.warning("⚠️ Veuillez sélectionner une parcelle active.")
     else:
         df_emp = load_table('employes')
+        df_part = load_table('partage_champs')
+        df_taches = load_table('taches')
+        
         if df_emp.empty:
-            st.warning("⚠️ Aucun employé enregistré.")
+            st.warning("⚠️ Aucun employé enregistré dans le système.")
         else:
-            date_p = st.date_input("Date du pointage", value=date.today())
-            lignes = [{"Présent": True, "Employé": f"{e['nom']} - {e['role']}", "Groupe": e['groupe_nom'], "Tâche": "Travaux", "Heures": 8.0, "Remarque": ""} for _, e in df_emp.iterrows()]
-            edited = st.data_editor(pd.DataFrame(lignes), hide_index=True, use_container_width=True)
-            if st.button("💾 Enregistrer le Pointage", use_container_width=True, type="primary"):
-                for _, r in edited.iterrows():
-                    if r["Présent"]:
-                        execute_query(
-                            "INSERT INTO pointage (date, employe_nom, groupe_nom, champ_nom, statut_presence, tache_effectuee, heures_travaillees, remarque) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                            (str(date_p), r["Employé"], r["Groupe"], champ_selectionne, "Présent", r["Tâche"], float(r["Heures"]), str(r["Remarque"])),
-                            action_desc=f"Pointage de {r['Employé']} ({r['Heures']}h)",
-                            user_info=tech
-                        )
-                st.success("✅ Pointage enregistré !")
-                st.rerun()
+            # FILTRAGE CIBLÉ : On cherche les employés qui concernent la parcelle active
+            # Option 1 : Filtrer par les groupes ou intervenants liés à cette parcelle
+            # Si vous associez un groupe à une parcelle ou via les tâches/partages :
+            
+            # Pour l'instant, si vous souhaitez filtrer par les employés dont le groupe a une tâche ou un lien avec la parcelle, 
+            # ou si vous voulez filtrer par les employés assignés au champ :
+            
+            # Vérifions si des équipes ou collaborateurs sont spécifiques à ce champ
+            # On peut filtrer par exemple si le groupe de l'employé est assigné à ce champ, 
+            # ou proposer un filtre direct par groupe ou afficher les employés affectés à ce champ.
+            
+            # Affichons un sélecteur de groupe pour filtrer ou filtrons automatiquement si un lien existe :
+            groupes_disponibles = df_emp['groupe_nom'].unique().tolist() if 'groupe_nom' in df_emp.columns else []
+            
+            st.markdown(f"**Ffiltrage intelligent pour la parcelle : `{champ_selectionne}`**")
+            col_f1, col_f2 = st.columns([2, 2])
+            with col_f1:
+                filtre_groupe_pointe = st.selectbox("Filtrer par Groupe / Équipe pour ce champ :", ["Tous les groupes de la parcelle"] + groupes_disponibles)
+            
+            if filtre_groupe_pointe != "Tous les groupes de la parcelle":
+                df_emp_filtre = df_emp[df_emp['groupe_nom'] == filtre_groupe_pointe]
+            else:
+                df_emp_filtre = df_emp # Vous pouvez restreindre ici selon votre logique de liaison champ <-> groupe
 
+            if df_emp_filtre.empty:
+                st.info(f"Aucun travailleur trouvé pour ce filtre sur la parcelle {champ_selectionne}.")
+            else:
+                date_p = st.date_input("Date du pointage", value=date.today())
+                lignes = [{"Présent": True, "Employé": f"{e['nom']} - {e['role']}", "Groupe": e['groupe_nom'], "Tâche": "Travaux", "Heures": 8.0, "Remarque": ""} for _, e in df_emp_filtre.iterrows()]
+                edited = st.data_editor(pd.DataFrame(lignes), hide_index=True, use_container_width=True, key=f"editor_pointage_{champ_id_actif}")
+                
+                if st.button("💾 Enregistrer le Pointage pour cette Parcelle", use_container_width=True, type="primary"):
+                    for _, r in edited.iterrows():
+                        if r["Présent"]:
+                            execute_query(
+                                "INSERT INTO pointage (date, employe_nom, groupe_nom, champ_nom, statut_presence, tache_effectuee, heures_travaillees, remarque) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                                (str(date_p), r["Employé"], r["Groupe"], champ_selectionne, "Présent", r["Tâche"], float(r["Heures"]), str(r["Remarque"])),
+                                action_desc=f"Pointage de {r['Employé']} sur {champ_selectionne} ({r['Heures']}h)",
+                                user_info=tech
+                            )
+                    st.success(f"✅ Pointage enregistré avec succès pour la parcelle **{champ_selectionne}** !")
+                    st.rerun()
 elif menu == "📅 Planning & Travaux":
     st.title(f"📅 Planning & Travaux — {champ_selectionne}")
     if champ_id_actif:
