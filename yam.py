@@ -494,50 +494,75 @@ elif menu == "👥 Groupes & Membres":
 
 elif menu == "⏰ Pointage des Horaires":
     st.title(f"⏰ Pointage - {champ_selectionne}")
-    df_emps = load_table('employes')
-    if df_emps.empty:
-        st.warning("⚠️ Aucun employé enregistré dans la base.")
+    
+    # Filtrer les employés/techniciens uniquement liés à la parcelle active via partage_champs et whitelist_users
+    df_partages = load_table('partage_champs')
+    emails_autorises_champ = df_partages[df_partages['champ_nom'] == champ_selectionne]['technicien_email'].str.lower().tolist()
+    
+    df_wl_all = load_table('whitelist_users')
+    # Trouver les noms correspondants aux emails autorisés sur cette parcelle
+    techniciens_parcelle_noms = []
+    if not df_wl_all.empty and emails_autorises_champ:
+        df_match = df_wl_all[df_wl_all['email'].str.lower().isin(emails_autorises_champ)]
+        for _, u_row in df_match.iterrows():
+            techniciens_parcelle_noms.append(f"{u_row['prenom']} {u_row['nom']} ({u_row['role']})")
+
+    if not techniciens_parcelle_noms:
+        st.warning(f"⚠️ Aucun technicien ou responsable n'est actuellement assigné à la parcelle **{champ_selectionne}**.")
+        st.info("💡 Allez dans l'espace **'💬 Espace Collaboration' > 'Gestion Collégiale des Parcelles'** pour attribuer des techniciens à cette parcelle.")
     else:
-        st.info(f"Émargement du personnel affecté pour la parcelle **{champ_selectionne}**.")
+        st.info(f"Émargement synchronisé pour les 2 ou 3 responsables/techniciens gérant la parcelle **{champ_selectionne}**.")
         
         c_d1, c_d2 = st.columns(2)
         with c_d1: date_p = st.date_input("Date du pointage", value=date.today(), key="global_date_pointage")
-        with c_d2: parc_p = st.text_input("Parcelle", value=champ_selectionne, disabled=True)
+        with c_d2: parc_p = st.text_input("Parcelle active", value=champ_selectionne, disabled=True)
         
         st.divider()
-        df_edition = df_emps[['nom', 'role', 'groupe_nom']].copy()
-        df_edition.insert(0, "Présent", True)
-        df_edition.insert(4, "Tâche", "Travaux généraux")
-        df_edition.insert(5, "Heures", 8.0)
-        df_edition.insert(6, "Remarque", "")
+        
+        # Construire un DataFrame dédié uniquement aux membres de cette parcelle
+        data_pointage_parcelle = []
+        for tech_nom_complet in techniciens_parcelle_noms:
+            data_pointage_parcelle.append({
+                "Présent": True,
+                "Responsable / Technicien": tech_nom_complet,
+                "Tâche": "Suivi et gestion parcellaire",
+                "Heures": 8.0,
+                "Remarque": ""
+            })
+            
+        df_edition = pd.DataFrame(data_pointage_parcelle)
 
         edited_df = st.data_editor(
             df_edition,
             column_config={
                 "Présent": st.column_config.CheckboxColumn("Présent ?", default=True),
-                "nom": st.column_config.TextColumn("Employé", disabled=True),
-                "role": st.column_config.TextColumn("Rôle", disabled=True),
-                "groupe_nom": st.column_config.TextColumn("Groupe", disabled=True),
+                "Responsable / Technicien": st.column_config.TextColumn("Responsable / Technicien", disabled=True),
                 "Tâche": st.column_config.TextColumn("Tâche effectuée"),
                 "Heures": st.column_config.NumberColumn("Heures", min_value=0.0, max_value=24.0, step=0.5),
                 "Remarque": st.column_config.TextColumn("Remarque")
             },
-            hide_index=True, use_container_width=True, key="editor_pointage_global"
+            hide_index=True, use_container_width=True, key="editor_pointage_parcelle_specifique"
         )
 
-        if st.button("💾 Enregistrer le Pointage de la Parcelle", use_container_width=True, type="primary"):
+        if st.button("💾 Enregistrer le Pointage de cette Parcelle", use_container_width=True, type="primary"):
             for _, row in edited_df.iterrows():
                 execute_query(
                     "INSERT INTO pointage (date, employe_nom, groupe_nom, champ_nom, statut_presence, tache_effectuee, heures_travaillees, remarque) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (str(date_p), row["nom"], row["groupe_nom"], champ_selectionne, "Présent" if row["Présent"] else "Absent", row["Tâche"] if row["Présent"] else "-", float(row["Heures"]) if row["Présent"] else 0.0, str(row["Remarque"]))
+                    (str(date_p), row["Responsable / Technicien"], "Gestion Collégiale", champ_selectionne, "Présent" if row["Présent"] else "Absent", row["Tâche"] if row["Présent"] else "-", float(row["Heures"]) if row["Présent"] else 0.0, str(row["Remarque"]))
                 )
-            st.success("✅ Pointage enregistré avec succès !")
+            st.success("✅ Pointage enregistré avec succès pour cette parcelle !")
             st.rerun()
 
-        st.subheader("📋 Historique de Pointage pour cette Parcelle")
-        df_pt = load_table('pointage')
-        if not df_pt.empty:
-            st.dataframe(df_pt[df_pt['champ_nom'] == champ_selectionne], use_container_width=True)
+    st.subheader("📋 Historique de Pointage pour cette Parcelle")
+    df_pt = load_table('pointage')
+    if not df_pt.empty:
+        df_pt_champ = df_pt[df_pt['champ_nom'] == champ_selectionne]
+        if not df_pt_champ.empty:
+            st.dataframe(df_pt_champ, use_container_width=True)
+        else:
+            st.info("Aucun historique de pointage pour cette parcelle.")
+    else:
+        st.info("Aucun pointage enregistré.")
 
 elif menu == "📅 Planning & Travaux":
     st.title(f"📅 Planning & Travaux - {champ_selectionne}")
