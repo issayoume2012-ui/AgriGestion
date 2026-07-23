@@ -79,7 +79,7 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS irrigation (id INTEGER PRIMARY KEY AUTOINCREMENT, champ_id INTEGER, date TEXT, volume_eau_m3 REAL, methode TEXT, duree_heures REAL)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS alertes_meteo (id INTEGER PRIMARY KEY AUTOINCREMENT, champ_id INTEGER, date TEXT, type_risque TEXT, niveau_alerte TEXT, recommandation_ts TEXT)''')
     
-    # Espace de travail amélioré (ciblage, messages & rapports stockés)
+    # Espace de travail amélioré
     cursor.execute('''CREATE TABLE IF NOT EXISTS messages_workspace (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         auteur TEXT,
@@ -735,15 +735,17 @@ elif menu == "💬 Espace Collaboration & Workspace":
     with col_m1:
         st.link_button("🚀 Ouvrir une réunion Google Meet", "https://meet.google.com/new", use_container_width=True)
     with col_m2:
-        st.markdown(f"**Profil Connecté :** <span class='badge-role'>{role_tech}</span>", unsafe_allow_html=True)
+        st.markdown(f"**Profil Connecté :** <span class='badge-role'>{role_tech}</span> | **E-mail :** `{email_connecte}`", unsafe_allow_html=True)
         
     st.divider()
     
     st.subheader("📁 Partager un rapport, une photo, une vidéo ou un document")
-    with st.form("form_workspace_media", clear_on_submit=True):
+    
+    # Étape de saisie et de confirmation des destinataires/mails
+    with st.form("form_workspace_media", clear_on_submit=False):
         col_c1, col_c2, col_c3 = st.columns(3)
         with col_c1:
-            destinataire = st.selectbox("Destinataire visé :", ["Tous", "Techniciens", "Gestionnaires", "Propriétaires"])
+            destinataire = st.selectbox("Destinataire visé (Cible) :", ["Tous", "Techniciens", "Gestionnaires", "Propriétaires"])
         with col_c2:
             priorite = st.selectbox("Priorité :", ["Normal", "Important ⚠️", "Urgent 🚨"])
         with col_c3:
@@ -754,48 +756,65 @@ elif menu == "💬 Espace Collaboration & Workspace":
         
         uploaded_file = st.file_uploader("Joindre un fichier (Photos, Vidéos, Docs, Rapports)", type=["png", "jpg", "jpeg", "mp4", "pdf", "docx", "xlsx"])
         
-        submit_msg = st.form_submit_button("📤 Publier dans l'Espace de Travail", use_container_width=True, type="primary")
+        st.markdown("---")
+        st.markdown("### 🔍 Vérification & Confirmation avant envoi")
+        confirmer_envoi = st.checkbox("✅ Je confirme l'exactitude des informations et l'envoi/publication vers les destinataires sélectionnés.")
+        
+        submit_msg = st.form_submit_button("📤 Valider et Publier dans l'Espace", use_container_width=True, type="primary")
         
         if submit_msg:
-            fichier_path = ""
-            nom_fichier = ""
-            if uploaded_file is not None:
-                nom_fichier = uploaded_file.name
-                fichier_path = os.path.join(UPLOAD_DIR, nom_fichier)
-                with open(fichier_path, "wb") as f:
-                    f.write(uploaded_file.getbuffer())
-            
-            if texte_message.strip() or uploaded_file is not None:
-                auteur_complet = f"{tech.get('prenom', '')} {tech.get('nom', '')}".strip()
-                date_heure_actuelle = datetime.now().strftime("%d/%m/%Y à %H:%M")
-                
-                execute_query(
-                    "INSERT INTO messages_workspace (auteur, role, destinataire, priorite, texte, date_heure, type_contenu, fichier_path, nom_fichier, champ_concerne) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (auteur_complet, role_tech, destinataire, priorite, texte_message.strip(), date_heure_actuelle, type_contenu, fichier_path, nom_fichier, champ_concerne),
-                    action_desc=f"Publication workspace ({type_contenu}) pour {destinataire}",
-                    user_info=tech
-                )
-                st.success("✅ Publication enregistrée et partagée avec succès !")
-                st.rerun()
+            if not confirmer_envoi:
+                st.warning("⚠️ Veuillez cocher la case de confirmation avant de valider l'envoi.")
             else:
-                st.warning("⚠️ Veuillez saisir un message ou joindre un fichier.")
+                fichier_path = ""
+                nom_fichier = ""
+                if uploaded_file is not None:
+                    nom_fichier = uploaded_file.name
+                    fichier_path = os.path.join(UPLOAD_DIR, nom_fichier)
+                    with open(fichier_path, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
+                
+                if texte_message.strip() or uploaded_file is not None:
+                    auteur_complet = f"{tech.get('prenom', '')} {tech.get('nom', '')}".strip()
+                    date_heure_actuelle = datetime.now().strftime("%d/%m/%Y à %H:%M")
+                    
+                    execute_query(
+                        "INSERT INTO messages_workspace (auteur, role, destinataire, priorite, texte, date_heure, type_contenu, fichier_path, nom_fichier, champ_concerne) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (auteur_complet, role_tech, destinataire, priorite, texte_message.strip(), date_heure_actuelle, type_contenu, fichier_path, nom_fichier, champ_concerne),
+                        action_desc=f"Publication workspace ({type_contenu}) pour {destinataire} (Expéditeur: {email_connecte})",
+                        user_info=tech
+                    )
+                    st.success(f"✅ Publication validée et partagée avec succès depuis l'e-mail **{email_connecte}** vers le groupe **{destinataire}** !")
+                    st.rerun()
+                else:
+                    st.warning("⚠️ Veuillez saisir un message ou joindre un fichier.")
 
     st.divider()
     st.subheader("📜 Fil d'actualité, Médias, Rapports & Consignes de l'Exploitation")
     df_messages = load_table('messages_workspace')
     if not df_messages.empty:
         for _, msg in df_messages.iloc[::-1].iterrows():
+            # Sécurisation des clés pour éviter tout KeyError
+            m_auteur = msg.get('auteur', 'Inconnu')
+            m_role = msg.get('role', 'Rôle')
+            m_dest = msg.get('destinataire', 'Tous')
+            m_priorite = msg.get('priorite', 'Normal')
+            m_texte = msg.get('texte', '')
+            m_date = msg.get('date_heure', '')
+            m_champ = msg.get('champ_concerne', 'Aucune')
+            m_id = msg.get('id', 0)
+            
             st.markdown(f"""
                 <div style="background: white; padding: 15px; border-radius: 10px; border-left: 4px solid #10b981; margin-bottom: 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
                     <div style="display: flex; justify-content: space-between;">
-                        <small style="color: #6b7280;"><b>{msg['auteur']}</b> ({msg['role']}) ➔ Cible : <b>{msg['destinataire']}</b> {f"| 📍 <i>{msg['champ_concerne']}</i>" if msg['champ_concerne'] != 'Aucune' else ''}</small>
-                        <small style="color: #ef4444; font-weight: bold;">{msg['priorite']}</small>
+                        <small style="color: #6b7280;"><b>{m_auteur}</b> ({m_role}) ➔ Cible : <b>{m_dest}</b> {f"| 📍 <i>{m_champ}</i>" if m_champ != 'Aucune' else ''}</small>
+                        <small style="color: #ef4444; font-weight: bold;">{m_priorite}</small>
                     </div>
-                    <p style="margin: 10px 0; color: #1f2937; font-size: 14px;">{msg['texte']}</p>
+                    <p style="margin: 10px 0; color: #1f2937; font-size: 14px;">{m_texte}</p>
             """, unsafe_allow_html=True)
             
-            # Affichage dynamique des fichiers multimédias attachés
-            f_path = msg['get']('file_path') if hasattr(msg, 'get') else msg.get('fichier_path', '')
+            # Affichage dynamique des fichiers multimédias attachés de manière sécurisée
+            f_path = msg.get('fichier_path', '')
             f_name = msg.get('nom_fichier', '')
             f_type = msg.get('type_contenu', '')
             
@@ -810,11 +829,11 @@ elif menu == "💬 Espace Collaboration & Workspace":
                             label=f"📥 Télécharger le fichier joint : {f_name}",
                             data=file_download,
                             file_name=f_name,
-                            key=f"dl_ws_{msg['id']}"
+                            key=f"dl_ws_{m_id}"
                         )
             
             st.markdown(f"""
-                    <div style="text-align: right; margin-top: 5px;"><small style="color: #9ca3af; font-size: 11px;">{msg['date_heure']}</small></div>
+                    <div style="text-align: right; margin-top: 5px;"><small style="color: #9ca3af; font-size: 11px;">{m_date}</small></div>
                 </div>
             """, unsafe_allow_html=True)
     else:
