@@ -348,38 +348,40 @@ db_champs = load_table('champs')
 champ_id_actif = None
 champ_selectionne = "Aucune parcelle"
 
-if not db_champs.empty:
-    liste_champs = {row['nom']: row['id'] for _, row in db_champs.iterrows()}
-    col_sel1, col_sel2 = st.columns([3, 1])
-    with col_sel1:
-        champ_selectionne = st.selectbox("📍 Parcelle Active en Cours :", list(liste_champs.keys()))
-        champ_id_actif = liste_champs[champ_selectionne]
-        
-        row_champ_actuel = db_champs[db_champs['id'] == champ_id_actif].iloc[0]
-        pin_enreg = row_champ_actuel.get('code_pin')
-        has_pin = pin_enreg is not None and str(pin_enreg).strip() != "" and str(pin_enreg).strip() != "None"
-        
-        if has_pin:
-            if f"pin_ok_{champ_id_actif}" not in st.session_state:
-                st.session_state[f"pin_ok_{champ_id_actif}"] = False
-            if not st.session_state[f"pin_ok_{champ_id_actif}"]:
-                st.warning(f"🔒 Cette parcelle (**{champ_selectionne}**) est protégée par code PIN.")
-                saisie_pin = st.text_input("Entrez le code PIN :", type="password", key=f"input_pin_{champ_id_actif}")
-                if st.button("🔓 Déverrouiller", key=f"btn_unlock_{champ_id_actif}"):
-                    if saisie_pin == str(pin_enreg):
-                        st.session_state[f"pin_ok_{champ_id_actif}"] = True
-                        st.success("✅ Accès autorisé !")
-                        st.rerun()
-                    else:
-                        st.error("❌ Code PIN incorrect.")
+# Masquer la barre de sélection globale si l'on est dans le menu Cartographie & Parcelles
+if menu != "🌱 Cartographie & Parcelles":
+    if not db_champs.empty:
+        liste_champs = {row['nom']: row['id'] for _, row in db_champs.iterrows()}
+        col_sel1, col_sel2 = st.columns([3, 1])
+        with col_sel1:
+            champ_selectionne = st.selectbox("📍 Parcelle Active en Cours :", list(liste_champs.keys()))
+            champ_id_actif = liste_champs[champ_selectionne]
+            
+            row_champ_actuel = db_champs[db_champs['id'] == champ_id_actif].iloc[0]
+            pin_enreg = row_champ_actuel.get('code_pin')
+            has_pin = pin_enreg is not None and str(pin_enreg).strip() != "" and str(pin_enreg).strip() != "None"
+            
+            if has_pin:
+                if f"pin_ok_{champ_id_actif}" not in st.session_state:
+                    st.session_state[f"pin_ok_{champ_id_actif}"] = False
+                if not st.session_state[f"pin_ok_{champ_id_actif}"]:
+                    st.warning(f"🔒 Cette parcelle (**{champ_selectionne}**) est protégée par code PIN.")
+                    saisie_pin = st.text_input("Entrez le code PIN :", type="password", key=f"input_pin_{champ_id_actif}")
+                    if st.button("🔓 Déverrouiller", key=f"btn_unlock_{champ_id_actif}"):
+                        if saisie_pin == str(pin_enreg):
+                            st.session_state[f"pin_ok_{champ_id_actif}"] = True
+                            st.success("✅ Accès autorisé !")
+                            st.rerun()
+                        else:
+                            st.error("❌ Code PIN incorrect.")
 
-    with col_sel2:
-        st.write("")
-        if st.button("➕ Créer une Parcelle"):
-            st.session_state.selected_menu = "🌱 Cartographie & Parcelles"
-            st.rerun()
+        with col_sel2:
+            st.write("")
+            if st.button("➕ Créer une Parcelle"):
+                st.session_state.selected_menu = "🌱 Cartographie & Parcelles"
+                st.rerun()
 
-st.divider()
+    st.divider()
 
 # ==========================================
 # 6. MODULES APPLICATIFS ÉPURÉS ET FLUIDES
@@ -448,7 +450,7 @@ elif menu == "🌱 Cartographie & Parcelles":
 
     st.divider()
 
-    # 2. FORMULAIRE DE CRÉATION EN CLIQUANT / REMPLISSANT EN DESSOUS
+    # 2. FORMULAIRE DE CRÉATION EN DESSOUS
     st.markdown("<div class='card-container'>", unsafe_allow_html=True)
     st.subheader("➕ 2. Enregistrement de la Nouvelle Parcelle & Fiche A4")
     
