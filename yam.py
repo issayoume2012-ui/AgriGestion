@@ -79,12 +79,14 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS irrigation (id INTEGER PRIMARY KEY AUTOINCREMENT, champ_id INTEGER, date TEXT, volume_eau_m3 REAL, methode TEXT, duree_heures REAL)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS alertes_meteo (id INTEGER PRIMARY KEY AUTOINCREMENT, champ_id INTEGER, date TEXT, type_risque TEXT, niveau_alerte TEXT, recommandation_ts TEXT)''')
     
-    # Espace de travail
+    # Espace de travail avec les colonnes email et destinataire_email incluses
     cursor.execute('''CREATE TABLE IF NOT EXISTS messages_workspace (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         auteur TEXT,
+                        email TEXT,
                         role TEXT,
                         destinataire TEXT,
+                        destinataire_email TEXT,
                         priorite TEXT,
                         texte TEXT,
                         date_heure TEXT,
@@ -94,8 +96,10 @@ def init_db():
                         champ_concerne TEXT
                     )''')
     
-    # Migration automatique de sécurité pour les tables existantes (évite les OperationalError si la table existait déjà sans certaines colonnes)
+    # Migration automatique de sécurité pour toutes les colonnes requises
     colonnes_a_verifier = [
+        ("email", "TEXT"),
+        ("destinataire_email", "TEXT"),
         ("champ_concerne", "TEXT"),
         ("nom_fichier", "TEXT"),
         ("fichier_path", "TEXT"),
@@ -760,15 +764,26 @@ elif menu == "💬 Espace Collaboration & Workspace":
     
     st.subheader("📁 Partager un rapport, une photo, une vidéo ou un document")
     
+    # Récupération de la liste des utilisateurs enregistrés pour la sélection des e-mails destinataires
+    df_users_wl = load_table('whitelist_users')
+    emails_disponibles = df_users_wl['email'].tolist() if not df_users_wl.empty else []
+    
     with st.form("form_workspace_media", clear_on_submit=False):
         col_c1, col_c2, col_c3 = st.columns(3)
         with col_c1:
-            destinataire = st.selectbox("Destinataire visé (Cible) :", ["Tous", "Techniciens", "Gestionnaires", "Propriétaires"])
+            destinataire = st.selectbox("Destinataire visé (Cible) :", ["Tous", "Techniciens", "Gestionnaires", "Propriétaires", "Utilisateur Spécifique"])
         with col_c2:
             priorite = st.selectbox("Priorité :", ["Normal", "Important ⚠️", "Urgent 🚨"])
         with col_c3:
             type_contenu = st.selectbox("Type de contenu :", ["Note textuelle", "Rapport PDF", "Photo 📷", "Vidéo 🎥", "Document 📄", "Lien Réunion 📹"])
             
+        destinataire_email = ""
+        if destinataire == "Utilisateur Spécifique":
+            if emails_disponibles:
+                destinataire_email = st.selectbox("Sélectionner l'E-mail du Destinataire :", emails_disponibles)
+            else:
+                destinataire_email = st.text_input("Saisir l'E-mail du destinataire :", placeholder="destinataire@exemple.com")
+        
         champ_concerne = st.selectbox("Parcelle liée (Optionnel) :", ["Aucune"] + (list(db_champs['nom'].values) if not db_champs.empty else []))
         texte_message = st.text_area("Légende / Message descriptif ou lien Google Meet collé :", placeholder="Ex: Rapport d'inspection ou collez le lien de la réunion ici...")
         
@@ -797,12 +812,12 @@ elif menu == "💬 Espace Collaboration & Workspace":
                     date_heure_actuelle = datetime.now().strftime("%d/%m/%Y à %H:%M")
                     
                     execute_query(
-                        "INSERT INTO messages_workspace (auteur, role, destinataire, priorite, texte, date_heure, type_contenu, fichier_path, nom_fichier, champ_concerne) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        (auteur_complet, role_tech, destinataire, priorite, texte_message.strip(), date_heure_actuelle, type_contenu, fichier_path, nom_fichier, champ_concerne),
-                        action_desc=f"Publication workspace ({type_contenu}) pour {destinataire} (Expéditeur: {email_connecte})",
+                        "INSERT INTO messages_workspace (auteur, email, role, destinataire, destinataire_email, priorite, texte, date_heure, type_contenu, fichier_path, nom_fichier, champ_concerne) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (auteur_complet, email_connecte, role_tech, destinataire, destinataire_email, priorite, texte_message.strip(), date_heure_actuelle, type_contenu, fichier_path, nom_fichier, champ_concerne),
+                        action_desc=f"Publication workspace ({type_contenu}) pour {destinataire} ({destinataire_email}) [Expéditeur: {email_connecte}]",
                         user_info=tech
                     )
-                    st.success(f"✅ Publication validée et partagée avec succès depuis l'e-mail **{email_connecte}** vers le groupe **{destinataire}** !")
+                    st.success(f"✅ Publication validée et partagée avec succès depuis l'e-mail **{email_connecte}** vers **{destinataire}** ({destinataire_email if destinataire_email else 'Global'}) !")
                     st.rerun()
                 else:
                     st.warning("⚠️ Veuillez saisir un message ou joindre un fichier.")
@@ -813,18 +828,22 @@ elif menu == "💬 Espace Collaboration & Workspace":
     if not df_messages.empty:
         for _, msg in df_messages.iloc[::-1].iterrows():
             m_auteur = msg.get('auteur', 'Inconnu')
+            m_email = msg.get('email', 'Email non spécifié')
             m_role = msg.get('role', 'Rôle')
             m_dest = msg.get('destinataire', 'Tous')
+            m_dest_email = msg.get('destinataire_email', '')
             m_priorite = msg.get('priorite', 'Normal')
             m_texte = msg.get('texte', '')
             m_date = msg.get('date_heure', '')
             m_champ = msg.get('champ_concerne', 'Aucune')
             m_id = msg.get('id', 0)
             
+            dest_affichage = f"<b>{m_dest}</b>" + (f" &lt;{m_dest_email}&gt;" if m_dest_email else "")
+            
             st.markdown(f"""
                 <div style="background: white; padding: 15px; border-radius: 10px; border-left: 4px solid #10b981; margin-bottom: 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
                     <div style="display: flex; justify-content: space-between;">
-                        <small style="color: #6b7280;"><b>{m_auteur}</b> ({m_role}) ➔ Cible : <b>{m_dest}</b> {f"| 📍 <i>{m_champ}</i>" if m_champ != 'Aucune' else ''}</small>
+                        <small style="color: #6b7280;"><b>{m_auteur}</b> &lt;{m_email}&gt; ({m_role}) ➔ Destinataire : {dest_affichage} {f"| 📍 <i>{m_champ}</i>" if m_champ != 'Aucune' else ''}</small>
                         <small style="color: #ef4444; font-weight: bold;">{m_priorite}</small>
                     </div>
                     <p style="margin: 10px 0; color: #1f2937; font-size: 14px;">{m_texte}</p>
@@ -902,8 +921,8 @@ elif menu == "📑 EXPORT RAPPORT PARCELLE":
                 date_heure_actuelle = datetime.now().strftime("%d/%m/%Y à %H:%M")
                 
                 execute_query(
-                    "INSERT INTO messages_workspace (auteur, role, destinataire, priorite, texte, date_heure, type_contenu, fichier_path, nom_fichier, champ_concerne) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (auteur_complet, role_tech, "Tous", "Important ⚠️", f"Rapport technique officiel généré pour la parcelle {champ_selectionne}.", date_heure_actuelle, "Rapport PDF", f_path, nom_fic_pdf, champ_selectionne),
+                    "INSERT INTO messages_workspace (auteur, email, role, destinataire, destinataire_email, priorite, texte, date_heure, type_contenu, fichier_path, nom_fichier, champ_concerne) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (auteur_complet, email_connecte, role_tech, "Tous", "", "Important ⚠️", f"Rapport technique officiel généré pour la parcelle {champ_selectionne}.", date_heure_actuelle, "Rapport PDF", f_path, nom_fic_pdf, champ_selectionne),
                     action_desc=f"Archivage rapport PDF {champ_selectionne} dans workspace",
                     user_info=tech
                 )
