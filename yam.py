@@ -855,7 +855,8 @@ elif menu == "💬 Espace Collaboration & Workspace":
             f_name = msg.get('nom_fichier', '')
             f_type = msg.get('type_contenu', '')
             
-            if f_path and os.path.exists(f_path):
+            # Correction appliquée ici : vérification que f_path est bien une chaîne de caractères (str)
+            if f_path and isinstance(f_path, str) and os.path.exists(f_path):
                 if f_type == "Photo 📷" or f_name.lower().endswith(('.png', '.jpg', '.jpeg')):
                     st.image(f_path, caption=f_name, width=400)
                 elif f_type == "Vidéo 🎥" or f_name.lower().endswith(('.mp4', '.mov')):
