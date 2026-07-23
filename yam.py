@@ -284,7 +284,10 @@ if not db_champs.empty:
         row_champ_actuel = db_champs[db_champs['id'] == champ_id_actif].iloc[0]
         pin_enreg = row_champ_actuel.get('code_pin')
         
-        if pin_enreg and str(pin_enreg).strip() != "":
+        # On vérifie si un code PIN réel et non vide est défini
+        has_pin = pin_enreg is not None and str(pin_enreg).strip() != "" and str(pin_enreg).strip() != "None"
+        
+        if has_pin:
             if f"pin_ok_{champ_id_actif}" not in st.session_state:
                 st.session_state[f"pin_ok_{champ_id_actif}"] = False
                 
