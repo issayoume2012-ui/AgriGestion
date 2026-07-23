@@ -290,8 +290,13 @@ def export_parcelle_pdf(champ_nom, date_rapport):
 
     tables_to_export = {}
     if champ_id:
+        # Correction stricte : Filtrage rigoureux par nom de parcelle pour les pointages
         df_pt = load_table('pointage')
-        tables_to_export["1. Pointages & Présences"] = df_pt[df_pt['champ_nom'] == champ_nom][['date', 'employe_nom', 'tache_effectuee', 'heures_travaillees']] if not df_pt.empty else pd.DataFrame()
+        if not df_pt.empty and 'champ_nom' in df_pt.columns:
+            df_pt_filtered = df_pt[df_pt['champ_nom'].astype(str).str.strip().str.lower() == str(champ_nom).strip().lower()]
+            tables_to_export["1. Pointages & Présences (Membres & Groupes)"] = df_pt_filtered[['date', 'employe_nom', 'groupe_nom', 'tache_effectuee', 'heures_travaillees']] if not df_pt_filtered.empty else pd.DataFrame()
+        else:
+            tables_to_export["1. Pointages & Présences (Membres & Groupes)"] = pd.DataFrame()
         
         df_rec = load_table('recoltes')
         tables_to_export["2. Récoltes de la Parcelle"] = df_rec[df_rec['champ_id'] == champ_id][['culture', 'date_recolte', 'quantite_kg', 'prix_unitaire']] if not df_rec.empty else pd.DataFrame()
@@ -314,7 +319,7 @@ def export_parcelle_pdf(champ_nom, date_rapport):
             ]))
             elements.append(t)
         else:
-            elements.append(Paragraph("<i>Aucune donnée enregistrée pour cette parcelle.</i>", normal_style))
+            elements.append(Paragraph("<i>Aucune donnée enregistrée spécifiquement pour cette parcelle.</i>", normal_style))
         elements.append(Spacer(1, 6))
 
     doc.build(elements)
@@ -628,17 +633,19 @@ elif menu == "⏰ Pointage des Horaires":
         st.markdown("---")
         st.subheader("📜 Historique des pointages de la parcelle (avec suppression)")
         df_pts = load_table('pointage')
-        df_pts_champ = df_pts[df_pts['champ_nom'] == champ_selectionne] if not df_pts.empty else pd.DataFrame()
+        # Correction stricte : Filtrage rigoureux par champ_nom pour éviter d'afficher tous les pointages de la base
+        df_pts_champ = df_pts[df_pts['champ_nom'].astype(str).str.strip().str.lower() == str(champ_selectionne).strip().lower()] if not df_pts.empty and 'champ_nom' in df_pts.columns else pd.DataFrame()
+        
         if not df_pts_champ.empty:
             for _, pt in df_pts_champ.iterrows():
                 cp1, cp2 = st.columns([4, 1])
-                cp1.write(f"📅 {pt['date']} | **{pt['employe_nom']}** — Tâche : {pt['tache_effectuee']} ({pt['heures_travaillees']}h)")
+                cp1.write(f"📅 {pt['date']} | Groupe: **{pt.get('groupe_nom', 'N/A')}** | Membre: **{pt['employe_nom']}** — Tâche : {pt['tache_effectuee']} ({pt['heures_travaillees']}h)")
                 if cp2.button("🗑️ Supprimer", key=f"del_pt_{pt['id']}"):
                     execute_query("DELETE FROM pointage WHERE id = ?", (pt['id'],), action_desc="Suppression d'un pointage", user_info=tech)
                     st.success("Pointage supprimé !")
                     st.rerun()
         else:
-            st.info("Aucun pointage enregistré pour cette parcelle.")
+            st.info("Aucun pointage enregistré spécifiquement pour cette parcelle.")
 
 elif menu == "📅 Planning & Travaux":
     st.title(f"📅 Planning & Travaux — {champ_selectionne}")
@@ -1067,7 +1074,8 @@ elif menu == "💬 Espace Collaboration & Workspace":
 elif menu == "📜 Historique":
     st.title("📜 Historique des Modifications (Espace Administration)")
     df_h = load_table('historique_modifications')
-    st.dataframe(df_h.iloc[::-1] if not df_h.empty else df_h, use_container_width=True)
+    # Correction stricte : Filtrage optionnel ou affichage complet propre et clair ordonné du plus récent au plus ancien
+    st.dataframe(df_h.iloc[::-1].reset_index(drop=True) if not df_h.empty else df_h, use_container_width=True)
 
 elif menu == "🔐 Paramètres & Liste Blanche":
     st.title("🔐 Paramètres & Liste Blanche (Espace Administration)")
