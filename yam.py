@@ -208,7 +208,7 @@ def export_parcelle_pdf(champ_nom, date_rapport):
     tables_to_export = {}
     
     df_part = load_table('partage_champs')
-    tables_to_export["1. Équipe & Rôles assignés (Propriétaires / Gestionnaires / Techniciens)"] = df_part[df_part['champ_nom'] == champ_nom][['technicien_email', 'droit']] if not df_part.empty else pd.DataFrame()
+    tables_to_export["1. Équipe & Rôles assignés"] = df_part[df_part['champ_nom'] == champ_nom][['technicien_email', 'droit']] if not df_part.empty else pd.DataFrame()
 
     if champ_id:
         df_pt = load_table('pointage')
@@ -241,7 +241,7 @@ def export_parcelle_pdf(champ_nom, date_rapport):
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#10b981')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), Helvetica-Bold if 'Helvetica-Bold' in globals() else 'Helvetica-Bold'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                 ('FONTSIZE', (0, 0), (-1, -1), 6),
                 ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
             ]))
@@ -249,10 +249,6 @@ def export_parcelle_pdf(champ_nom, date_rapport):
         else:
             elements.append(Paragraph("<i>Aucune donnée enregistrée pour cette section.</i>", normal_style))
         elements.append(Spacer(1, 4))
-
-    elements.append(Spacer(1, 10))
-    signature_text = "<b>Validation Hiérarchique (Propriétaire / Gestionnaire Administratif / Technicien) :</b><br/><br/><br/>____________________________________________________________"
-    elements.append(Paragraph(signature_text, normal_style))
 
     doc.build(elements)
     return buffer.getvalue()
@@ -311,10 +307,14 @@ champ_id_actif = None
 champ_selectionne = "Aucune parcelle"
 
 if not db_champs.empty:
-    if email_connecte != "issayoume2012@gmail.com" and role_tech.lower() != "propriétaire":
+    # CORRECTION : Si ce n'est pas le propriétaire, on filtre strictement par rapport aux parcelles qui lui ont été attribuées
+    if email_connecte != "issayoume2012@gmail.com" and not ("administrateur" in role_tech.lower() or "superviseur" in role_tech.lower()):
         df_partages = load_table('partage_champs')
-        champs_autorises = df_partages[df_partages['technicien_email'].str.lower() == email_connecte]['champ_nom'].tolist()
-        db_champs = db_champs[db_champs['nom'].isin(champs_autorises)]
+        if not df_partages.empty:
+            champs_autorises = df_partages[df_partages['technicien_email'].str.lower() == email_connecte]['champ_nom'].tolist()
+            db_champs = db_champs[db_champs['nom'].isin(champs_autorises)]
+        else:
+            db_champs = pd.DataFrame(columns=db_champs.columns)
 
 if not db_champs.empty:
     liste_champs = {row['nom']: row['id'] for _, row in db_champs.iterrows()}
@@ -362,9 +362,11 @@ if not db_champs.empty:
             st.session_state.authenticated = False
             st.rerun()
 else:
+    st.warning("⚠️ Aucune parcelle ne vous est actuellement attribuée. Veuillez demander au propriétaire de vous affecter une parcelle dans l'espace collaboration.")
     if st.button("🚪 Déconnexion"):
         st.session_state.authenticated = False
         st.rerun()
+    st.stop()
 
 st.divider()
 
@@ -391,7 +393,7 @@ if menu == "📊 Tableau de Bord":
     m4.metric("Récoltes", f"{tot_rec/1000:.2f} T")
     st.divider()
     if df_c.empty:
-        st.info("👋 Commencez par ajouter vos parcelles dans **'🌱 Cartographie & Parcelles'**.")
+        st.info("👋 Aucune parcelle disponible.")
     else:
         st.subheader("📍 Parcelles Actives")
         st.dataframe(df_c[["nom", "superficie_ha", "culture_actuelle", "statut"]], use_container_width=True)
@@ -776,9 +778,6 @@ elif menu == "📈 Rentabilité & ROI":
 elif menu == "💬 Espace Collaboration & Réunions Meet":
     st.title("💬 Espace Collaboration & Affectation des Rôles par Parcelle")
     
-    # -------------------------------------------------------------
-    # SÉCURITÉ DYNAMIQUE : Propriétaire OU Rôle Administrateur / Superviseur
-    # -------------------------------------------------------------
     est_proprietaire_principal = (email_connecte == "issayoume2012@gmail.com")
     est_admin_superviseur = ("administrateur" in role_tech.lower() or "superviseur" in role_tech.lower() or "propriétaire" in role_tech.lower())
     
@@ -915,7 +914,6 @@ elif menu == "🔐 Paramètres & Liste Blanche":
                 new_password = st.text_input("Mot de passe *", type="password")
                 new_prenom = st.text_input("Prénom")
                 new_nom = st.text_input("Nom")
-                # Désormais, vous pouvez choisir directement le rôle de confiance ici
                 new_role = st.selectbox("Rôle Global", ["Propriétaire", "Administrateur / Superviseur", "Gestionnaire Administratif", "Technicien de Terrain", "Consultant"])
                 
                 st.markdown("---")
