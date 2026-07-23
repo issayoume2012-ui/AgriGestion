@@ -76,7 +76,8 @@ def init_db():
                         password TEXT, 
                         prenom TEXT, 
                         nom TEXT, 
-                        role TEXT
+                        role TEXT,
+                        modules_autorises TEXT
                     )''')
     
     cursor.execute('''CREATE TABLE IF NOT EXISTS partage_champs (
@@ -101,34 +102,27 @@ def init_db():
                         piece_jointe_data BLOB
                     )''')
     
+    # Vérification et mise à jour des colonnes si besoin
+    cursor.execute("PRAGMA table_info(whitelist_users)")
+    cols_wl = [col[1] for col in cursor.fetchall()]
+    if "modules_autorises" not in cols_wl:
+        cursor.execute("ALTER TABLE whitelist_users ADD COLUMN modules_autorises TEXT")
+
     cursor.execute("SELECT COUNT(*) FROM whitelist_users")
     if cursor.fetchone()[0] == 0:
         cursor.execute(
-            "INSERT INTO whitelist_users (email, password, prenom, nom, role) VALUES (?, ?, ?, ?, ?)",
-            ("issayoume2012@gmail.com", "issayoume2026", "Issa", "Youme", "Propriétaire")
+            "INSERT INTO whitelist_users (email, password, prenom, nom, role, modules_autorises) VALUES (?, ?, ?, ?, ?, ?)",
+            ("issayoume2012@gmail.com", "issayoume2026", "Issa", "Youme", "Propriétaire", "TOUS")
         )
-
-    cursor.execute("PRAGMA table_info(champs)")
-    cols_champs = [col[1] for col in cursor.fetchall()]
-    if "code_pin" not in cols_champs: 
-        cursor.execute("ALTER TABLE champs ADD COLUMN code_pin TEXT")
-
-    cursor.execute("PRAGMA table_info(messages_collab)")
-    cols_msg = [col[1] for col in cursor.fetchall()]
-    if "expediteur_email" not in cols_msg: cursor.execute("ALTER TABLE messages_collab ADD COLUMN expediteur_email TEXT")
-    if "destinataire" not in cols_msg: cursor.execute("ALTER TABLE messages_collab ADD COLUMN destinataire TEXT")
-    if "categorie_travail" not in cols_msg: cursor.execute("ALTER TABLE messages_collab ADD COLUMN categorie_travail TEXT")
-    if "titre" not in cols_msg: cursor.execute("ALTER TABLE messages_collab ADD COLUMN titre TEXT")
-    if "statut_tache" not in cols_msg: cursor.execute("ALTER TABLE messages_collab ADD COLUMN statut_tache TEXT")
-    if "piece_jointe_nom" not in cols_msg: cursor.execute("ALTER TABLE messages_collab ADD COLUMN piece_jointe_nom TEXT")
-    if "piece_jointe_data" not in cols_msg: cursor.execute("ALTER TABLE messages_collab ADD COLUMN piece_jointe_data BLOB")
+    else:
+        # S'assurer que le compte admin a tous les droits
+        cursor.execute("UPDATE whitelist_users SET modules_autorises = 'TOUS' WHERE email = 'issayoume2012@gmail.com'")
 
     conn.commit()
     conn.close()
 
 init_db()
 
-# Utilisation du cache Streamlit pour booster drastiquement la rapidité d'exécution
 @st.cache_data(ttl=60)
 def load_table(table_name):
     conn = get_connection()
@@ -142,7 +136,6 @@ def execute_query(query, params=()):
     cursor.execute(query, params)
     conn.commit()
     conn.close()
-    # Invalidation automatique du cache pour rafraîchir les données instantanément après une écriture
     load_table.clear()
 
 # ==========================================
@@ -165,7 +158,7 @@ def auth_system():
                 email_propre = email_input.strip().lower()
                 conn = get_connection()
                 cursor = conn.cursor()
-                cursor.execute("SELECT prenom, nom, role, password FROM whitelist_users WHERE LOWER(email) = ?", (email_propre,))
+                cursor.execute("SELECT prenom, nom, role, password, modules_autorises FROM whitelist_users WHERE LOWER(email) = ?", (email_propre,))
                 user_record = cursor.fetchone()
                 conn.close()
 
@@ -175,7 +168,8 @@ def auth_system():
                         "nom": user_record[1],
                         "prenom": user_record[0],
                         "gmail": email_propre,
-                        "role": user_record[2]
+                        "role": user_record[2],
+                        "modules_autorises": user_record[4] if user_record[4] else "TOUS"
                     }
                     st.success(f"✅ Bienvenue, {user_record[0]} !")
                     st.rerun()
@@ -188,91 +182,100 @@ if not auth_system():
     st.stop()
 
 # ==========================================
-# 4. EXPORTATIONS PDF & SIGNÉ POUR PARCELLE
+# 4. EXPORTATIONS PDF EXHAUSTIF PAR PARCELLE
 # ==========================================
 def export_parcelle_pdf(champ_nom, date_rapport):
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=25, leftMargin=25, topMargin=25, bottomMargin=25)
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
     elements = []
     tech = st.session_state.get('registered_tech', {})
     styles = getSampleStyleSheet()
     
-    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontName='Helvetica-Bold', fontSize=15, alignment=1, textColor=colors.HexColor('#1e3d59'))
+    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontName='Helvetica-Bold', fontSize=14, alignment=1, textColor=colors.HexColor('#1e3d59'))
     subtitle_style = ParagraphStyle('SubTitleStyle', parent=styles['Heading2'], fontName='Helvetica-Bold', fontSize=10, textColor=colors.HexColor('#10b981'), spaceBefore=8, spaceAfter=4)
     normal_style = styles['Normal']
     
-    elements.append(Paragraph(f"RAPPORT OFFICIEL - PARCELLE : {champ_nom.upper()}", title_style))
-    elements.append(Spacer(1, 6))
+    elements.append(Paragraph(f"RAPPORT EXHAUSTIF DE PARCELLE : {champ_nom.upper()}", title_style))
+    elements.append(Spacer(1, 4))
     
     date_str = date_rapport.strftime('%d/%m/%Y')
     header_info = f"<b>DATE DU RAPPORT : {date_str}</b> | <b>Établi par :</b> {tech.get('prenom', '')} {tech.get('nom', '')} ({tech.get('role', '')})<br/>"
     elements.append(Paragraph(header_info, normal_style))
-    elements.append(Spacer(1, 8))
+    elements.append(Spacer(1, 6))
 
     df_c = load_table('champs')
     champ_info = df_c[df_c['nom'] == champ_nom]
     champ_id = int(champ_info['id'].values[0]) if not champ_info.empty else None
 
     tables_to_export = {}
+    
+    df_part = load_table('partage_champs')
+    tables_to_export["1. Équipe & Rôles assignés (Propriétaires / Gestionnaires / Techniciens)"] = df_part[df_part['champ_nom'] == champ_nom][['technicien_email', 'droit']] if not df_part.empty else pd.DataFrame()
+
     if champ_id:
+        df_pt = load_table('pointage')
+        tables_to_export["2. Pointage des Horaires et Présences"] = df_pt[df_pt['champ_nom'] == champ_nom][['date', 'employe_nom', 'groupe_nom', 'statut_presence', 'tache_effectuee', 'heures_travaillees', 'remarque']] if not df_pt.empty else pd.DataFrame()
+
         df_rec = load_table('recoltes')
-        tables_to_export["1. Récoltes"] = df_rec[df_rec['champ_id'] == champ_id] if not df_rec.empty else pd.DataFrame()
+        tables_to_export["3. Récoltes et Productions"] = df_rec[df_rec['champ_id'] == champ_id][['culture', 'date_recolte', 'quantite_kg', 'prix_unitaire']] if not df_rec.empty else pd.DataFrame()
         
         df_dep = load_table('depenses')
-        tables_to_export["2. Dépenses"] = df_dep[df_dep['champ_id'] == champ_id] if not df_dep.empty else pd.DataFrame()
+        tables_to_export["4. Dépenses & Factures"] = df_dep[df_dep['champ_id'] == champ_id][['type', 'montant', 'date', 'facture_nom']] if not df_dep.empty else pd.DataFrame()
         
         df_t = load_table('taches')
-        tables_to_export["3. Tâches Planifiées"] = df_t[df_t['champ_id'] == champ_id] if not df_t.empty else pd.DataFrame()
+        tables_to_export["5. Planning & Travaux"] = df_t[df_t['champ_id'] == champ_id][['type_travail', 'date_tache', 'heures_travaillees', 'statut']] if not df_t.empty else pd.DataFrame()
         
         df_p = load_table('pluviometrie')
-        tables_to_export["4. Pluviométrie"] = df_p[df_p['champ_id'] == champ_id] if not df_p.empty else pd.DataFrame()
+        tables_to_export["6. Pluviométrie"] = df_p[df_p['champ_id'] == champ_id][['date', 'pluie_mm']] if not df_p.empty else pd.DataFrame()
+
+        df_irr = load_table('irrigation')
+        tables_to_export["7. Irrigation & Eau"] = df_irr[df_irr['champ_nom'] == champ_nom][['date', 'volume_eau_m3', 'methode', 'duree_heures']] if not df_irr.empty else pd.DataFrame()
         
         df_i = load_table('incidents')
-        tables_to_export["5. Incidents"] = df_i[df_i['champ_id'] == champ_id] if not df_i.empty else pd.DataFrame()
+        tables_to_export["8. Incidents & Alertes"] = df_i[df_i['champ_id'] == champ_id][['date', 'description', 'gravite', 'action']] if not df_i.empty else pd.DataFrame()
 
     for section_title, df_sec in tables_to_export.items():
         elements.append(Paragraph(section_title, subtitle_style))
         if not df_sec.empty:
-            cols_to_show = [c for c in df_sec.columns if c not in ['id', 'champ_id', 'groupe_id']]
-            df_display = df_sec[cols_to_show]
-            data = [df_display.columns.tolist()] + df_display.astype(str).values.tolist()
+            data = [df_sec.columns.tolist()] + df_sec.astype(str).values.tolist()
             t = Table(data, hAlign='LEFT')
             t.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#10b981')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, -1), 7),
+                ('FONTSIZE', (0, 0), (-1, -1), 6),
                 ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
             ]))
             elements.append(t)
         else:
-            elements.append(Paragraph("<i>Aucune donnée enregistrée pour cette parcelle.</i>", normal_style))
-        elements.append(Spacer(1, 5))
+            elements.append(Paragraph("<i>Aucune donnée enregistrée pour cette section.</i>", normal_style))
+        elements.append(Spacer(1, 4))
 
-    elements.append(Spacer(1, 15))
-    signature_text = "<b>Signature et Validation du Propriétaire / Responsable :</b><br/><br/><br/>________________________________________"
+    elements.append(Spacer(1, 10))
+    signature_text = "<b>Validation Hiérarchique (Propriétaire / Gestionnaire Administratif / Technicien) :</b><br/><br/><br/>____________________________________________________________"
     elements.append(Paragraph(signature_text, normal_style))
 
     doc.build(elements)
     return buffer.getvalue()
 
 # ==========================================
-# 5. NAVIGATION TOP BAR
+# 5. NAVIGATION & RÔLES / FILTRAGE DES MODULES
 # ==========================================
 tech = st.session_state.get('registered_tech', {})
 prenom_tech = tech.get('prenom', 'Utilisateur')
 nom_tech = tech.get('nom', '')
-role_tech = tech.get('role', 'Membre')
+role_tech = tech.get('role', 'Technicien')
 email_connecte = tech.get('gmail', '').lower()
+modules_autorises_user = tech.get('modules_autorises', 'TOUS')
 
 st.markdown(f"""
     <div style="display: flex; justify-content: space-between; align-items: center; background-color: #ffffff; padding: 10px 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 15px;">
-        <div><b>🌾 AgriGestion Pro</b> | <span style="color: #10b981;">{prenom_tech} {nom_tech}</span> ({role_tech})</div>
+        <div><b>🌾 AgriGestion Pro</b> | <span style="color: #10b981;">{prenom_tech} {nom_tech}</span> — Rôle Global : <b>{role_tech}</b></div>
     </div>
 """, unsafe_allow_html=True)
 
-menu_options = [
+tous_les_menus = [
     "📊 Tableau de Bord",
     "🌱 Cartographie & Parcelles",
     "👥 Groupes & Membres",
@@ -293,6 +296,17 @@ menu_options = [
     "📑 EXPORT RAPPORT PARCELLE"
 ]
 
+# Filtrage dynamique des menus selon les autorisations de l'utilisateur
+if modules_autorises_user == "TOUS" or email_connecte == "issayoume2012@gmail.com":
+    menu_options = tous_les_menus
+else:
+    # Liste de base toujours accessible
+    menu_options = ["📊 Tableau de Bord", "💬 Espace Collaboration & Réunions Meet", "📑 EXPORT RAPPORT PARCELLE"]
+    liste_mod_autorises = [m.strip() for m in modules_autorises_user.split(",") if m.strip()]
+    for m in tous_les_menus:
+        if any(mod in m for mod in liste_mod_autorises) and m not in menu_options:
+            menu_options.insert(1, m)
+
 menu = st.selectbox("📌 Menu Principal de Navigation", menu_options)
 
 db_champs = load_table('champs')
@@ -309,9 +323,23 @@ if not db_champs.empty:
     liste_champs = {row['nom']: row['id'] for _, row in db_champs.iterrows()}
     col_sel1, col_sel2 = st.columns([3, 1])
     with col_sel1:
-        champ_selectionne = st.selectbox("📍 Parcelle Active pour les opérations :", list(liste_champs.keys()))
+        champ_selectionne = st.selectbox("📍 Parcelle Active (et affectations par rôles) :", list(liste_champs.keys()))
         champ_id_actif = liste_champs[champ_selectionne]
         
+        df_p_act = load_table('partage_champs')
+        affectations_cette_parcelle = df_p_act[df_p_act['champ_nom'] == champ_selectionne] if not df_p_act.empty else pd.DataFrame()
+        
+        st.markdown(f"""
+            <div style="background-color: #f1f5f9; padding: 8px 12px; border-radius: 6px; font-size: 12px; margin-top: 5px;">
+                <b>👥 Équipe affectée à cette parcelle :</b><br>
+        """, unsafe_allow_html=True)
+        if not affectations_cette_parcelle.empty:
+            for _, af in affectations_cette_parcelle.iterrows():
+                st.markdown(f"- ✉️ `{af['technicien_email']}` — Rôle/Accès : **{af['droit']}**")
+        else:
+            st.markdown("- *Aucune affectation spécifique enregistrée pour cette parcelle.*")
+        st.markdown("</div>", unsafe_allow_html=True)
+
         row_champ_actuel = db_champs[db_champs['id'] == champ_id_actif].iloc[0]
         pin_enreg = row_champ_actuel.get('code_pin')
         has_pin = pin_enreg is not None and str(pin_enreg).strip() != "" and str(pin_enreg).strip() != "None"
@@ -321,31 +349,15 @@ if not db_champs.empty:
                 st.session_state[f"pin_ok_{champ_id_actif}"] = False
                 
             if not st.session_state[f"pin_ok_{champ_id_actif}"]:
-                st.warning(f"🔒 Cette parcelle (**{champ_selectionne}**) est protégée par un code de confidentialité.")
-                saisie_pin = st.text_input("Entrez le code PIN de la parcelle :", type="password", key=f"input_pin_{champ_id_actif}")
-                
-                col_btn1, col_btn2 = st.columns(2)
-                with col_btn1:
-                    if st.button("🔓 Déverrouiller", key=f"btn_unlock_{champ_id_actif}", use_container_width=True):
-                        if saisie_pin == str(pin_enreg):
-                            st.session_state[f"pin_ok_{champ_id_actif}"] = True
-                            st.success("✅ Accès autorisé !")
-                            st.rerun()
-                        else:
-                            st.error("❌ Code PIN incorrect.")
-                with col_btn2:
-                    if st.button("🔄 Oublié / Réinitialiser", key=f"btn_reset_pin_{champ_id_actif}", use_container_width=True):
-                        st.session_state[f"reset_mode_{champ_id_actif}"] = True
-                
-                if st.session_state.get(f"reset_mode_{champ_id_actif}", False):
-                    nouveau_pin_saisi = st.text_input("Nouveau code PIN :", type="password", key=f"new_pin_val_{champ_id_actif}")
-                    if st.button("💾 Enregistrer et Accéder", key=f"save_new_pin_{champ_id_actif}", type="primary"):
-                        pin_final = nouveau_pin_saisi.strip() if nouveau_pin_saisi else None
-                        execute_query("UPDATE champs SET code_pin = ? WHERE id = ?", (pin_final, champ_id_actif))
+                st.warning(f"🔒 Cette parcelle (**{champ_selectionne}**) est protégée par un code PIN.")
+                saisie_pin = st.text_input("Entrez le code PIN :", type="password", key=f"input_pin_{champ_id_actif}")
+                if st.button("🔓 Déverrouiller", key=f"btn_unlock_{champ_id_actif}"):
+                    if saisie_pin == str(pin_enreg):
                         st.session_state[f"pin_ok_{champ_id_actif}"] = True
-                        st.session_state[f"reset_mode_{champ_id_actif}"] = False
-                        st.success("✅ Code PIN mis à jour avec succès !")
+                        st.success("✅ Accès autorisé !")
                         st.rerun()
+                    else:
+                        st.error("❌ Code PIN incorrect.")
                 st.stop()
 
     with col_sel2:
@@ -418,7 +430,7 @@ elif menu == "🌱 Cartographie & Parcelles":
             lon_p = st.number_input("Longitude", value=float(st.session_state['lon_active']), format="%.6f")
             cult_p = st.text_input("Culture principale")
             stat_p = st.selectbox("Statut", ["En préparation", "Semé", "En croissance", "Prêt à récolter"])
-            pin_p = st.text_input("Code PIN de confidentialité (optionnel)", type="password", placeholder="Laisser vide si public")
+            pin_p = st.text_input("Code PIN de confidentialité (optionnel)", type="password")
             
             if st.form_submit_button("💾 Enregistrer la Parcelle", use_container_width=True):
                 if nom_p:
@@ -485,45 +497,36 @@ elif menu == "👥 Groupes & Membres":
                         st.rerun()
 
 elif menu == "⏰ Pointage des Horaires":
-    st.title(f"⏰ Pointage strictly synchronisé — {champ_selectionne}")
+    st.title(f"⏰ Pointage des Horaires — {champ_selectionne}")
     
     if champ_selectionne == "Aucune parcelle":
         st.warning("⚠️ Veuillez sélectionner une parcelle active pour gérer le pointage.")
     else:
-        # Récupération stricte des membres autorisés/partagés sur CETTE parcelle uniquement
         df_partages = load_table('partage_champs')
         emails_autorises = df_partages[df_partages['champ_nom'] == champ_selectionne]['technicien_email'].str.lower().tolist()
-        
         df_employes_global = load_table('employes')
         df_wl_global = load_table('whitelist_users')
         
-        # Consolider la liste des personnes rattachées à la parcelle (techniciens partagés OU employés de l'exploitation)
-        # Pour une robustesse totale, on croise les emails partagés avec la whitelist, ou on liste les employés enregistrés.
         membres_parcelle = []
-        
-        # 1. Ajouter les utilisateurs de la whitelist assignés à la parcelle
         if not df_wl_global.empty and emails_autorises:
             match_wl = df_wl_global[df_wl_global['email'].str.lower().isin(emails_autorises)]
             for _, w in match_wl.iterrows():
                 membres_parcelle.append({
                     "nom": f"{w['prenom']} {w['nom']} ({w['role']})",
-                    "groupe": "Équipe Encadrement / Technique"
+                    "groupe": "Équipe Encadrement"
                 })
-                
-        # 2. Si aucun technicien spécifique n'est dans la table de partage hormis le propriétaire, on regarde les employés généraux ou on invite au partage
-        if not membres_parcelle:
-            st.info(f"💡 Aucun technicien externe n'est rattaché par partage à la parcelle **{champ_selectionne}**. Les membres par défaut de l'exploitation s'affichent.")
-            if not df_employes_global.empty:
-                for _, emp in df_employes_global.iterrows():
-                    membres_parcelle.append({
-                        "nom": f"{emp['nom']} - {emp['role']}",
-                        "groupe": emp['groupe_nom']
-                    })
+        
+        if not membres_parcelle and not df_employes_global.empty:
+            for _, emp in df_employes_global.iterrows():
+                membres_parcelle.append({
+                    "nom": f"{emp['nom']} - {emp['role']}",
+                    "groupe": emp['groupe_nom']
+                })
 
         if not membres_parcelle:
-            st.warning("⚠️ Aucun membre ou employé n'est disponible pour le pointage. Veuillez ajouter des employés ou partager des accès.")
+            st.warning("⚠️ Aucun membre disponible pour le pointage.")
         else:
-            st.success(f"✅ Pointage actif et isolé pour la parcelle : **{champ_selectionne}** ({len(membres_parcelle)} membre(s) concerné(s)).")
+            st.success(f"✅ Pointage actif et isolé pour la parcelle : **{champ_selectionne}**")
             
             c_d1, c_d2 = st.columns(2)
             with c_d1: date_p = st.date_input("Date du pointage", value=date.today(), key=f"date_pt_{champ_id_actif}")
@@ -531,7 +534,6 @@ elif menu == "⏰ Pointage des Horaires":
             
             st.divider()
             
-            # Construction du tableau interactif propre à la parcelle
             lignes_pointage = []
             for m in membres_parcelle:
                 lignes_pointage.append({
@@ -584,9 +586,7 @@ elif menu == "⏰ Pointage des Horaires":
             if not df_pt_parcelle.empty:
                 st.dataframe(df_pt_parcelle.drop(columns=['id'], errors='ignore'), use_container_width=True)
             else:
-                st.info("Aucun historique de pointage enregistré pour cette parcelle spécifique.")
-        else:
-            st.info("Aucun pointage dans la base de données.")
+                st.info("Aucun historique de pointage enregistré pour cette parcelle.")
 
 elif menu == "📅 Planning & Travaux":
     st.title(f"📅 Planning & Travaux - {champ_selectionne}")
@@ -652,7 +652,7 @@ elif menu == "💰 Finances & Marges":
         with col_f2:
             st.subheader("➕ Nouvelle Dépense & Facture")
             with st.form("form_finances_refonte"):
-                motif = st.text_input("Motif / Type de dépense (ex: Achat Carburant)")
+                motif = st.text_input("Motif / Type de dépense")
                 mnt = st.number_input("Montant (FCFA)", min_value=0.0, value=0.0, step=100.0)
                 date_dep = st.date_input("Date de la dépense", value=date.today())
                 photo_facture = st.file_uploader("📸 Photo ou Scan de la Facture", type=["png", "jpg", "jpeg", "pdf"])
@@ -672,7 +672,7 @@ elif menu == "📦 Stocks d'Intrants":
     with col_i2:
         st.subheader("➕ Ajouter un Intrant")
         with st.form("form_intrant_refonte"):
-            nom_i = st.text_input("Nom de l'intrant (ex: Engrais NPK)")
+            nom_i = st.text_input("Nom de l'intrant")
             cat_i = st.selectbox("Catégorie", ["Engrais", "Semence", "Pesticide", "Carburant"])
             stk_i = st.number_input("Stock initial / actuel", min_value=0.0, value=10.0)
             unit_i = st.text_input("Unité (ex: Sacs, Litres, Kg)")
@@ -777,31 +777,35 @@ elif menu == "📈 Rentabilité & ROI":
     col_r3.metric("Marge Nette", f"{marge:,.0f} FCFA", delta="Bénéfice" if marge >= 0 else "Déficit")
 
 elif menu == "💬 Espace Collaboration & Réunions Meet":
-    st.title("💬 Espace Collaboration Professionnelle & Réunions Google Meet")
-    st.info("Espace de travail en ligne et partagé entre Propriétaire, Techniciens et gestionnaires de parcelles.")
+    st.title("💬 Espace Collaboration & Affectation des Rôles par Parcelle")
+    st.info("Attribuez les rôles précis (Propriétaire, Gestionnaire Administratif, Technicien) pour chaque parcelle.")
 
-    with st.expander("🤝 Gestion Collégiale des Parcelles (Partage entre Propriétaire et Techniciens)", expanded=False):
-        st.markdown("Attribuez l'accès de gestion d'une parcelle à des techniciens spécifiques de la liste blanche pour qu'ils puissent y travailler en équipe.")
+    with st.expander("🤝 Attribuer un Rôle et une Parcelle (Propriétaires, Gestionnaires, Techniciens)", expanded=True):
         df_wl_all = load_table('whitelist_users')
         df_ch_all = load_table('champs')
         
         if not df_ch_all.empty and not df_wl_all.empty:
-            with st.form("form_partage_champ"):
-                c_p1 = st.selectbox("Parcelle à partager", df_ch_all['nom'].tolist())
-                c_p2 = st.selectbox("Technicien destinataire", df_wl_all['email'].tolist())
-                c_p3 = st.selectbox("Droit d'accès", ["Gestion complète", "Lecture & Pointage"])
-                if st.form_submit_button("🔗 Partager l'accès à la parcelle"):
+            with st.form("form_partage_champ_role"):
+                c_p1 = st.selectbox("Sélectionner la Parcelle", df_ch_all['nom'].tolist())
+                c_p2 = st.selectbox("Utilisateur / Collaborateur", df_wl_all['email'].tolist())
+                c_p3 = st.selectbox("Rôle / Droits sur cette parcelle", [
+                    "Propriétaire (Superviseur total)", 
+                    "Gestionnaire Administratif & Financier", 
+                    "Technicien de Terrain & Pointage",
+                    "Consultant / Observateur"
+                ])
+                if st.form_submit_button("🔗 Affecter ce Rôle à la Parcelle", use_container_width=True):
                     execute_query("INSERT INTO partage_champs (champ_nom, technicien_email, droit) VALUES (?, ?, ?)", (c_p1, c_p2, c_p3))
-                    st.success(f"✅ La parcelle **{c_p1}** a été partagée avec **{c_p2}** !")
+                    st.success(f"✅ Le rôle **{c_p3}** a été affecté à **{c_p2}** sur la parcelle **{c_p1}** !")
                     st.rerun()
             
-            st.subheader("📋 Parcelles Actuellement Partagées")
+            st.subheader("📋 Récapitulatif des Rôles par Parcelle")
             df_parts = load_table('partage_champs')
             if not df_parts.empty:
                 for _, prt in df_parts.iterrows():
                     col_pr1, col_pr2 = st.columns([4, 1])
                     with col_pr1:
-                        st.markdown(f"📍 Parcelle : **{prt['champ_nom']}** ➡️ Technicien : `{prt['technicien_email']}` (*{prt['droit']}*)")
+                        st.markdown(f"📍 Parcelle : **{prt['champ_nom']}** ➡️ Utilisateur : `{prt['technicien_email']}` | Rôle : *{prt['droit']}*")
                     with col_pr2:
                         if st.button("🗑️ Retirer", key=f"del_part_{prt['id']}"):
                             execute_query("DELETE FROM partage_champs WHERE id = ?", (prt['id'],))
@@ -813,7 +817,7 @@ elif menu == "💬 Espace Collaboration & Réunions Meet":
     with col_meet1:
         st.link_button("🚀 Ouvrir une réunion Google Meet instantanée", "https://meet.google.com/new", use_container_width=True)
     with col_meet2:
-        saisie_lien_meet = st.text_input("Ou coller un lien Google Meet programmé :", placeholder="ex: https://meet.google.com/abc-defg-hij")
+        saisie_lien_meet = st.text_input("Ou coller un lien Google Meet :", placeholder="ex: https://meet.google.com/abc-defg-hij")
         if saisie_lien_meet.strip():
             st.link_button("🔗 Rejoindre la réunion planifiée", saisie_lien_meet.strip(), use_container_width=True)
 
@@ -830,12 +834,12 @@ elif menu == "💬 Espace Collaboration & Réunions Meet":
 
         with st.form("form_send_message_pro"):
             destinataire_choix = st.selectbox("Destinataire principal *", options_destinataires)
-            cat_travail = st.selectbox("Objet / Type de travail", ["Rapport de Terrain", "Consigne d'Irrigation", "Alerte Urgence / Incident", "Point Financier / Dépense", "Autre communication"])
+            cat_travail = st.selectbox("Objet / Type", ["Rapport de Terrain", "Consigne d'Irrigation", "Alerte Urgence", "Point Financier", "Autre"])
             titre_msg = st.text_input("Titre / Sujet *", placeholder="Ex: État de la parcelle")
-            texte_msg = st.text_area("Contenu détaillé du message ou rapport :")
-            statut_t = st.selectbox("Statut de la demande", ["À lire", "En cours de traitement", "Urgent", "Résolu / Validé"])
-            fichier_joint = st.file_uploader("📸 Joindre une photo ou un document", type=["png", "jpg", "jpeg", "pdf", "xlsx", "docx"])
-            joindre_rapport_auto = st.checkbox(f"📑 Joindre automatiquement le rapport PDF officiel de la parcelle active ({champ_selectionne})")
+            texte_msg = st.text_area("Contenu détaillé :")
+            statut_t = st.selectbox("Statut", ["À lire", "En cours de traitement", "Urgent", "Résolu / Validé"])
+            fichier_joint = st.file_uploader("📸 Joindre un document", type=["png", "jpg", "jpeg", "pdf", "xlsx", "docx"])
+            joindre_rapport_auto = st.checkbox(f"📑 Joindre automatiquement le rapport PDF exhaustif de la parcelle ({champ_selectionne})")
 
             if st.form_submit_button("📤 Diffuser / Envoyer", use_container_width=True):
                 if titre_msg.strip() and texte_msg.strip():
@@ -848,126 +852,131 @@ elif menu == "💬 Espace Collaboration & Réunions Meet":
                         nom_PJ = fichier_joint.name
                         data_PJ = fichier_joint.getvalue()
                     elif joindre_rapport_auto and champ_selectionne != "Aucune parcelle":
-                        nom_PJ = f"rapport_{champ_selectionne}_{date.today().strftime('%Y%m%d')}.pdf"
+                        nom_PJ = f"rapport_exhaustif_{champ_selectionne}_{date.today().strftime('%Y%m%d')}.pdf"
                         data_PJ = export_parcelle_pdf(champ_selectionne, date.today())
                     
                     execute_query(
                         "INSERT INTO messages_collab (expéditeur, expediteur_email, role, date_heure, destinataire, categorie_travail, titre, message, statut_tache, piece_jointe_nom, piece_jointe_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (auteur_nom, email_connecte, role_tech, horodatage, destinataire_choix, cat_travail, titre_msg.strip(), texte_msg.strip(), statut_t, nom_PJ, data_PJ)
                     )
-                    st.success("✅ Publication enregistrée et partagée avec succès !")
+                    st.success("✅ Publication enregistrée avec succès !")
                     st.rerun()
                 else:
-                    st.warning("⚠️ Veuillez remplir le titre et le contenu du message.")
+                    st.warning("⚠️ Veuillez remplir le titre et le contenu.")
 
     with col_m2:
         st.subheader("📋 Fil d'Actualité & Notes de Travail")
-        filtre_vue = st.radio("Filtrer l'affichage :", ["Tous les messages", "Mes messages / Reçus pour moi"], horizontal=True)
         df_msgs = load_table('messages_collab')
-        
         if not df_msgs.empty:
-            if filtre_vue == "Mes messages / Reçus pour moi":
-                df_msgs = df_msgs[df_msgs['destinataire'].str.contains("Tous") | df_msgs['destinataire'].str.contains(email_connecte, case=False)]
+            for _, m_row in df_msgs.iloc[::-1].iterrows():
+                st.markdown(f"""
+                    <div style="background-color: #ffffff; padding: 14px; border-radius: 8px; border-left: 5px solid #10b981; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
+                        <b>📌 [{m_row.get('categorie_travail', 'Note')}] {m_row.get('titre', 'Sans titre')}</b>
+                        <p style="margin: 6px 0; font-size: 13px; color: #4b5563;">{m_row['message']}</p>
+                """, unsafe_allow_html=True)
 
-            if df_msgs.empty:
-                st.info("Aucun message ne correspond à ce filtre.")
-            else:
-                for _, m_row in df_msgs.iloc[::-1].iterrows():
-                    badge_color = "#10b981"
-                    if m_row.get('statut_tache') == "Urgent": badge_color = "#ef4444"
-                    elif m_row.get('statut_tache') == "En cours de traitement": badge_color = "#f59e0b"
+                if m_row.get('piece_jointe_nom') and m_row.get('piece_jointe_data'):
+                    st.download_button(
+                        label=f"📎 Télécharger : {m_row['piece_jointe_nom']}",
+                        data=m_row['piece_jointe_data'],
+                        file_name=m_row['piece_jointe_nom'],
+                        key=f"dl_msg_file_{m_row['id']}"
+                    )
 
-                    st.markdown(f"""
-                        <div style="background-color: #ffffff; padding: 14px; border-radius: 8px; border-left: 5px solid {badge_color}; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
-                            <div style="display: flex; justify-content: space-between;">
-                                <b>📌 [{m_row.get('categorie_travail', 'Note')}] {m_row.get('titre', 'Sans titre')}</b>
-                                <span style="font-size: 11px; background-color: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-weight: bold;">{m_row.get('statut_tache', 'Info')}</span>
-                            </div>
-                            <p style="margin: 6px 0; font-size: 13px; color: #4b5563;">{m_row['message']}</p>
-                    """, unsafe_allow_html=True)
-
-                    if m_row.get('piece_jointe_nom') and m_row.get('piece_jointe_data'):
-                        st.download_button(
-                            label=f"📎 Télécharger la pièce jointe : {m_row['piece_jointe_nom']}",
-                            data=m_row['piece_jointe_data'],
-                            file_name=m_row['piece_jointe_nom'],
-                            key=f"dl_msg_file_{m_row['id']}"
-                        )
-
-                    st.markdown(f"""
-                            <div style="font-size: 11px; color: #6b7280; display: flex; justify-content: space-between; border-top: 1px solid #f3f4f6; padding-top: 6px; margin-top: 8px;">
-                                <span>👤 <b>{m_row['expéditeur']}</b> ({m_row['role']} — <code>{m_row.get('expediteur_email', 'N/A')}</code>)</span>
-                                <span>🎯 Destinataire : <b>{m_row.get('destinataire', 'Tous')}</b> | 🕒 {m_row['date_heure']}</span>
-                            </div>
+                st.markdown(f"""
+                        <div style="font-size: 11px; color: #6b7280; display: flex; justify-content: space-between; border-top: 1px solid #f3f4f6; padding-top: 6px; margin-top: 8px;">
+                            <span>👤 <b>{m_row['expéditeur']}</b> ({m_row['role']})</span>
+                            <span>🕒 {m_row['date_heure']}</span>
                         </div>
-                    """, unsafe_allow_html=True)
+                    </div>
+                """, unsafe_allow_html=True)
         else:
-            st.info("Aucun échange enregistré pour le moment.")
+            st.info("Aucun échange enregistré.")
 
 elif menu == "🔐 Paramètres & Liste Blanche":
-    st.title("🔐 Gestion de la Liste Blanche (Contrôle d'Accès)")
+    st.title("🔐 Gestion de la Liste Blanche & Accès par Modules")
     est_proprietaire = (email_connecte == "issayoume2012@gmail.com")
 
     if not est_proprietaire:
-        st.warning("⚠️ Accès restreint : Seul le propriétaire de l'application est autorisé à modifier les accès.")
-        df_wl = load_table('whitelist_users')
-        if not df_wl.empty:
-            for _, row in df_wl.iterrows():
-                st.markdown(f"📧 **{row['email']}** | 👤 *{row['prenom']} {row['nom']}* (`{row['role']}`)")
+        st.warning("⚠️ Accès restreint : Seul le propriétaire peut modifier les accès globaux.")
     else:
-        col_wl1, col_wl2 = st.columns([1, 1])
+        col_wl1, col_wl2 = st.columns(2)
         with col_wl1:
-            st.subheader("➕ Ajouter un utilisateur autorisé")
+            st.subheader("➕ Ajouter ou Modifier les Accès d'un Utilisateur")
             with st.form("form_add_whitelist"):
                 new_email = st.text_input("Adresse e-mail *", placeholder="exemple@gmail.com")
-                new_password = st.text_input("Mot de passe d'accès *", type="password")
+                new_password = st.text_input("Mot de passe *", type="password")
                 new_prenom = st.text_input("Prénom")
                 new_nom = st.text_input("Nom")
-                new_role = st.selectbox("Rôle", ["Administrateur", "Technicien", "Gestionnaire de Stock", "Consultant"])
+                new_role = st.selectbox("Rôle Global", ["Propriétaire", "Gestionnaire Administratif", "Technicien de Terrain", "Consultant"])
                 
-                if st.form_submit_button("💾 Autoriser cet E-mail", use_container_width=True):
+                st.markdown("---")
+                st.markdown("🎯 **Gestion fine des accès (Module par Module ou Global)**")
+                type_acces_choix = st.radio("Type d'accès autorisé :", ["Accès Total à tous les modules", "Accès sélectif (module par module)"])
+                
+                mod_pointage = st.checkbox("⏰ Pointage des Horaires", value=True)
+                mod_finances = st.checkbox("💰 Finances & Marges", value=False)
+                mod_recoltes = st.checkbox("🌾 Récoltes & Rendements", value=True)
+                mod_taches = st.checkbox("📅 Planning & Travaux", value=True)
+                mod_pluie = st.checkbox("🌧️ Pluviométrie", value=True)
+                mod_irrigation = st.checkbox("💧 Irrigation & Eau", value=True)
+                mod_stocks = st.checkbox("📦 Stocks d'Intrants", value=False)
+                mod_incidents = st.checkbox("⚠️ Incidents", value=True)
+                
+                if st.form_submit_button("💾 Enregistrer l'Utilisateur", use_container_width=True):
                     if new_email.strip() and new_password.strip():
+                        if type_acces_choix == "Accès Total à tous les modules":
+                            str_modules = "TOUS"
+                        else:
+                            liste_mods_selectionnes = []
+                            if mod_pointage: liste_mods_selectionnes.append("Pointage des Horaires")
+                            if mod_finances: liste_mods_selectionnes.append("Finances & Marges")
+                            if mod_recoltes: liste_mods_selectionnes.append("Récoltes & Rendements")
+                            if mod_taches: liste_mods_selectionnes.append("Planning & Travaux")
+                            if mod_pluie: liste_mods_selectionnes.append("Pluviométrie")
+                            if mod_irrigation: liste_mods_selectionnes.append("Irrigation & Eau")
+                            if mod_stocks: liste_mods_selectionnes.append("Stocks d'Intrants")
+                            if mod_incidents: liste_mods_selectionnes.append("Incidents")
+                            str_modules = ",".join(liste_mods_selectionnes)
+
                         try:
                             execute_query(
-                                "INSERT INTO whitelist_users (email, password, prenom, nom, role) VALUES (?, ?, ?, ?, ?)",
-                                (new_email.strip().lower(), new_password.strip(), new_prenom.strip(), new_nom.strip(), new_role)
+                                "INSERT OR REPLACE INTO whitelist_users (email, password, prenom, nom, role, modules_autorises) VALUES (?, ?, ?, ?, ?, ?)",
+                                (new_email.strip().lower(), new_password.strip(), new_prenom.strip(), new_nom.strip(), new_role, str_modules)
                             )
-                            st.success(f"✅ L'e-mail **{new_email}** a été ajouté à la liste blanche !")
+                            st.success(f"✅ Accès configurés avec succès pour {new_email.strip()} !")
                             st.rerun()
-                        except sqlite3.IntegrityError:
-                            st.error("⚠️ Cet e-mail est déjà présent dans la liste blanche.")
+                        except Exception as e:
+                            st.error(f"⚠️ Erreur : {e}")
                     else:
-                        st.warning("⚠️ Remplissez au moins l'e-mail et le mot de passe.")
+                        st.warning("⚠️ Remplissez l'e-mail et le mot de passe.")
 
         with col_wl2:
-            st.subheader("📋 Liste des E-mails Autorisés")
+            st.subheader("📋 Liste des E-mails Autorisés & Leurs Droits")
             df_wl = load_table('whitelist_users')
             if not df_wl.empty:
                 for _, row in df_wl.iterrows():
                     c_item1, c_item2 = st.columns([3, 1])
                     with c_item1:
-                        st.markdown(f"📧 **{row['email']}**<br>👤 *{row['prenom']} {row['nom']}* (`{row['role']}`)", unsafe_allow_html=True)
+                        st.markdown(f"📧 **{row['email']}**<br>👤 *{row['prenom']} {row['nom']}* (`{row['role']}`)<br>🔐 Modules : `{row['modules_autorises']}`", unsafe_allow_html=True)
                     with c_item2:
                         if row['email'].lower() != "issayoume2012@gmail.com":
                             if st.button("🗑️ Révoquer", key=f"del_wl_{row['id']}"):
                                 execute_query("DELETE FROM whitelist_users WHERE id = ?", (row['id'],))
-                                st.success("Accès révoqué.")
                                 st.rerun()
-                        else:
-                            st.caption("🔒 Propriétaire")
                     st.divider()
 
 elif menu == "📑 EXPORT RAPPORT PARCELLE":
-    st.title("📑 Centre d'Exportation de Rapport Officiel")
-    st.info(f"Génération du rapport PDF signé et daté pour la parcelle active : **{champ_selectionne}**")
+    st.title("📑 Centre d'Exportation de Rapport Officiel Exhaustif")
+    st.info(f"Génération du rapport PDF officiel complet incluant le **Pointage**, les **Récoltes**, les **Dépenses**, l'**Irrigation** et les affectations pour la parcelle : **{champ_selectionne}**")
     date_exp = st.date_input("Date officielle du rapport", value=date.today())
     
     if champ_selectionne and champ_selectionne != "Aucune parcelle":
         pdf_bytes = export_parcelle_pdf(champ_selectionne, date_exp)
         st.download_button(
-            label=f"📥 Télécharger le Rapport PDF de '{champ_selectionne}'",
+            label=f"📥 Télécharger le Rapport PDF Exhaustif de '{champ_selectionne}'",
             data=pdf_bytes,
-            file_name=f"rapport_{champ_selectionne}_{date_exp.strftime('%Y%m%d')}.pdf",
+            file_name=f"rapport_exhaustif_{champ_selectionne}_{date_exp.strftime('%Y%m%d')}.pdf",
             mime="application/pdf",
             use_container_width=True,
             type="primary"
