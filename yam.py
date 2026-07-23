@@ -45,7 +45,17 @@ def init_db():
     conn = get_connection()
     cursor = conn.cursor()
     
-    cursor.execute('''CREATE TABLE IF NOT EXISTS champs (id INTEGER PRIMARY KEY AUTOINCREMENT, nom TEXT, superficie_ha REAL, latitude REAL, longitude REAL, culture_actuelle TEXT, statut TEXT, icone_lieu TEXT)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS champs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                        nom TEXT, 
+                        superficie_ha REAL, 
+                        latitude REAL, 
+                        longitude REAL, 
+                        culture_actuelle TEXT, 
+                        statut TEXT, 
+                        icone_lieu TEXT,
+                        code_pin TEXT
+                    )''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS equipes (id INTEGER PRIMARY KEY AUTOINCREMENT, nom_groupe TEXT, chef_groupe TEXT)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS employes (id INTEGER PRIMARY KEY AUTOINCREMENT, nom TEXT, role TEXT, groupe_nom TEXT, tarif_journalier REAL)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS pointage (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, employe_nom TEXT, groupe_nom TEXT, champ_nom TEXT, statut_presence TEXT, tache_effectuee TEXT, heures_travaillees REAL, remarque TEXT)''')
@@ -70,15 +80,20 @@ def init_db():
                         role TEXT
                     )''')
     
-    # Insertion par défaut de l'administrateur si la table est vide
+    # Insertion par défaut de l'administrateur propriétaire si la table est vide
     cursor.execute("SELECT COUNT(*) FROM whitelist_users")
     if cursor.fetchone()[0] == 0:
         cursor.execute(
             "INSERT INTO whitelist_users (email, password, prenom, nom, role) VALUES (?, ?, ?, ?, ?)",
-            ("issayoume2012@gmail.com", "issayoume2026", "Issa", "Youme", "Administrateur Principal")
+            ("issayoume2012@gmail.com", "issayoume2026", "Issa", "Youme", "Propriétaire")
         )
 
     # Mises à jour de colonnes de sécurité si besoin
+    cursor.execute("PRAGMA table_info(champs)")
+    cols_champs = [col[1] for col in cursor.fetchall()]
+    if "code_pin" not in cols_champs: 
+        cursor.execute("ALTER TABLE champs ADD COLUMN code_pin TEXT")
+
     cursor.execute("PRAGMA table_info(employes)")
     cols_emp = [col[1] for col in cursor.fetchall()]
     if "groupe_nom" not in cols_emp: cursor.execute("ALTER TABLE employes ADD COLUMN groupe_nom TEXT")
@@ -121,7 +136,6 @@ def auth_system():
             if submit_login:
                 email_propre = email_input.strip().lower()
                 
-                # Vérification dans la base de données SQLite (whitelist_users)
                 conn = get_connection()
                 cursor = conn.cursor()
                 cursor.execute("SELECT prenom, nom, role, password FROM whitelist_users WHERE LOWER(email) = ?", (email_propre,))
@@ -134,8 +148,6 @@ def auth_system():
                         "nom": user_record[1],
                         "prenom": user_record[0],
                         "gmail": email_propre,
-                        "phone": "+221 XX XXX XX XX",
-                        "matricule": "TS-PRO-01",
                         "role": user_record[2]
                     }
                     st.success(f"✅ Bienvenue, {user_record[0]} !")
@@ -149,51 +161,56 @@ if not auth_system():
     st.stop()
 
 # ==========================================
-# 4. EXPORTATIONS (CSV & PDF)
+# 4. EXPORTATIONS PDF & SIGNÉ POUR PARCELLE
 # ==========================================
-def export_global_to_csv():
-    output = io.StringIO()
-    output.write("--- RAPPORT GLOBAL AGRIGESTION ---\n\n")
-    tables = ['champs', 'equipes', 'employes', 'pointage', 'taches', 'recoltes', 'depenses', 'intrants', 'materiel']
-    for t in tables:
-        output.write(f"=== TABLE : {t.upper()} ===\n")
-        df = load_table(t)
-        df.to_csv(output, index=False)
-        output.write("\n\n")
-    return output.getvalue().encode('utf-8')
-
-def export_global_pdf(date_rapport):
+def export_parcelle_pdf(champ_nom, date_rapport):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=25, leftMargin=25, topMargin=25, bottomMargin=25)
     elements = []
-    tech = st.session_state.registered_tech
+    tech = st.session_state.get('registered_tech', {})
     styles = getSampleStyleSheet()
     
-    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontName='Helvetica-Bold', fontSize=16, alignment=1, textColor=colors.HexColor('#1e3d59'))
-    subtitle_style = ParagraphStyle('SubTitleStyle', parent=styles['Heading2'], fontName='Helvetica-Bold', fontSize=11, textColor=colors.HexColor('#10b981'), spaceBefore=8, spaceAfter=4)
+    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontName='Helvetica-Bold', fontSize=15, alignment=1, textColor=colors.HexColor('#1e3d59'))
+    subtitle_style = ParagraphStyle('SubTitleStyle', parent=styles['Heading2'], fontName='Helvetica-Bold', fontSize=10, textColor=colors.HexColor('#10b981'), spaceBefore=8, spaceAfter=4)
     normal_style = styles['Normal']
     
-    elements.append(Paragraph("RAPPORT GÉNÉRAL D'EXPLOITATION AGRICOLE", title_style))
-    elements.append(Spacer(1, 8))
+    elements.append(Paragraph(f"RAPPORT OFFICIEL - PARCELLE : {champ_nom.upper()}", title_style))
+    elements.append(Spacer(1, 6))
     
     date_str = date_rapport.strftime('%d/%m/%Y')
-    header_info = f"<b>JOURNÉE DU : {date_str}</b> | <b>Technicien :</b> {tech['prenom']} {tech['nom']} ({tech['role']})<br/>"
+    header_info = f"<b>DATE DU RAPPORT : {date_str}</b> | <b>Établi par :</b> {tech.get('prenom', '')} {tech.get('nom', '')} ({tech.get('role', '')})<br/>"
     elements.append(Paragraph(header_info, normal_style))
-    elements.append(Spacer(1, 10))
+    elements.append(Spacer(1, 8))
 
-    tables_dict = {
-        "1. Pointages": load_table('pointage'),
-        "2. Parcelles": load_table('champs'),
-        "3. Récoltes": load_table('recoltes'),
-        "4. Dépenses": load_table('depenses'),
-        "5. Intrants": load_table('intrants'),
-        "6. Matériel": load_table('materiel')
-    }
+    # Chargement filtré par parcelle
+    df_c = load_table('champs')
+    champ_info = df_c[df_c['nom'] == champ_nom]
+    champ_id = int(champ_info['id'].values[0]) if not champ_info.empty else None
 
-    for section_title, df_sec in tables_dict.items():
+    tables_to_export = {}
+    if champ_id:
+        df_rec = load_table('recoltes')
+        tables_to_export["1. Récoltes"] = df_rec[df_rec['champ_id'] == champ_id] if not df_rec.empty else pd.DataFrame()
+        
+        df_dep = load_table('depenses')
+        tables_to_export["2. Dépenses"] = df_dep[df_dep['champ_id'] == champ_id] if not df_dep.empty else pd.DataFrame()
+        
+        df_t = load_table('taches')
+        tables_to_export["3. Tâches Planifiées"] = df_t[df_t['champ_id'] == champ_id] if not df_t.empty else pd.DataFrame()
+        
+        df_p = load_table('pluviometrie')
+        tables_to_export["4. Pluviométrie"] = df_p[df_p['champ_id'] == champ_id] if not df_p.empty else pd.DataFrame()
+        
+        df_i = load_table('incidents')
+        tables_to_export["5. Incidents"] = df_i[df_i['champ_id'] == champ_id] if not df_i.empty else pd.DataFrame()
+
+    for section_title, df_sec in tables_to_export.items():
         elements.append(Paragraph(section_title, subtitle_style))
         if not df_sec.empty:
-            data = [df_sec.columns.tolist()] + df_sec.astype(str).values.tolist()
+            # Nettoyage colonnes ID techniques superflues
+            cols_to_show = [c for c in df_sec.columns if c not in ['id', 'champ_id', 'groupe_id']]
+            df_display = df_sec[cols_to_show]
+            data = [df_display.columns.tolist()] + df_display.astype(str).values.tolist()
             t = Table(data, hAlign='LEFT')
             t.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#10b981')),
@@ -205,13 +222,16 @@ def export_global_pdf(date_rapport):
             ]))
             elements.append(t)
         else:
-            elements.append(Paragraph("<i>Aucune donnée enregistrée.</i>", normal_style))
-        elements.append(Spacer(1, 6))
+            elements.append(Paragraph("<i>Aucune donnée enregistrée pour cette parcelle.</i>", normal_style))
+        elements.append(Spacer(1, 5))
+
+    elements.append(Spacer(1, 15))
+    signature_text = "<b>Signature et Validation du Propriétaire / Responsable :</b><br/><br/><br/>________________________________________"
+    elements.append(Paragraph(signature_text, normal_style))
 
     doc.build(elements)
     return buffer.getvalue()
 
-# ==========================================
 # ==========================================
 # 5. NAVIGATION TOP BAR
 # ==========================================
@@ -219,12 +239,14 @@ tech = st.session_state.get('registered_tech', {})
 prenom_tech = tech.get('prenom', 'Utilisateur')
 nom_tech = tech.get('nom', '')
 role_tech = tech.get('role', 'Membre')
+email_connecte = tech.get('gmail', '').lower()
 
 st.markdown(f"""
     <div style="display: flex; justify-content: space-between; align-items: center; background-color: #ffffff; padding: 10px 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 15px;">
         <div><b>🌾 AgriGestion Pro</b> | <span style="color: #10b981;">{prenom_tech} {nom_tech}</span> ({role_tech})</div>
     </div>
 """, unsafe_allow_html=True)
+
 menu_options = [
     "📊 Tableau de Bord",
     "🌱 Cartographie & Parcelles",
@@ -242,25 +264,47 @@ menu_options = [
     "🌤️ Risques & Météo",
     "📈 Rentabilité & ROI",
     "🔐 Paramètres & Liste Blanche",
-    "📑 EXPORT COMPLET"
+    "📑 EXPORT RAPPORT PARCELLE"
 ]
 
 menu = st.selectbox("📌 Menu Principal de Navigation", menu_options)
 
 db_champs = load_table('champs')
+champ_id_actif = None
+champ_selectionne = "Aucune parcelle"
+
 if not db_champs.empty:
     liste_champs = {row['nom']: row['id'] for _, row in db_champs.iterrows()}
     col_sel1, col_sel2 = st.columns([3, 1])
     with col_sel1:
         champ_selectionne = st.selectbox("📍 Parcelle Active pour les opérations :", list(liste_champs.keys()))
         champ_id_actif = liste_champs[champ_selectionne]
+        
+        # --- GESTION DU CODE PIN DE CONFIDENTIALITÉ PARCELLE ---
+        row_champ_actuel = db_champs[db_champs['id'] == champ_id_actif].iloc[0]
+        pin_enreg = row_champ_actuel.get('code_pin')
+        
+        if pin_enreg and str(pin_enreg).strip() != "":
+            if f"pin_ok_{champ_id_actif}" not in st.session_state:
+                st.session_state[f"pin_ok_{champ_id_actif}"] = False
+                
+            if not st.session_state[f"pin_ok_{champ_id_actif}"]:
+                st.warning(f"🔒 Cette parcelle (**{champ_selectionne}**) est protégée par un code de confidentialité.")
+                saisie_pin = st.text_input("Entrez le code PIN de la parcelle :", type="password", key=f"input_pin_{champ_id_actif}")
+                if st.button("🔓 Déverrouiller la parcelle", key=f"btn_unlock_{champ_id_actif}"):
+                    if saisie_pin == str(pin_enreg):
+                        st.session_state[f"pin_ok_{champ_id_actif}"] = True
+                        st.success("✅ Accès autorisé !")
+                        st.rerun()
+                    else:
+                        st.error("❌ Code PIN incorrect.")
+                st.stop() # Bloque l'affichage du reste si non déverrouillé
+
     with col_sel2:
         if st.button("🚪 Déconnexion"):
             st.session_state.authenticated = False
             st.rerun()
 else:
-    champ_id_actif = None
-    champ_selectionne = "Aucune parcelle"
     if st.button("🚪 Déconnexion"):
         st.session_state.authenticated = False
         st.rerun()
@@ -318,7 +362,7 @@ elif menu == "🌱 Cartographie & Parcelles":
             st.session_state['lon_active'] = round(map_data["last_clicked"]["lng"], 6)
 
     with col_form:
-        st.subheader("➕ Ajouter une Parcelle")
+        st.subheader("➕ Ajouter une Parcelle & Sécurité")
         with st.form("form_champ_new"):
             nom_p = st.text_input("Nom de la parcelle *")
             surf_p = st.number_input("Superficie (Ha)", min_value=0.1, value=1.0)
@@ -326,11 +370,13 @@ elif menu == "🌱 Cartographie & Parcelles":
             lon_p = st.number_input("Longitude", value=float(st.session_state['lon_active']), format="%.6f")
             cult_p = st.text_input("Culture principale")
             stat_p = st.selectbox("Statut", ["En préparation", "Semé", "En croissance", "Prêt à récolter"])
-            if st.form_submit_button("💾 Enregistrer", use_container_width=True):
+            pin_p = st.text_input("Code PIN de confidentialité (optionnel)", type="password", placeholder="Laisser vide si public")
+            
+            if st.form_submit_button("💾 Enregistrer la Parcelle", use_container_width=True):
                 if nom_p:
                     execute_query(
-                        "INSERT INTO champs (nom, superficie_ha, latitude, longitude, culture_actuelle, statut, icone_lieu) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (nom_p, surf_p, lat_p, lon_p, cult_p, stat_p, "leaf")
+                        "INSERT INTO champs (nom, superficie_ha, latitude, longitude, culture_actuelle, statut, icone_lieu, code_pin) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (nom_p, surf_p, lat_p, lon_p, cult_p, stat_p, "leaf", pin_p.strip() if pin_p else "")
                     )
                     st.success("✅ Parcelle enregistrée avec succès !")
                     st.rerun()
@@ -390,14 +436,17 @@ elif menu == "👥 Groupes & Membres":
                         st.rerun()
 
 elif menu == "⏰ Pointage des Horaires":
-    st.title("⏰ Registre de Pointage Global")
+    st.title(f"⏰ Pointage - {champ_selectionne}")
     df_emps = load_table('employes')
     if df_emps.empty:
-        st.warning("⚠️ Aucun employé trouvé.")
+        st.warning("⚠️ Aucun employé enregistré dans la base.")
     else:
+        # Filtrer les employés travaillant potentiellement sur cette parcelle (ou tous si non affectés spécifiquement)
+        st.info(f"Émargement du personnel affecté pour la parcelle **{champ_selectionne}**.")
+        
         c_d1, c_d2 = st.columns(2)
         with c_d1: date_p = st.date_input("Date du pointage", value=date.today(), key="global_date_pointage")
-        with c_d2: parc_p = st.selectbox("Parcelle concernée", db_champs['nom'].tolist() if not db_champs.empty else ["Général"], key="global_parc_pointage")
+        with c_d2: parc_p = st.text_input("Parcelle", value=champ_selectionne, disabled=True)
         
         st.divider()
         df_edition = df_emps[['nom', 'role', 'groupe_nom']].copy()
@@ -420,17 +469,19 @@ elif menu == "⏰ Pointage des Horaires":
             hide_index=True, use_container_width=True, key="editor_pointage_global"
         )
 
-        if st.button("💾 Enregistrer le Pointage Global", use_container_width=True, type="primary"):
+        if st.button("💾 Enregistrer le Pointage de la Parcelle", use_container_width=True, type="primary"):
             for _, row in edited_df.iterrows():
                 execute_query(
                     "INSERT INTO pointage (date, employe_nom, groupe_nom, champ_nom, statut_presence, tache_effectuee, heures_travaillees, remarque) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (str(date_p), row["nom"], row["groupe_nom"], parc_p, "Présent" if row["Présent"] else "Absent", row["Tâche"] if row["Présent"] else "-", float(row["Heures"]) if row["Présent"] else 0.0, str(row["Remarque"]))
+                    (str(date_p), row["nom"], row["groupe_nom"], champ_selectionne, "Présent" if row["Présent"] else "Absent", row["Tâche"] if row["Présent"] else "-", float(row["Heures"]) if row["Présent"] else 0.0, str(row["Remarque"]))
                 )
             st.success("✅ Pointage enregistré avec succès !")
             st.rerun()
 
-        st.subheader("📋 Historique Récent")
-        st.dataframe(load_table('pointage'), use_container_width=True)
+        st.subheader("📋 Historique de Pointage pour cette Parcelle")
+        df_pt = load_table('pointage')
+        if not df_pt.empty:
+            st.dataframe(df_pt[df_pt['champ_nom'] == champ_selectionne], use_container_width=True)
 
 elif menu == "📅 Planning & Travaux":
     st.title(f"📅 Planning & Travaux - {champ_selectionne}")
@@ -468,12 +519,14 @@ elif menu == "🌾 Récoltes & Rendements":
     st.title(f"🌾 Récoltes - {champ_selectionne}")
     if champ_id_actif:
         df_r = load_table('recoltes')
-        st.dataframe(df_r[df_r['champ_id'] == champ_id_actif], use_container_width=True)
+        df_r_champ = df_r[df_r['champ_id'] == champ_id_actif] if not df_r.empty else pd.DataFrame()
+        st.dataframe(df_r_champ, use_container_width=True)
+        
         with st.form("form_rec"):
             cult = st.text_input("Culture")
             qte = st.number_input("Quantité (Kg)", min_value=0.0)
             pu = st.number_input("Prix unitaire (FCFA)", min_value=0.0, value=300.0)
-            if st.form_submit_button("Enregistrer Récolte"):
+            if st.form_submit_button("Enregistrer Récolte", use_container_width=True):
                 execute_query("INSERT INTO recoltes (champ_id, culture, date_recolte, quantite_kg, prix_unitaire) VALUES (?, ?, ?, ?, ?)", (champ_id_actif, cult, str(date.today()), qte, pu))
                 st.success("✅ Récolte enregistrée !")
                 st.rerun()
@@ -495,7 +548,7 @@ elif menu == "💰 Finances & Marges":
             st.subheader("➕ Nouvelle Dépense & Facture")
             with st.form("form_finances_refonte"):
                 motif = st.text_input("Motif / Type de dépense (ex: Achat Carburant)")
-                mnt = st.number_input("Montant (FCFA)", min_value=0.0, value=0.0)
+                mnt = st.number_input("Montant (FCFA)", min_value=0.0, value=0.0, step=100.0)
                 date_dep = st.date_input("Date de la dépense", value=date.today())
                 
                 photo_facture = st.file_uploader("📸 Photo ou Scan de la Facture", type=["png", "jpg", "jpeg", "pdf"])
@@ -622,57 +675,77 @@ elif menu == "📈 Rentabilité & ROI":
 
 elif menu == "🔐 Paramètres & Liste Blanche":
     st.title("🔐 Gestion de la Liste Blanche (Contrôle d'Accès)")
-    st.info("Ici, vous pouvez ajouter ou supprimer les adresses e-mail autorisées à se connecter à cette application.")
+    
+    # Vérification exclusive si l'utilisateur connecté est le Propriétaire
+    est_proprietaire = (email_connecte == "issayoume2012@gmail.com")
 
-    col_wl1, col_wl2 = st.columns([1, 1])
-
-    with col_wl1:
-        st.subheader("➕ Ajouter un utilisateur autorisé")
-        with st.form("form_add_whitelist"):
-            new_email = st.text_input("Adresse e-mail *", placeholder="exemple@gmail.com")
-            new_password = st.text_input("Mot de passe attribué *", type="password")
-            new_prenom = st.text_input("Prénom")
-            new_nom = st.text_input("Nom")
-            new_role = st.selectbox("Rôle", ["Administrateur", "Technicien", "Gestionnaire de Stock", "Consultant"])
-            
-            if st.form_submit_button("💾 Autoriser cet E-mail", use_container_width=True):
-                if new_email.strip() and new_password.strip():
-                    try:
-                        execute_query(
-                            "INSERT INTO whitelist_users (email, password, prenom, nom, role) VALUES (?, ?, ?, ?, ?)",
-                            (new_email.strip().lower(), new_password.strip(), new_prenom.strip(), new_nom.strip(), new_role)
-                        )
-                        st.success(f"✅ L'e-mail **{new_email}** a été ajouté à la liste blanche avec succès !")
-                        st.rerun()
-                    except sqlite3.IntegrityError:
-                        st.error("⚠️ Cet e-mail est déjà présent dans la liste blanche.")
-                else:
-                    st.warning("⚠️ Veuillez remplir au moins l'e-mail et le mot de passe.")
-
-    with col_wl2:
-        st.subheader("📋 Liste des E-mails Autorisés")
+    if not est_proprietaire:
+        st.warning("⚠️ Accès restreint : Seul le propriétaire de l'application (`issayoume2012@gmail.com`) est autorisé à modifier ou révoquer les accès de la liste blanche.")
+        st.subheader("📋 Liste des E-mails Autorisés (Consultation)")
         df_wl = load_table('whitelist_users')
         if not df_wl.empty:
             for _, row in df_wl.iterrows():
-                c_item1, c_item2 = st.columns([3, 1])
-                with c_item1:
-                    st.markdown(f"📧 **{row['email']}**<br>👤 *{row['prenom']} {row['nom']}* (`{row['role']}`)", unsafe_allow_html=True)
-                with c_item2:
-                    # Empêcher la suppression du compte principal admin par sécurité
-                    if row['email'].lower() != "issayoume2012@gmail.com":
-                        if st.button("🗑️ Révoquer", key=f"del_wl_{row['id']}"):
-                            execute_query("DELETE FROM whitelist_users WHERE id = ?", (row['id'],))
-                            st.success("Accès révoqué.")
-                            st.rerun()
-                    else:
-                        st.caption("🔒 Protégé")
-                st.divider()
+                st.markdown(f"📧 **{row['email']}** | 👤 *{row['prenom']} {row['nom']}* (`{row['role']}`)")
+    else:
+        st.info("Espace exclusif propriétaire : Ajoutez ou révoquez des accès en toute sécurité.")
+        col_wl1, col_wl2 = st.columns([1, 1])
 
-elif menu == "📑 EXPORT COMPLET":
-    st.title("📑 Centre d'Exportation & Validation")
-    date_exp = st.date_input("Date du rapport officiel", value=date.today())
-    col1, col2 = st.columns(2)
-    with col1:
-        st.download_button("📥 Télécharger Données Globales (CSV)", data=export_global_to_csv(), file_name="export_agricole.csv", mime="text/csv", use_container_width=True)
-    with col2:
-        st.download_button("📥 Télécharger Rapport PDF Signé", data=export_global_pdf(date_exp), file_name="rapport_agricole.pdf", mime="application/pdf", use_container_width=True)
+        with col_wl1:
+            st.subheader("➕ Ajouter un utilisateur autorisé")
+            with st.form("form_add_whitelist"):
+                new_email = st.text_input("Adresse e-mail *", placeholder="exemple@gmail.com")
+                new_password = st.text_input("Mot de passe d'accès *", type="password")
+                new_prenom = st.text_input("Prénom")
+                new_nom = st.text_input("Nom")
+                new_role = st.selectbox("Rôle", ["Administrateur", "Technicien", "Gestionnaire de Stock", "Consultant"])
+                
+                if st.form_submit_button("💾 Autoriser cet E-mail", use_container_width=True):
+                    if new_email.strip() and new_password.strip():
+                        try:
+                            execute_query(
+                                "INSERT INTO whitelist_users (email, password, prenom, nom, role) VALUES (?, ?, ?, ?, ?)",
+                                (new_email.strip().lower(), new_password.strip(), new_prenom.strip(), new_nom.strip(), new_role)
+                            )
+                            st.success(f"✅ L'e-mail **{new_email}** a été ajouté à la liste blanche !")
+                            st.rerun()
+                        except sqlite3.IntegrityError:
+                            st.error("⚠️ Cet e-mail est déjà présent dans la liste blanche.")
+                    else:
+                        st.warning("⚠️ Remplissez au moins l'e-mail et le mot de passe.")
+
+        with col_wl2:
+            st.subheader("📋 Liste des E-mails Autorisés")
+            df_wl = load_table('whitelist_users')
+            if not df_wl.empty:
+                for _, row in df_wl.iterrows():
+                    c_item1, c_item2 = st.columns([3, 1])
+                    with c_item1:
+                        st.markdown(f"📧 **{row['email']}**<br>👤 *{row['prenom']} {row['nom']}* (`{row['role']}`)", unsafe_allow_html=True)
+                    with c_item2:
+                        if row['email'].lower() != "issayoume2012@gmail.com":
+                            if st.button("🗑️ Révoquer", key=f"del_wl_{row['id']}"):
+                                execute_query("DELETE FROM whitelist_users WHERE id = ?", (row['id'],))
+                                st.success("Accès révoqué.")
+                                st.rerun()
+                        else:
+                            st.caption("🔒 Propriétaire")
+                    st.divider()
+
+elif menu == "📑 EXPORT RAPPORT PARCELLE":
+    st.title("📑 Centre d'Exportation de Rapport Officiel")
+    st.info(f"Génération du rapport PDF signé et daté pour la parcelle active : **{champ_selectionne}**")
+    
+    date_exp = st.date_input("Date officielle du rapport", value=date.today())
+    
+    if champ_selectionne and champ_selectionne != "Aucune parcelle":
+        pdf_bytes = export_parcelle_pdf(champ_selectionne, date_exp)
+        st.download_button(
+            label=f"📥 Télécharger le Rapport PDF de '{champ_selectionne}'",
+            data=pdf_bytes,
+            file_name=f"rapport_{champ_selectionne}_{date_exp.strftime('%Y%m%d')}.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+            type="primary"
+        )
+    else:
+        st.warning("Veuillez d'abord sélectionner une parcelle valide.")
