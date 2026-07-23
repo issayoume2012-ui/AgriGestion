@@ -37,11 +37,12 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. GESTION DE LA BASE DE DONNÉES & CACHE SQLITE
+# 2. GESTION DE LA BASE DE DONNÉES ULTRA-RAPIDE
 # ==========================================
 def get_connection():
     return sqlite3.connect('agrigestion.db', check_same_thread=False)
 
+@st.cache_resource
 def init_db():
     conn = get_connection()
     cursor = conn.cursor()
@@ -97,11 +98,6 @@ def init_db():
                         action TEXT,
                         details TEXT
                     )''')
-    
-    cursor.execute("PRAGMA table_info(whitelist_users)")
-    cols_wl = [col[1] for col in cursor.fetchall()]
-    if "modules_autorises" not in cols_wl:
-        cursor.execute("ALTER TABLE whitelist_users ADD COLUMN modules_autorises TEXT")
 
     cursor.execute("SELECT COUNT(*) FROM whitelist_users")
     if cursor.fetchone()[0] == 0:
@@ -109,15 +105,15 @@ def init_db():
             "INSERT INTO whitelist_users (email, password, prenom, nom, role, modules_autorises) VALUES (?, ?, ?, ?, ?, ?)",
             ("issayoume2012@gmail.com", "issayoume2026", "Issa", "Youme", "Propriétaire", "TOUS")
         )
-    else:
-        cursor.execute("UPDATE whitelist_users SET modules_autorises = 'TOUS' WHERE email = 'issayoume2012@gmail.com'")
 
     conn.commit()
     conn.close()
+    return True
 
+# Initialisation mise en cache (exécutée une seule fois au démarrage)
 init_db()
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=300)
 def load_table(table_name):
     conn = get_connection()
     df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
@@ -337,9 +333,13 @@ else:
         if any(mod == m for mod in liste_mod_autorises) and m not in menu_options:
             menu_options.insert(1, m)
 
+if "selected_menu" not in st.session_state:
+    st.session_state.selected_menu = menu_options[0]
+
 col_nav1, col_nav2 = st.columns([3, 1])
 with col_nav1:
-    menu = st.selectbox("📌 Navigation Principale", menu_options, label_visibility="collapsed")
+    menu = st.selectbox("📌 Navigation Principale", menu_options, index=menu_options.index(st.session_state.selected_menu) if st.session_state.selected_menu in menu_options else 0, label_visibility="collapsed")
+    st.session_state.selected_menu = menu
 with col_nav2:
     if st.button("🚪 Déconnexion", use_container_width=True):
         st.session_state.authenticated = False
@@ -377,7 +377,7 @@ if not db_champs.empty:
     with col_sel2:
         st.write("")
         if st.button("➕ Créer une Parcelle"):
-            st.session_state.menu_force_carto = True
+            st.session_state.selected_menu = "🌱 Cartographie & Parcelles"
             st.rerun()
 
 st.divider()
@@ -388,6 +388,15 @@ st.divider()
 
 if menu == "📊 Tableau de Bord":
     st.title("📊 Tableau de Bord Global")
+    
+    col_tb_action1, col_tb_action2 = st.columns([2, 4])
+    with col_tb_action1:
+        if st.button("🌱 + Créer une nouvelle parcelle", type="primary", use_container_width=True):
+            st.session_state.selected_menu = "🌱 Cartographie & Parcelles"
+            st.rerun()
+    
+    st.divider()
+    
     m1, m2, m3, m4 = st.columns(4)
     df_c = load_table('champs')
     df_e = load_table('employes')
@@ -418,7 +427,6 @@ elif menu == "🌱 Cartographie & Parcelles":
     if 'lon_active' not in st.session_state:
         st.session_state['lon_active'] = -17.4441
 
-    # Disposition ultra fluide : Formulaire à gauche, Carte interactive intégrée à droite (ou l'inverse)
     col_form, col_map = st.columns([1.1, 1.4], gap="medium")
 
     with col_form:
@@ -431,7 +439,6 @@ elif menu == "🌱 Cartographie & Parcelles":
             surf_p = st.number_input("Superficie (Ha)", min_value=0.1, value=2.5, step=0.1)
             cult_p = st.text_input("Culture principale", placeholder="Ex: Tomate, Riz...")
             
-            # Utilisation des coordonnées issues de la carte interactive
             lat_p = st.number_input("Latitude GPS", value=float(st.session_state['lat_active']), format="%.6f")
             lon_p = st.number_input("Longitude GPS", value=float(st.session_state['lon_active']), format="%.6f")
             
@@ -461,7 +468,6 @@ elif menu == "🌱 Cartographie & Parcelles":
                 else:
                     st.warning("⚠️ Veuillez indiquer un nom de parcelle valide.")
         
-        # Téléchargement direct si généré
         if 'last_created_pdf' in st.session_state and 'last_created_name' in st.session_state:
             st.markdown("<br>", unsafe_allow_html=True)
             st.download_button(
@@ -550,44 +556,46 @@ elif menu == "⏰ Pointage des Horaires":
         st.warning("⚠️ Veuillez sélectionner une parcelle active.")
     else:
         df_emp = load_table('employes')
-        df_part = load_table('partage_champs')
-        df_taches = load_table('taches')
-        
         if df_emp.empty:
             st.warning("⚠️ Aucun employé enregistré dans le système.")
         else:
-            # FILTRAGE CIBLÉ : On cherche les employés qui concernent la parcelle active
-            # Option 1 : Filtrer par les groupes ou intervenants liés à cette parcelle
-            # Si vous associez un groupe à une parcelle ou via les tâches/partages :
+            groupes_disponibles = df_emp['groupe_nom'].dropna().unique().tolist() if 'groupe_nom' in df_emp.columns else []
             
-            # Pour l'instant, si vous souhaitez filtrer par les employés dont le groupe a une tâche ou un lien avec la parcelle, 
-            # ou si vous voulez filtrer par les employés assignés au champ :
+            st.markdown("<div class='card-container'>", unsafe_allow_html=True)
+            st.subheader("🔍 Filtres & Paramètres globaux du Pointage")
             
-            # Vérifions si des équipes ou collaborateurs sont spécifiques à ce champ
-            # On peut filtrer par exemple si le groupe de l'employé est assigné à ce champ, 
-            # ou proposer un filtre direct par groupe ou afficher les employés affectés à ce champ.
-            
-            # Affichons un sélecteur de groupe pour filtrer ou filtrons automatiquement si un lien existe :
-            groupes_disponibles = df_emp['groupe_nom'].unique().tolist() if 'groupe_nom' in df_emp.columns else []
-            
-            st.markdown(f"**Ffiltrage intelligent pour la parcelle : `{champ_selectionne}`**")
-            col_f1, col_f2 = st.columns([2, 2])
+            col_f1, col_f2, col_f3 = st.columns(3)
             with col_f1:
-                filtre_groupe_pointe = st.selectbox("Filtrer par Groupe / Équipe pour ce champ :", ["Tous les groupes de la parcelle"] + groupes_disponibles)
+                groupes_selectionnes = st.multiselect("Filtrer par Groupe(s) :", groupes_disponibles, default=groupes_disponibles)
+            with col_f2:
+                date_p = st.date_input("Date du pointage", value=date.today())
+            with col_f3:
+                tache_globale = st.selectbox("Tâche par défaut pour la sélection :", ["Travaux", "Labour", "Semis", "Désherbage", "Récolte", "Irrigation"])
             
-            if filtre_groupe_pointe != "Tous les groupes de la parcelle":
-                df_emp_filtre = df_emp[df_emp['groupe_nom'] == filtre_groupe_pointe]
+            if groupes_selectionnes:
+                df_emp_filtre = df_emp[df_emp['groupe_nom'].isin(groupes_selectionnes)]
             else:
-                df_emp_filtre = df_emp # Vous pouvez restreindre ici selon votre logique de liaison champ <-> groupe
+                df_emp_filtre = df_emp
+
+            st.markdown("</div>", unsafe_allow_html=True)
 
             if df_emp_filtre.empty:
-                st.info(f"Aucun travailleur trouvé pour ce filtre sur la parcelle {champ_selectionne}.")
+                st.info(f"Aucun travailleur trouvé pour les groupes sélectionnés sur la parcelle **{champ_selectionne}**.")
             else:
-                date_p = st.date_input("Date du pointage", value=date.today())
-                lignes = [{"Présent": True, "Employé": f"{e['nom']} - {e['role']}", "Groupe": e['groupe_nom'], "Tâche": "Travaux", "Heures": 8.0, "Remarque": ""} for _, e in df_emp_filtre.iterrows()]
-                edited = st.data_editor(pd.DataFrame(lignes), hide_index=True, use_container_width=True, key=f"editor_pointage_{champ_id_actif}")
+                st.write(f"📋 **{len(df_emp_filtre)} travailleur(s) concerné(s)** pour ce pointage :")
                 
-                if st.button("💾 Enregistrer le Pointage pour cette Parcelle", use_container_width=True, type="primary"):
+                lignes = [{
+                    "Présent": True, 
+                    "Employé": f"{e['nom']} - {e['role']}", 
+                    "Groupe": e['groupe_nom'], 
+                    "Tâche": tache_globale, 
+                    "Heures": 8.0, 
+                    "Remarque": ""
+                } for _, e in df_emp_filtre.iterrows()]
+                
+                edited = st.data_editor(pd.DataFrame(lignes), hide_index=True, use_container_width=True, key=f"editor_pointage_multi_{champ_id_actif}")
+                
+                if st.button("💾 Enregistrer le Pointage de la Parcelle", use_container_width=True, type="primary"):
                     for _, r in edited.iterrows():
                         if r["Présent"]:
                             execute_query(
@@ -596,8 +604,9 @@ elif menu == "⏰ Pointage des Horaires":
                                 action_desc=f"Pointage de {r['Employé']} sur {champ_selectionne} ({r['Heures']}h)",
                                 user_info=tech
                             )
-                    st.success(f"✅ Pointage enregistré avec succès pour la parcelle **{champ_selectionne}** !")
+                    st.success(f"✅ Pointage validé avec succès pour la parcelle **{champ_selectionne}** !")
                     st.rerun()
+
 elif menu == "📅 Planning & Travaux":
     st.title(f"📅 Planning & Travaux — {champ_selectionne}")
     if champ_id_actif:
