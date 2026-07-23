@@ -68,9 +68,18 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS pluviometrie (id INTEGER PRIMARY KEY AUTOINCREMENT, champ_id INTEGER, date TEXT, pluie_mm REAL)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS incidents (id INTEGER PRIMARY KEY AUTOINCREMENT, champ_id INTEGER, date TEXT, description TEXT, gravite TEXT, action TEXT)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS materiel (id INTEGER PRIMARY KEY AUTOINCREMENT, nom_equipement TEXT, categorie TEXT, statut_marche TEXT, date_derniere_revision TEXT, prochaine_revision TEXT)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS tracabilite (id INTEGER PRIMARY KEY AUTOINCREMENT, lot_code TEXT, champ_nom TEXT, culture TEXT, date_recolte TEXT, norme_certification TEXT, acheteur TEXT)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS irrigation (id INTEGER PRIMARY KEY AUTOINCREMENT, champ_nom TEXT, date TEXT, volume_eau_m3 REAL, methode TEXT, duree_heures REAL)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS alertes_meteo (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, type_risque TEXT, niveau_alerte TEXT, recommandation_ts TEXT)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS tracabilite (id INTEGER PRIMARY KEY AUTOINCREMENT, champ_id INTEGER, lot_code TEXT, culture TEXT, date_recolte TEXT, norme_certification TEXT, acheteur TEXT)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS irrigation (id INTEGER PRIMARY KEY AUTOINCREMENT, champ_id INTEGER, date TEXT, volume_eau_m3 REAL, methode TEXT, duree_heures REAL)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS alertes_meteo (id INTEGER PRIMARY KEY AUTOINCREMENT, champ_id INTEGER, date TEXT, type_risque TEXT, niveau_alerte TEXT, recommandation_ts TEXT)''')
+    
+    # Table messages pour l'espace de travail / collaboration fonctionnel
+    cursor.execute('''CREATE TABLE IF NOT EXISTS messages_workspace (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        auteur TEXT,
+                        role TEXT,
+                        texte TEXT,
+                        date_heure TEXT
+                    )''')
     
     cursor.execute('''CREATE TABLE IF NOT EXISTS whitelist_users (
                         id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -384,7 +393,7 @@ if menu != "🌱 Cartographie & Parcelles":
     st.divider()
 
 # ==========================================
-# 6. MODULES APPLICATIFS ÉPURÉS ET FLUIDES
+# 6. MODULES APPLICATIFS ÉPURÉS ET SYNCHRONISÉS
 # ==========================================
 
 if menu == "📊 Tableau de Bord":
@@ -428,7 +437,6 @@ elif menu == "🌱 Cartographie & Parcelles":
     if 'lon_active' not in st.session_state:
         st.session_state['lon_active'] = -17.4441
 
-    # 1. CARTE INTERACTIVE EN PREMIER (EN HAUT)
     st.markdown("<div class='card-container'>", unsafe_allow_html=True)
     st.subheader("🗺️ 1. Carte Interactive — Cliquez pour capturer les coordonnées GPS")
     df_c = load_table('champs')
@@ -450,7 +458,6 @@ elif menu == "🌱 Cartographie & Parcelles":
 
     st.divider()
 
-    # 2. FORMULAIRE DE CRÉATION EN DESSOUS
     st.markdown("<div class='card-container'>", unsafe_allow_html=True)
     st.subheader("➕ 2. Enregistrement de la Nouvelle Parcelle & Fiche A4")
     
@@ -672,7 +679,8 @@ elif menu == "🌧️ Pluviométrie":
                 execute_query("INSERT INTO pluviometrie (champ_id, date, pluie_mm) VALUES (?, ?, ?)", (champ_id_actif, str(date.today()), mm), action_desc=f"Pluviométrie {mm} mm", user_info=tech)
                 st.success("✅ Enregistré !")
                 st.rerun()
-        st.dataframe(load_table('pluviometrie'), use_container_width=True)
+        df_plu = load_table('pluviometrie')
+        st.dataframe(df_plu[df_plu['champ_id'] == champ_id_actif] if not df_plu.empty else pd.DataFrame(), use_container_width=True)
 
 elif menu == "⚠️ Incidents":
     st.title(f"⚠️ Incidents — {champ_selectionne}")
@@ -684,45 +692,146 @@ elif menu == "⚠️ Incidents":
                 execute_query("INSERT INTO incidents (champ_id, date, description, gravite, action) VALUES (?, ?, ?, ?, 'En attente')", (champ_id_actif, str(date.today()), desc, grav), action_desc=f"Incident ({grav})", user_info=tech)
                 st.success("✅ Déclaré !")
                 st.rerun()
-        st.dataframe(load_table('incidents'), use_container_width=True)
+        df_inc = load_table('incidents')
+        st.dataframe(df_inc[df_inc['champ_id'] == champ_id_actif] if not df_inc.empty else pd.DataFrame(), use_container_width=True)
 
 elif menu == "🚜 Maintenance Matériel":
     st.title("🚜 Maintenance Matériel")
+    with st.form("form_mat"):
+        nom_eq = st.text_input("Nom de l'équipement")
+        cat_eq = st.selectbox("Catégorie", ["Tracteur", "Motopompe", "Semoir", "Pulvérisateur"])
+        stat_m = st.selectbox("Statut", ["Opérationnel", "En panne", "En révision"])
+        d_rev = st.date_input("Dernière révision", value=date.today())
+        p_rev = st.date_input("Prochaine révision", value=date.today())
+        if st.form_submit_button("Ajouter le Matériel", use_container_width=True):
+            if nom_eq.strip():
+                execute_query("INSERT INTO materiel (nom_equipement, categorie, statut_marche, date_derniere_revision, prochaine_revision) VALUES (?, ?, ?, ?, ?)", (nom_eq.strip(), cat_eq, stat_m, str(d_rev), str(p_rev)), action_desc=f"Ajout matériel '{nom_eq}'", user_info=tech)
+                st.success("✅ Matériel ajouté !")
+                st.rerun()
     st.dataframe(load_table('materiel'), use_container_width=True)
 
 elif menu == "🏷️ Traçabilité & Lots":
-    st.title("🏷️ Traçabilité")
-    st.dataframe(load_table('tracabilite'), use_container_width=True)
+    st.title(f"🏷️ Traçabilité & Lots — {champ_selectionne}")
+    if champ_id_actif:
+        with st.form("form_trac"):
+            lot = st.text_input("Code du lot", placeholder="Ex: LOT-TOMATE-2026-01")
+            cult_tr = st.text_input("Culture associée")
+            norme = st.text_input("Norme de certification", placeholder="Ex: GlobalGAP / Bio")
+            acheteur = st.text_input("Acheteur / Destination")
+            if st.form_submit_button("Enregistrer le Lot", use_container_width=True):
+                if lot.strip():
+                    execute_query("INSERT INTO tracabilite (champ_id, lot_code, culture, date_recolte, norme_certification, acheteur) VALUES (?, ?, ?, ?, ?, ?)", (champ_id_actif, lot.strip(), cult_tr.strip(), str(date.today()), norme.strip(), acheteur.strip()), action_desc=f"Création lot traçabilité '{lot}'", user_info=tech)
+                    st.success("✅ Lot enregistré avec succès !")
+                    st.rerun()
+        df_trac = load_table('tracabilite')
+        st.dataframe(df_trac[df_trac['champ_id'] == champ_id_actif] if not df_trac.empty else pd.DataFrame(), use_container_width=True)
+    else:
+        st.warning("⚠️ Veuillez sélectionner une parcelle active.")
 
 elif menu == "💧 Irrigation & Eau":
-    st.title(f"💧 Irrigation — {champ_selectionne}")
-    st.dataframe(load_table('irrigation'), use_container_width=True)
+    st.title(f"💧 Irrigation & Eau — {champ_selectionne}")
+    if champ_id_actif:
+        with st.form("form_irrig"):
+            vol_eau = st.number_input("Volume d'eau (m3)", min_value=0.0, value=50.0)
+            methode = st.selectbox("Méthode d'irrigation", ["Goutte-à-goutte", "Aspersion", "Gravitaire", "Pivots"])
+            duree = st.number_input("Durée (heures)", min_value=0.1, value=2.0)
+            if st.form_submit_button("Enregistrer l'Irrigation", use_container_width=True):
+                execute_query("INSERT INTO irrigation (champ_id, date, volume_eau_m3, methode, duree_heures) VALUES (?, ?, ?, ?, ?)", (champ_id_actif, str(date.today()), vol_eau, methode, duree), action_desc=f"Enregistrement irrigation {vol_eau}m3", user_info=tech)
+                st.success("✅ Irrigation enregistrée !")
+                st.rerun()
+        df_irrig = load_table('irrigation')
+        st.dataframe(df_irrig[df_irrig['champ_id'] == champ_id_actif] if not df_irrig.empty else pd.DataFrame(), use_container_width=True)
+    else:
+        st.warning("⚠️ Veuillez sélectionner une parcelle active.")
 
 elif menu == "🌤️ Risques & Météo":
-    st.title("🌤️ Risques & Météo")
-    st.dataframe(load_table('alertes_meteo'), use_container_width=True)
+    st.title(f"🌤️ Risques & Météo — {champ_selectionne}")
+    if champ_id_actif:
+        with st.form("form_meteo"):
+            risque = st.selectbox("Type de risque climatique", ["Sécheresse", "Inondation / Fortes pluies", "Vents violents", "Attaque parasitaire / Mildiou"])
+            niveau = st.selectbox("Niveau d'alerte", ["Faible", "Modéré", "Élevé", "Critique"])
+            reco = st.text_area("Recommandations techniques", placeholder="Ex: Activer l'irrigation d'appoint / Traitement préventif...")
+            if st.form_submit_button("Enregistrer l'Alerte", use_container_width=True):
+                execute_query("INSERT INTO alertes_meteo (champ_id, date, type_risque, niveau_alerte, recommandation_ts) VALUES (?, ?, ?, ?, ?)", (champ_id_actif, str(date.today()), risque, niveau, reco), action_desc=f"Alerte météo '{risque}'", user_info=tech)
+                st.success("✅ Alerte enregistrée !")
+                st.rerun()
+        df_meteo = load_table('alertes_meteo')
+        st.dataframe(df_meteo[df_meteo['champ_id'] == champ_id_actif] if not df_meteo.empty else pd.DataFrame(), use_container_width=True)
+    else:
+        st.warning("⚠️ Veuillez sélectionner une parcelle active.")
 
 elif menu == "📈 Rentabilité & ROI":
-    st.title("📈 Rentabilité & ROI")
-    df_d = load_table('depenses')
-    df_r = load_table('recoltes')
-    total_dep = df_d['montant'].sum() if not df_d.empty else 0
-    total_rec = (df_r['quantite_kg'] * df_r['prix_unitaire']).sum() if not df_r.empty else 0
-    marge = total_rec - total_dep
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Dépenses", f"{total_dep:,.0f} FCFA")
-    col2.metric("Ventes", f"{total_rec:,.0f} FCFA")
-    col3.metric("Marge Nette", f"{marge:,.0f} FCFA")
+    st.title(f"📈 Rentabilité & ROI — {champ_selectionne}")
+    if champ_id_actif:
+        df_d = load_table('depenses')
+        df_r = load_table('recoltes')
+        
+        df_d_champ = df_d[df_d['champ_id'] == champ_id_actif] if not df_d.empty else pd.DataFrame()
+        df_r_champ = df_r[df_r['champ_id'] == champ_id_actif] if not df_r.empty else pd.DataFrame()
+        
+        total_dep = df_d_champ['montant'].sum() if not df_d_champ.empty else 0
+        total_rec = (df_r_champ['quantite_kg'] * df_r_champ['prix_unitaire']).sum() if not df_r_champ.empty else 0
+        marge = total_rec - total_dep
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Dépenses de la parcelle", f"{total_dep:,.0f} FCFA")
+        col2.metric("Ventes de la parcelle", f"{total_rec:,.0f} FCFA")
+        col3.metric("Marge Nette de la parcelle", f"{marge:,.0f} FCFA")
+        
+        st.divider()
+        st.subheader("📋 Détail des Dépenses de la Parcelle")
+        st.dataframe(df_d_champ, use_container_width=True)
+        
+        st.subheader("📋 Détail des Récoltes de la Parcelle")
+        st.dataframe(df_r_champ, use_container_width=True)
+    else:
+        st.warning("⚠️ Veuillez sélectionner une parcelle active.")
 
 elif menu == "💬 Espace Collaboration & Meet":
-    st.title("💬 Collaboration & Réunions")
+    st.title("💬 Espace Collaboration & Espace de Travail")
+    
     st.link_button("🚀 Ouvrir une réunion Google Meet", "https://meet.google.com/new", use_container_width=True)
     st.divider()
-    df_m = load_table('messages_collab')
-    if not df_m.empty:
-        st.dataframe(df_m, use_container_width=True)
+    
+    st.subheader("💬 Messagerie instantanée de l'exploitation")
+    st.markdown("Échangez des notes rapides, consignes ou remarques entre l'équipe technique et la direction.")
+
+    # Formulaire fonctionnel pour envoyer un message dans l'espace de travail
+    with st.form("form_workspace_chat", clear_on_submit=True):
+        texte_message = st.text_area("Rédiger un message ou une note :", placeholder="Ex: Besoins en engrais validés pour la parcelle...")
+        submit_msg = st.form_submit_button("Envoyer le message", use_container_width=True, type="primary")
+        
+        if submit_msg:
+            if texte_message.strip():
+                auteur_complet = f"{tech.get('prenom', '')} {tech.get('nom', '')}".strip()
+                role_utilisateur = tech.get('role', 'Technicien')
+                date_heure_actuelle = datetime.now().strftime("%d/%m/%Y à %H:%M")
+                
+                execute_query(
+                    "INSERT INTO messages_workspace (auteur, role, texte, date_heure) VALUES (?, ?, ?, ?)",
+                    (auteur_complet, role_utilisateur, texte_message.strip(), date_heure_actuelle),
+                    action_desc=f"Message posté dans l'espace de travail par {auteur_complet}",
+                    user_info=tech
+                )
+                st.success("✅ Message publié avec succès !")
+                st.rerun()
+            else:
+                st.warning("⚠️ Le message ne peut pas être vide.")
+
+    st.divider()
+    st.subheader("📜 Historique des messages de l'équipe")
+    df_messages = load_table('messages_workspace')
+    if not df_messages.empty:
+        # Affichage du plus récent au plus ancien ou inversement
+        for _, msg in df_messages.iloc[::-1].iterrows():
+            st.markdown(f"""
+                <div style="background: white; padding: 12px 15px; border-radius: 8px; border-left: 4px solid #10b981; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                    <small style="color: #6b7280;"><b>{msg['auteur']}</b> ({msg['role']}) — <i>{msg['date_heure']}</i></small>
+                    <p style="margin: 5px 0 0 0; color: #1f2937; font-size: 14px;">{msg['texte']}</p>
+                </div>
+            """, unsafe_allow_html=True)
     else:
-        st.info("Aucun message.")
+        st.info("Aucun message dans l'espace de travail pour le moment. Soyez le premier à écrire !")
 
 elif menu == "📜 Historique":
     st.title("📜 Historique des Modifications")
@@ -730,7 +839,7 @@ elif menu == "📜 Historique":
     st.dataframe(df_h.iloc[::-1] if not df_h.empty else df_h, use_container_width=True)
 
 elif menu == "🔐 Paramètres & Liste Blanche":
-    st.title("🔐 Paramètres")
+    st.title("🔐 Paramètres & Liste Blanche")
     st.dataframe(load_table('whitelist_users'), use_container_width=True)
 
 elif menu == "📑 EXPORT RAPPORT PARCELLE":
