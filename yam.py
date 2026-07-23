@@ -79,7 +79,6 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS irrigation (id INTEGER PRIMARY KEY AUTOINCREMENT, champ_id INTEGER, date TEXT, volume_eau_m3 REAL, methode TEXT, duree_heures REAL)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS alertes_meteo (id INTEGER PRIMARY KEY AUTOINCREMENT, champ_id INTEGER, date TEXT, type_risque TEXT, niveau_alerte TEXT, recommandation_ts TEXT)''')
     
-    # Création sécurisée avec toutes les colonnes requises
     cursor.execute('''CREATE TABLE IF NOT EXISTS messages_workspace (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         auteur TEXT,
@@ -96,7 +95,6 @@ def init_db():
                         champ_concerne TEXT
                     )''')
     
-    # Migration robuste colonne par colonne pour éviter toute erreur d'insertion
     colonnes_a_verifier = [
         ("email", "TEXT"),
         ("destinataire_email", "TEXT"),
@@ -227,7 +225,7 @@ if not auth_system():
     st.stop()
 
 # ==========================================
-# 4. EXPORTATIONS PDF FORMAT A4 STRICT (PARCELLE ACTIVE)
+# 4. EXPORTATIONS PDF FORMAT A4 STRICT
 # ==========================================
 def export_fiche_parcelle_a4(nom_p, surf_p, cult_p, lat_p, lon_p, stat_p):
     buffer = io.BytesIO()
@@ -337,7 +335,6 @@ st.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 
-# Classement hiérarchique des menus par profil
 menu_administration = [
     "🔐 Paramètres & Liste Blanche",
     "📜 Historique"
@@ -369,7 +366,6 @@ menu_commun = [
     "💬 Espace Collaboration & Workspace"
 ]
 
-# Composition du menu dynamique selon le rôle
 if role_tech == "Administration" or email_connecte == "issayoume2012@gmail.com":
     tous_les_menus = menu_commun + menu_administration + menu_gestionnaire + menu_techniciens
 elif role_tech == "Gestionnaire":
@@ -428,7 +424,7 @@ if menu != "🌱 Cartographie & Parcelles":
     st.divider()
 
 # ==========================================
-# 6. MODULES APPLICATIFS STRUCTURÉS
+# 6. MODULES APPLICATIFS STRUCTURÉS (AVEC SUPPRESSIONS)
 # ==========================================
 
 if menu == "📊 Tableau de Bord":
@@ -515,6 +511,23 @@ elif menu == "🌱 Cartographie & Parcelles":
         st.download_button("📥 Télécharger la Fiche A4 officielle", data=st.session_state['last_created_pdf'], file_name=f"fiche_a4_{st.session_state['last_created_name']}.pdf", mime="application/pdf", use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
+    # Section Suppression des Parcelles
+    st.markdown("<div class='card-container'>", unsafe_allow_html=True)
+    st.subheader("🗑️ Gestion / Suppression des Parcelles")
+    if not df_c.empty:
+        for _, cp in df_c.iterrows():
+            col_cp1, col_cp2 = st.columns([4, 1])
+            with col_cp1:
+                st.write(f"📍 **{cp['nom']}** — {cp['superficie_ha']} Ha | Culture : {cp['culture_actuelle']}")
+            with col_cp2:
+                if st.button("🗑️ Supprimer", key=f"del_champ_{cp['id']}"):
+                    execute_query("DELETE FROM champs WHERE id = ?", (cp['id'],), action_desc=f"Suppression parcelle '{cp['nom']}'", user_info=tech)
+                    st.success("Parcelle supprimée !")
+                    st.rerun()
+    else:
+        st.info("Aucune parcelle à supprimer.")
+    st.markdown("</div>", unsafe_allow_html=True)
+
 elif menu == "👥 Groupes & Membres":
     st.title("👥 Gestion des Groupes & Membres (Espace Gestionnaire)")
     col_g1, col_g2 = st.columns(2)
@@ -528,7 +541,18 @@ elif menu == "👥 Groupes & Membres":
                     execute_query("INSERT INTO equipes (nom_groupe, chef_groupe) VALUES (?, ?)", (nom_g.strip(), chef_g.strip()), action_desc=f"Création groupe '{nom_g}'", user_info=tech)
                     st.success("✅ Groupe créé !")
                     st.rerun()
-        st.dataframe(load_table('equipes'), use_container_width=True)
+        
+        df_eq_list = load_table('equipes')
+        if not df_eq_list.empty:
+            st.markdown("---")
+            st.write("**Liste des groupes :**")
+            for _, g in df_eq_list.iterrows():
+                cg1, cg2 = st.columns([3, 1])
+                cg1.write(f"👥 **{g['nom_groupe']}** (Chef : {g['chef_groupe']})")
+                if cg2.button("🗑️", key=f"del_eq_{g['id']}"):
+                    execute_query("DELETE FROM equipes WHERE id = ?", (g['id'],), action_desc=f"Suppression groupe '{g['nom_groupe']}'", user_info=tech)
+                    st.success("Groupe supprimé !")
+                    st.rerun()
 
     with col_g2:
         st.subheader("2️⃣ Membres / Employés")
@@ -544,7 +568,18 @@ elif menu == "👥 Groupes & Membres":
                         execute_query("INSERT INTO employes (nom, role, groupe_nom, tarif_journalier) VALUES (?, ?, ?, ?)", (nom_emp.strip(), role_emp.strip(), grp_emp, tarif), action_desc=f"Ajout employé '{nom_emp}'", user_info=tech)
                         st.success("✅ Employé ajouté !")
                         st.rerun()
-        st.dataframe(load_table('employes'), use_container_width=True)
+        
+        df_emp_list = load_table('employes')
+        if not df_emp_list.empty:
+            st.markdown("---")
+            st.write("**Liste des employés :**")
+            for _, emp in df_emp_list.iterrows():
+                ce1, ce2 = st.columns([3, 1])
+                ce1.write(f"👤 **{emp['nom']}** ({emp['role']})")
+                if ce2.button("🗑️", key=f"del_emp_{emp['id']}"):
+                    execute_query("DELETE FROM employes WHERE id = ?", (emp['id'],), action_desc=f"Suppression employé '{emp['nom']}'", user_info=tech)
+                    st.success("Employé supprimé !")
+                    st.rerun()
 
 elif menu == "⏰ Pointage des Horaires":
     st.title(f"⏰ Pointage des Horaires — {champ_selectionne} (Espace Technicien)")
@@ -590,6 +625,21 @@ elif menu == "⏰ Pointage des Horaires":
                     st.success("✅ Pointage enregistré avec succès !")
                     st.rerun()
 
+        st.markdown("---")
+        st.subheader("📜 Historique des pointages de la parcelle (avec suppression)")
+        df_pts = load_table('pointage')
+        df_pts_champ = df_pts[df_pts['champ_nom'] == champ_selectionne] if not df_pts.empty else pd.DataFrame()
+        if not df_pts_champ.empty:
+            for _, pt in df_pts_champ.iterrows():
+                cp1, cp2 = st.columns([4, 1])
+                cp1.write(f"📅 {pt['date']} | **{pt['employe_nom']}** — Tâche : {pt['tache_effectuee']} ({pt['heures_travaillees']}h)")
+                if cp2.button("🗑️ Supprimer", key=f"del_pt_{pt['id']}"):
+                    execute_query("DELETE FROM pointage WHERE id = ?", (pt['id'],), action_desc="Suppression d'un pointage", user_info=tech)
+                    st.success("Pointage supprimé !")
+                    st.rerun()
+        else:
+            st.info("Aucun pointage enregistré pour cette parcelle.")
+
 elif menu == "📅 Planning & Travaux":
     st.title(f"📅 Planning & Travaux — {champ_selectionne}")
     if champ_id_actif:
@@ -601,8 +651,21 @@ elif menu == "📅 Planning & Travaux":
                 execute_query("INSERT INTO taches (champ_id, groupe_id, type_travail, date_tache, heures_travaillees, statut) VALUES (?, 1, ?, ?, ?, 'Planifié')", (champ_id_actif, t_trav, str(d_tache), hrs), action_desc=f"Planification '{t_trav}'", user_info=tech)
                 st.success("✅ Planifié !")
                 st.rerun()
+        
         df_t = load_table('taches')
-        st.dataframe(df_t[df_t['champ_id'] == champ_id_actif] if not df_t.empty else pd.DataFrame(), use_container_width=True)
+        df_t_champ = df_t[df_t['champ_id'] == champ_id_actif] if not df_t.empty else pd.DataFrame()
+        st.markdown("---")
+        st.subheader("Liste des tâches planifiées")
+        if not df_t_champ.empty:
+            for _, tc in df_t_champ.iterrows():
+                ct1, ct2 = st.columns([4, 1])
+                ct1.write(f"📌 **{tc['type_travail']}** (Prévu le : {tc['date_tache']} — {tc['heures_travaillees']}h)")
+                if ct2.button("🗑️", key=f"del_tc_{tc['id']}"):
+                    execute_query("DELETE FROM taches WHERE id = ?", (tc['id'],), action_desc=f"Suppression tâche '{tc['type_travail']}'", user_info=tech)
+                    st.success("Tâche supprimée !")
+                    st.rerun()
+        else:
+            st.info("Aucune tâche planifiée.")
 
 elif menu == "🌾 Récoltes & Rendements":
     st.title(f"🌾 Récoltes & Rendements — {champ_selectionne}")
@@ -615,8 +678,21 @@ elif menu == "🌾 Récoltes & Rendements":
                 execute_query("INSERT INTO recoltes (champ_id, culture, date_recolte, quantite_kg, prix_unitaire) VALUES (?, ?, ?, ?, ?)", (champ_id_actif, cult, str(date.today()), qte, pu), action_desc=f"Récolte '{cult}' ({qte} Kg)", user_info=tech)
                 st.success("✅ Enregistré !")
                 st.rerun()
+        
         df_r = load_table('recoltes')
-        st.dataframe(df_r[df_r['champ_id'] == champ_id_actif] if not df_r.empty else pd.DataFrame(), use_container_width=True)
+        df_r_champ = df_r[df_r['champ_id'] == champ_id_actif] if not df_r.empty else pd.DataFrame()
+        st.markdown("---")
+        st.subheader("Historique des récoltes")
+        if not df_r_champ.empty:
+            for _, rc in df_r_champ.iterrows():
+                cr1, cr2 = st.columns([4, 1])
+                cr1.write(f"🌾 **{rc['culture']}** : {rc['quantite_kg']} Kg à {rc['prix_unitaire']} FCFA/Kg ({rc['date_recolte']})")
+                if cr2.button("🗑️", key=f"del_rc_{rc['id']}"):
+                    execute_query("DELETE FROM recoltes WHERE id = ?", (rc['id'],), action_desc="Suppression d'une récolte", user_info=tech)
+                    st.success("Récolte supprimée !")
+                    st.rerun()
+        else:
+            st.info("Aucune récolte enregistrée.")
 
 elif menu == "💰 Finances & Marges":
     st.title(f"💰 Finances & Marges — {champ_selectionne} (Espace Gestionnaire)")
@@ -628,8 +704,21 @@ elif menu == "💰 Finances & Marges":
                 execute_query("INSERT INTO depenses (champ_id, type, montant, date, facture_nom) VALUES (?, ?, ?, ?, 'Aucune')", (champ_id_actif, motif, mnt, str(date.today())), action_desc=f"Dépense '{motif}' ({mnt} FCFA)", user_info=tech)
                 st.success("✅ Dépense enregistrée !")
                 st.rerun()
+        
         df_d = load_table('depenses')
-        st.dataframe(df_d[df_d['champ_id'] == champ_id_actif] if not df_d.empty else pd.DataFrame(), use_container_width=True)
+        df_d_champ = df_d[df_d['champ_id'] == champ_id_actif] if not df_d.empty else pd.DataFrame()
+        st.markdown("---")
+        st.subheader("Liste des dépenses")
+        if not df_d_champ.empty:
+            for _, dp in df_d_champ.iterrows():
+                cd1, cd2 = st.columns([4, 1])
+                cd1.write(f"💸 **{dp['type']}** : {dp['montant']} FCFA ({dp['date']})")
+                if cd2.button("🗑️", key=f"del_dp_{dp['id']}"):
+                    execute_query("DELETE FROM depenses WHERE id = ?", (dp['id'],), action_desc=f"Suppression dépense '{dp['type']}'", user_info=tech)
+                    st.success("Dépense supprimée !")
+                    st.rerun()
+        else:
+            st.info("Aucune dépense enregistrée.")
 
 elif menu == "📦 Stocks d'Intrants":
     st.title("📦 Stocks d'Intrants (Espace Gestionnaire)")
@@ -642,7 +731,20 @@ elif menu == "📦 Stocks d'Intrants":
             execute_query("INSERT INTO intrants (nom, categorie, stock_actuel, unite, seuil_alerte, facture_nom) VALUES (?, ?, ?, ?, 2.0, 'Aucune')", (nom_i, cat_i, stk, unite), action_desc=f"Ajout intrant '{nom_i}'", user_info=tech)
             st.success("✅ Ajouté !")
             st.rerun()
-    st.dataframe(load_table('intrants'), use_container_width=True)
+            
+    df_i = load_table('intrants')
+    st.markdown("---")
+    st.subheader("Liste des stocks")
+    if not df_i.empty:
+        for _, in_t in df_i.iterrows():
+            ci1, ci2 = st.columns([4, 1])
+            ci1.write(f"📦 **{in_t['nom']}** ({in_t['categorie']}) — Stock : {in_t['stock_actuel']} {in_t['unite']}")
+            if ci2.button("🗑️", key=f"del_in_{in_t['id']}"):
+                execute_query("DELETE FROM intrants WHERE id = ?", (in_t['id'],), action_desc=f"Suppression intrant '{in_t['nom']}'", user_info=tech)
+                st.success("Intrant supprimé !")
+                st.rerun()
+    else:
+        st.info("Aucun intrant en stock.")
 
 elif menu == "🌧️ Pluviométrie":
     st.title(f"🌧️ Pluviométrie — {champ_selectionne}")
@@ -653,8 +755,21 @@ elif menu == "🌧️ Pluviométrie":
                 execute_query("INSERT INTO pluviometrie (champ_id, date, pluie_mm) VALUES (?, ?, ?)", (champ_id_actif, str(date.today()), mm), action_desc=f"Pluviométrie {mm} mm", user_info=tech)
                 st.success("✅ Enregistré !")
                 st.rerun()
+                
         df_plu = load_table('pluviometrie')
-        st.dataframe(df_plu[df_plu['champ_id'] == champ_id_actif] if not df_plu.empty else pd.DataFrame(), use_container_width=True)
+        df_plu_champ = df_plu[df_plu['champ_id'] == champ_id_actif] if not df_plu.empty else pd.DataFrame()
+        st.markdown("---")
+        st.subheader("Historique des relevés pluviométriques")
+        if not df_plu_champ.empty:
+            for _, plu in df_plu_champ.iterrows():
+                cpl1, cpl2 = st.columns([4, 1])
+                cpl1.write(f"🌧️ Date : {plu['date']} — **{plu['pluie_mm']} mm**")
+                if cpl2.button("🗑️", key=f"del_plu_{plu['id']}"):
+                    execute_query("DELETE FROM pluviometrie WHERE id = ?", (plu['id'],), action_desc="Suppression relevé pluviométrique", user_info=tech)
+                    st.success("Relevé supprimé !")
+                    st.rerun()
+        else:
+            st.info("Aucun relevé pluviométrique.")
 
 elif menu == "⚠️ Incidents":
     st.title(f"⚠️ Incidents — {champ_selectionne}")
@@ -666,8 +781,21 @@ elif menu == "⚠️ Incidents":
                 execute_query("INSERT INTO incidents (champ_id, date, description, gravite, action) VALUES (?, ?, ?, ?, 'En attente')", (champ_id_actif, str(date.today()), desc, grav), action_desc=f"Incident ({grav})", user_info=tech)
                 st.success("✅ Déclaré !")
                 st.rerun()
+                
         df_inc = load_table('incidents')
-        st.dataframe(df_inc[df_inc['champ_id'] == champ_id_actif] if not df_inc.empty else pd.DataFrame(), use_container_width=True)
+        df_inc_champ = df_inc[df_inc['champ_id'] == champ_id_actif] if not df_inc.empty else pd.DataFrame()
+        st.markdown("---")
+        st.subheader("Liste des incidents déclarés")
+        if not df_inc_champ.empty:
+            for _, inc in df_inc_champ.iterrows():
+                cin1, cin2 = st.columns([4, 1])
+                cin1.write(f"⚠️ [{inc['gravite']}] {inc['date']} : {inc['description']}")
+                if cin2.button("🗑️", key=f"del_inc_{inc['id']}"):
+                    execute_query("DELETE FROM incidents WHERE id = ?", (inc['id'],), action_desc="Suppression incident", user_info=tech)
+                    st.success("Incident supprimé !")
+                    st.rerun()
+        else:
+            st.info("Aucun incident déclaré.")
 
 elif menu == "🚜 Maintenance Matériel":
     st.title("🚜 Maintenance Matériel (Espace Gestionnaire)")
@@ -681,7 +809,20 @@ elif menu == "🚜 Maintenance Matériel":
             execute_query("INSERT INTO materiel (nom_equipement, categorie, statut_marche, date_derniere_revision, prochaine_revision) VALUES (?, ?, ?, ?, ?)", (nom_eq, cat_eq, stat_m, str(d_rev), str(p_rev)), action_desc=f"Ajout matériel '{nom_eq}'", user_info=tech)
             st.success("✅ Ajouté !")
             st.rerun()
-    st.dataframe(load_table('materiel'), use_container_width=True)
+            
+    df_mat = load_table('materiel')
+    st.markdown("---")
+    st.subheader("Parc matériel")
+    if not df_mat.empty:
+        for _, mat in df_mat.iterrows():
+            cmat1, cmat2 = st.columns([4, 1])
+            cmat1.write(f"🚜 **{mat['nom_equipement']}** ({mat['categorie']}) — Statut : {mat['statut_marche']}")
+            if cmat2.button("🗑️", key=f"del_mat_{mat['id']}"):
+                execute_query("DELETE FROM materiel WHERE id = ?", (mat['id'],), action_desc=f"Suppression matériel '{mat['nom_equipement']}'", user_info=tech)
+                st.success("Matériel supprimé !")
+                st.rerun()
+    else:
+        st.info("Aucun matériel enregistré.")
 
 elif menu == "🏷️ Traçabilité & Lots":
     st.title(f"🏷️ Traçabilité & Lots — {champ_selectionne}")
@@ -696,8 +837,21 @@ elif menu == "🏷️ Traçabilité & Lots":
                     execute_query("INSERT INTO tracabilite (champ_id, lot_code, culture, date_recolte, norme_certification, acheteur) VALUES (?, ?, ?, ?, ?, ?)", (champ_id_actif, lot.strip(), cult_tr, str(date.today()), norme, acheteur), action_desc=f"Lot '{lot}'", user_info=tech)
                     st.success("✅ Lot enregistré !")
                     st.rerun()
+                    
         df_trac = load_table('tracabilite')
-        st.dataframe(df_trac[df_trac['champ_id'] == champ_id_actif] if not df_trac.empty else pd.DataFrame(), use_container_width=True)
+        df_trac_champ = df_trac[df_trac['champ_id'] == champ_id_actif] if not df_trac.empty else pd.DataFrame()
+        st.markdown("---")
+        st.subheader("Lots enregistrés")
+        if not df_trac_champ.empty:
+            for _, tr in df_trac_champ.iterrows():
+                ctr1, ctr2 = st.columns([4, 1])
+                ctr1.write(f"🏷️ **{tr['lot_code']}** ({tr['culture']}) — Acheteur : {tr['acheteur']}")
+                if ctr2.button("🗑️", key=f"del_tr_{tr['id']}"):
+                    execute_query("DELETE FROM tracabilite WHERE id = ?", (tr['id'],), action_desc=f"Suppression lot '{tr['lot_code']}'", user_info=tech)
+                    st.success("Lot supprimé !")
+                    st.rerun()
+        else:
+            st.info("Aucun lot enregistré.")
 
 elif menu == "💧 Irrigation & Eau":
     st.title(f"💧 Irrigation & Eau — {champ_selectionne}")
@@ -710,8 +864,21 @@ elif menu == "💧 Irrigation & Eau":
                 execute_query("INSERT INTO irrigation (champ_id, date, volume_eau_m3, methode, duree_heures) VALUES (?, ?, ?, ?, ?)", (champ_id_actif, str(date.today()), vol_eau, methode, duree), action_desc=f"Irrigation {vol_eau}m3", user_info=tech)
                 st.success("✅ Enregistré !")
                 st.rerun()
+                
         df_irrig = load_table('irrigation')
-        st.dataframe(df_irrig[df_irrig['champ_id'] == champ_id_actif] if not df_irrig.empty else pd.DataFrame(), use_container_width=True)
+        df_irrig_champ = df_irrig[df_irrig['champ_id'] == champ_id_actif] if not df_irrig.empty else pd.DataFrame()
+        st.markdown("---")
+        st.subheader("Historique des irrigations")
+        if not df_irrig_champ.empty:
+            for _, ir in df_irrig_champ.iterrows():
+                cir1, cir2 = st.columns([4, 1])
+                cir1.write(f"💧 {ir['date']} — **{ir['volume_eau_m3']} m³** ({ir['methode']}, {ir['duree_heures']}h)")
+                if cir2.button("🗑️", key=f"del_ir_{ir['id']}"):
+                    execute_query("DELETE FROM irrigation WHERE id = ?", (ir['id'],), action_desc="Suppression irrigation", user_info=tech)
+                    st.success("Irrigation supprimée !")
+                    st.rerun()
+        else:
+            st.info("Aucune irrigation enregistrée.")
 
 elif menu == "🌤️ Risques & Météo":
     st.title(f"🌤️ Risques & Météo — {champ_selectionne}")
@@ -724,8 +891,21 @@ elif menu == "🌤️ Risques & Météo":
                 execute_query("INSERT INTO alertes_meteo (champ_id, date, type_risque, niveau_alerte, recommandation_ts) VALUES (?, ?, ?, ?, ?)", (champ_id_actif, str(date.today()), risque, niveau, reco), action_desc=f"Alerte '{risque}'", user_info=tech)
                 st.success("✅ Alerte enregistrée !")
                 st.rerun()
+                
         df_meteo = load_table('alertes_meteo')
-        st.dataframe(df_meteo[df_meteo['champ_id'] == champ_id_actif] if not df_meteo.empty else pd.DataFrame(), use_container_width=True)
+        df_meteo_champ = df_meteo[df_meteo['champ_id'] == champ_id_actif] if not df_meteo.empty else pd.DataFrame()
+        st.markdown("---")
+        st.subheader("Alertes météo enregistrées")
+        if not df_meteo_champ.empty:
+            for _, alt in df_meteo_champ.iterrows():
+                cal1, cal2 = st.columns([4, 1])
+                cal1.write(f"🌤️ [{alt['niveau_alerte']}] **{alt['type_risque']}** ({alt['date']}) — {alt['recommandation_ts']}")
+                if cal2.button("🗑️", key=f"del_alt_{alt['id']}"):
+                    execute_query("DELETE FROM alertes_meteo WHERE id = ?", (alt['id'],), action_desc="Suppression alerte météo", user_info=tech)
+                    st.success("Alerte supprimée !")
+                    st.rerun()
+        else:
+            st.info("Aucune alerte enregistrée.")
 
 elif menu == "📈 Rentabilité & ROI":
     st.title(f"📈 Rentabilité & ROI — {champ_selectionne} (Espace Gestionnaire)")
@@ -822,7 +1002,7 @@ elif menu == "💬 Espace Collaboration & Workspace":
                     st.warning("⚠️ Veuillez saisir un message ou joindre un fichier.")
 
     st.divider()
-    st.subheader("📜 Fil d'actualité, Médias, Rapports & Consignes de l'Exploitation")
+    st.subheader("📜 Fil d'actualité, Médias, Rapports & Consignes de l'Exploitation (avec suppression)")
     df_messages = load_table('messages_workspace')
     if not df_messages.empty:
         for _, msg in df_messages.iloc[::-1].iterrows():
@@ -837,43 +1017,50 @@ elif menu == "💬 Espace Collaboration & Workspace":
             m_champ = msg.get('champ_concerne', 'Aucune')
             m_id = msg.get('id', 0)
             
-            # Affichage explicite des e-mails expéditeur et destinataire
             dest_affichage = f"<b>{m_dest}</b>"
             if m_dest_email and str(m_dest_email).strip() != "" and str(m_dest_email).strip() != "None":
                 dest_affichage += f" (E-mail destinataire : &lt;{m_dest_email}&gt;)"
             
-            st.markdown(f"""
-                <div style="background: white; padding: 15px; border-radius: 10px; border-left: 4px solid #10b981; margin-bottom: 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
-                    <div style="display: flex; justify-content: space-between;">
-                        <small style="color: #6b7280;"><b>{m_auteur}</b> &lt;{m_email}&gt; ({m_role}) ➔ Cible : {dest_affichage} {f"| 📍 <i>{m_champ}</i>" if m_champ != 'Aucune' else ''}</small>
-                        <small style="color: #ef4444; font-weight: bold;">{m_priorite}</small>
+            col_m1, col_m2 = st.columns([10, 1])
+            with col_m1:
+                st.markdown(f"""
+                    <div style="background: white; padding: 15px; border-radius: 10px; border-left: 4px solid #10b981; margin-bottom: 5px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
+                        <div style="display: flex; justify-content: space-between;">
+                            <small style="color: #6b7280;"><b>{m_auteur}</b> &lt;{m_email}&gt; ({m_role}) ➔ Cible : {dest_affichage} {f"| 📍 <i>{m_champ}</i>" if m_champ != 'Aucune' else ''}</small>
+                            <small style="color: #ef4444; font-weight: bold;">{m_priorite}</small>
+                        </div>
+                        <p style="margin: 10px 0; color: #1f2937; font-size: 14px;">{m_texte}</p>
+                """, unsafe_allow_html=True)
+                
+                f_path = msg.get('fichier_path', '')
+                f_name = msg.get('nom_fichier', '')
+                f_type = msg.get('type_contenu', '')
+                
+                if f_path and isinstance(f_path, str) and os.path.exists(f_path):
+                    if f_type == "Photo 📷" or f_name.lower().endswith(('.png', '.jpg', '.jpeg')):
+                        st.image(f_path, caption=f_name, width=400)
+                    elif f_type == "Vidéo 🎥" or f_name.lower().endswith(('.mp4', '.mov')):
+                        st.video(f_path)
+                    else:
+                        with open(f_path, "rb") as file_download:
+                            st.download_button(
+                                label=f"📥 Télécharger le fichier joint : {f_name}",
+                                data=file_download,
+                                file_name=f_name,
+                                key=f"dl_ws_{m_id}"
+                            )
+                
+                st.markdown(f"""
+                        <div style="text-align: right; margin-top: 5px;"><small style="color: #9ca3af; font-size: 11px;">{m_date}</small></div>
                     </div>
-                    <p style="margin: 10px 0; color: #1f2937; font-size: 14px;">{m_texte}</p>
-            """, unsafe_allow_html=True)
+                """, unsafe_allow_html=True)
             
-            f_path = msg.get('fichier_path', '')
-            f_name = msg.get('nom_fichier', '')
-            f_type = msg.get('type_contenu', '')
-            
-            # Correction appliquée ici : vérification que f_path est bien une chaîne de caractères (str)
-            if f_path and isinstance(f_path, str) and os.path.exists(f_path):
-                if f_type == "Photo 📷" or f_name.lower().endswith(('.png', '.jpg', '.jpeg')):
-                    st.image(f_path, caption=f_name, width=400)
-                elif f_type == "Vidéo 🎥" or f_name.lower().endswith(('.mp4', '.mov')):
-                    st.video(f_path)
-                else:
-                    with open(f_path, "rb") as file_download:
-                        st.download_button(
-                            label=f"📥 Télécharger le fichier joint : {f_name}",
-                            data=file_download,
-                            file_name=f_name,
-                            key=f"dl_ws_{m_id}"
-                        )
-            
-            st.markdown(f"""
-                    <div style="text-align: right; margin-top: 5px;"><small style="color: #9ca3af; font-size: 11px;">{m_date}</small></div>
-                </div>
-            """, unsafe_allow_html=True)
+            with col_m2:
+                st.write("")
+                if st.button("🗑️", key=f"del_msg_{m_id}", help="Supprimer cette publication"):
+                    execute_query("DELETE FROM messages_workspace WHERE id = ?", (m_id,), action_desc="Suppression publication workspace", user_info=tech)
+                    st.success("Publication supprimée !")
+                    st.rerun()
     else:
         st.info("Aucun contenu dans l'espace de travail.")
 
@@ -896,7 +1083,23 @@ elif menu == "🔐 Paramètres & Liste Blanche":
                 execute_query("INSERT INTO whitelist_users (email, password, prenom, nom, role, modules_autorises) VALUES (?, ?, ?, ?, ?, 'TOUS')", (mail_new.strip().lower(), pwd_new, prenom_new, nom_new, role_new), action_desc=f"Ajout utilisateur {mail_new}", user_info=tech)
                 st.success("✅ Utilisateur ajouté avec succès !")
                 st.rerun()
-    st.dataframe(load_table('whitelist_users'), use_container_width=True)
+                
+    st.markdown("---")
+    st.subheader("Utilisateurs autorisés (avec suppression)")
+    df_wl = load_table('whitelist_users')
+    if not df_wl.empty:
+        for _, usr in df_wl.iterrows():
+            cu1, cu2 = st.columns([4, 1])
+            cu1.write(f"👤 **{usr['prenom']} {usr['nom']}** ({usr['email']}) — Rôle : **{usr['role']}**")
+            if usr['email'].lower() != "issayoume2012@gmail.com":
+                if cu2.button("🗑️ Supprimer", key=f"del_usr_{usr['id']}"):
+                    execute_query("DELETE FROM whitelist_users WHERE id = ?", (usr['id'],), action_desc=f"Suppression utilisateur '{usr['email']}'", user_info=tech)
+                    st.success("Utilisateur supprimé !")
+                    st.rerun()
+            else:
+                cu2.text("Admin Principal")
+    else:
+        st.info("Aucun utilisateur.")
 
 elif menu == "📑 EXPORT RAPPORT PARCELLE":
     st.title(f"📑 Export Rapport A4 — {champ_selectionne} (Espace Technicien)")
