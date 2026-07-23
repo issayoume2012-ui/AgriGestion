@@ -80,7 +80,15 @@ def init_db():
                         role TEXT
                     )''')
     
-    # Table collaborative enrichie (avec support de la pièce jointe/rapport de travail)
+    # Table de gestion collégiale des parcelles (Partage entre Propriétaire et Techniciens)
+    cursor.execute('''CREATE TABLE IF NOT EXISTS partage_champs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        champ_nom TEXT,
+                        technicien_email TEXT,
+                        droit TEXT
+                    )''')
+
+    # Table collaborative enrichie (avec support fichiers/photos et rapports joints)
     cursor.execute('''CREATE TABLE IF NOT EXISTS messages_collab (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         expéditeur TEXT,
@@ -91,7 +99,9 @@ def init_db():
                         categorie_travail TEXT,
                         titre TEXT,
                         message TEXT,
-                        statut_tache TEXT
+                        statut_tache TEXT,
+                        piece_jointe_nom TEXT,
+                        piece_jointe_data BLOB
                     )''')
     
     cursor.execute("SELECT COUNT(*) FROM whitelist_users")
@@ -101,6 +111,7 @@ def init_db():
             ("issayoume2012@gmail.com", "issayoume2026", "Issa", "Youme", "Propriétaire")
         )
 
+    # Vérification et ajout automatique des colonnes manquantes (Migration sécurisée)
     cursor.execute("PRAGMA table_info(champs)")
     cols_champs = [col[1] for col in cursor.fetchall()]
     if "code_pin" not in cols_champs: 
@@ -108,10 +119,13 @@ def init_db():
 
     cursor.execute("PRAGMA table_info(messages_collab)")
     cols_msg = [col[1] for col in cursor.fetchall()]
+    if "expediteur_email" not in cols_msg: cursor.execute("ALTER TABLE messages_collab ADD COLUMN expediteur_email TEXT")
     if "destinataire" not in cols_msg: cursor.execute("ALTER TABLE messages_collab ADD COLUMN destinataire TEXT")
     if "categorie_travail" not in cols_msg: cursor.execute("ALTER TABLE messages_collab ADD COLUMN categorie_travail TEXT")
     if "titre" not in cols_msg: cursor.execute("ALTER TABLE messages_collab ADD COLUMN titre TEXT")
     if "statut_tache" not in cols_msg: cursor.execute("ALTER TABLE messages_collab ADD COLUMN statut_tache TEXT")
+    if "piece_jointe_nom" not in cols_msg: cursor.execute("ALTER TABLE messages_collab ADD COLUMN piece_jointe_nom TEXT")
+    if "piece_jointe_data" not in cols_msg: cursor.execute("ALTER TABLE messages_collab ADD COLUMN piece_jointe_data BLOB")
 
     conn.commit()
     conn.close()
@@ -286,6 +300,13 @@ db_champs = load_table('champs')
 champ_id_actif = None
 champ_selectionne = "Aucune parcelle"
 
+# Filtrage pour la gestion collégiale : Si l'utilisateur n'est pas propriétaire, il ne voit que ses parcelles partagées ou toutes si admin
+if not db_champs.empty:
+    if email_connecte != "issayoume2012@gmail.com" and role_tech.lower() != "propriétaire":
+        df_partages = load_table('partage_champs')
+        champs_autorises = df_partages[df_partages['technicien_email'].str.lower() == email_connecte]['champ_nom'].tolist()
+        db_champs = db_champs[db_champs['nom'].isin(champs_autorises)]
+
 if not db_champs.empty:
     liste_champs = {row['nom']: row['id'] for _, row in db_champs.iterrows()}
     col_sel1, col_sel2 = st.columns([3, 1])
@@ -412,6 +433,8 @@ elif menu == "🌱 Cartographie & Parcelles":
                         "INSERT INTO champs (nom, superficie_ha, latitude, longitude, culture_actuelle, statut, icone_lieu, code_pin) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                         (nom_p, surf_p, lat_p, lon_p, cult_p, stat_p, "leaf", pin_p.strip() if pin_p else "")
                     )
+                    # Assigner automatiquement la parcelle au propriétaire
+                    execute_query("INSERT INTO partage_champs (champ_nom, technicien_email, droit) VALUES (?, ?, ?)", (nom_p, "issayoume2012@gmail.com", "Propriétaire"))
                     st.success("✅ Parcelle enregistrée avec succès !")
                     st.rerun()
 
@@ -708,37 +731,55 @@ elif menu == "📈 Rentabilité & ROI":
 
 elif menu == "💬 Espace Collaboration & Réunions Meet":
     st.title("💬 Espace Collaboration Professionnelle & Réunions Google Meet")
-    st.info("Espace de travail en ligne et asynchrone hautement performant entre Techniciens, Gestionnaires, Administrateurs et le Propriétaire.")
+    st.info("Espace de travail en ligne et partagé entre Propriétaire, Techniciens et gestionnaires de parcelles.")
 
-    # --- SECTION INTÉGRATION GOOGLE MEET ---
-    st.markdown("""
-        <div style="background-color: #e8f4fd; padding: 15px; border-radius: 8px; border-left: 5px solid #1a73e8; margin-bottom: 20px;">
-            <h4 style="margin: 0; color: #174ea6;">🎥 Salle de Réunion Virtuelle (Google Meet)</h4>
-            <p style="margin: 5px 0 10px 0; font-size: 14px; color: #3c4043;">
-                Lancez ou rejoignez instantanément une visioconférence sécurisée avec vos équipes pour un point de terrain en direct.
-            </p>
-        </div>
-    """, unsafe_allow_html=True)
-
-    col_meet1, col_meet2 = st.columns(2)
-    with col_meet1:
-        if st.button("🚀 Ouvrir une réunion Google Meet instantanée", use_container_width=True, type="primary"):
-            st.markdown('<meta http-equiv="refresh" content="0;url=https://meet.google.com/new">', unsafe_allow_html=True)
-            st.markdown("🔗 Cliquez ici si l'ouverture automatique échoue : [Lien Google Meet Direct](https://meet.google.com/new)")
-    with col_meet2:
-        saisie_lien_meet = st.text_input("Ou coller un lien Google Meet programmé :", placeholder="ex: https://meet.google.com/abc-defg-hij")
-        if saisie_lien_meet.strip():
-            st.markdown(f"👉 [Rejoindre la réunion planifiée]({saisie_lien_meet})", unsafe_allow_html=True)
+    # --- SECTION GESTION COLLÉGIALE DES PARCELLES ---
+    with st.expander("🤝 Gestion Collégiale des Parcelles (Partage entre Propriétaire et Techniciens)", expanded=False):
+        st.markdown("Attribuez l'accès de gestion d'une parcelle à des techniciens spécifiques de la liste blanche pour qu'ils puissent y travailler en équipe.")
+        df_wl_all = load_table('whitelist_users')
+        df_ch_all = load_table('champs')
+        
+        if not df_ch_all.empty and not df_wl_all.empty:
+            with st.form("form_partage_champ"):
+                c_p1 = st.selectbox("Parcelle à partager", df_ch_all['nom'].tolist())
+                c_p2 = st.selectbox("Technicien destinataire", df_wl_all['email'].tolist())
+                c_p3 = st.selectbox("Droit d'accès", ["Gestion complète", "Lecture & Pointage"])
+                if st.form_submit_button("🔗 Partager l'accès à la parcelle"):
+                    execute_query("INSERT INTO partage_champs (champ_nom, technicien_email, droit) VALUES (?, ?, ?)", (c_p1, c_p2, c_p3))
+                    st.success(f"✅ La parcelle **{c_p1}** a été partagée avec **{c_p2}** !")
+                    st.rerun()
+            
+            st.subheader("📋 Parcelles Actuellement Partagées")
+            df_parts = load_table('partage_champs')
+            if not df_parts.empty:
+                for _, prt in df_parts.iterrows():
+                    col_pr1, col_pr2 = st.columns([4, 1])
+                    with col_pr1:
+                        st.markdown(f"📍 Parcelle : **{prt['champ_nom']}** ➡️ Technicien : `{prt['technicien_email']}` (*{prt['droit']}*)")
+                    with col_pr2:
+                        if st.button("🗑️ Retirer", key=f"del_part_{prt['id']}"):
+                            execute_query("DELETE FROM partage_champs WHERE id = ?", (prt['id'],))
+                            st.rerun()
 
     st.divider()
 
-    # --- SECTION MESSAGERIE & RAPPORTS DE TRAVAIL CIBLÉS ---
+    # --- SECTION INTÉGRATION GOOGLE MEET ---
+    col_meet1, col_meet2 = st.columns(2)
+    with col_meet1:
+        st.link_button("🚀 Ouvrir une réunion Google Meet instantanée", "https://meet.google.com/new", use_container_width=True)
+    with col_meet2:
+        saisie_lien_meet = st.text_input("Ou coller un lien Google Meet programmé :", placeholder="ex: https://meet.google.com/abc-defg-hij")
+        if saisie_lien_meet.strip():
+            st.link_button("🔗 Rejoindre la réunion planifiée", saisie_lien_meet.strip(), use_container_width=True)
+
+    st.divider()
+
+    # --- SECTION MESSAGERIE & RAPPORTS DE TRAVAIL CIBLÉS AVEC MULTIMÉDIA & RAPPORT PDF INTÉGRÉ ---
     col_m1, col_m2 = st.columns([1, 2])
     
     with col_m1:
         st.subheader("📝 Publier une Consigne / Rapport")
         df_users_wl = load_table('whitelist_users')
-        # Construction de la liste des destinataires (Soit "Tous (Diffusion générale)", soit un e-mail spécifique)
         options_destinataires = ["📢 Tous les collaborateurs (Diffusion générale)"]
         if not df_users_wl.empty:
             for _, u_w in df_users_wl.iterrows():
@@ -747,18 +788,34 @@ elif menu == "💬 Espace Collaboration & Réunions Meet":
         with st.form("form_send_message_pro"):
             destinataire_choix = st.selectbox("Destinataire principal *", options_destinataires)
             cat_travail = st.selectbox("Objet / Type de travail", ["Rapport de Terrain", "Consigne d'Irrigation", "Alerte Urgence / Incident", "Point Financier / Dépense", "Autre communication"])
-            titre_msg = st.text_input("Titre / Sujet *", placeholder="Ex: État de la parcelle GAT")
+            titre_msg = st.text_input("Titre / Sujet *", placeholder="Ex: État de la parcelle")
             texte_msg = st.text_area("Contenu détaillé du message ou rapport :")
             statut_t = st.selectbox("Statut de la demande", ["À lire", "En cours de traitement", "Urgent", "Résolu / Validé"])
             
+            # Prise de photo ou insertion de document
+            fichier_joint = st.file_uploader("📸 Joindre une photo ou un document", type=["png", "jpg", "jpeg", "pdf", "xlsx", "docx"])
+            
+            # Option pour joindre directement le rapport PDF généré de la parcelle active
+            joindre_rapport_auto = st.checkbox(f"📑 Joindre automatiquement le rapport PDF officiel de la parcelle active ({champ_selectionne})")
+
             if st.form_submit_button("📤 Diffuser / Envoyer", use_container_width=True):
                 if titre_msg.strip() and texte_msg.strip():
                     auteur_nom = f"{prenom_tech} {nom_tech}"
                     horodatage = datetime.now().strftime("%d/%m/%Y à %H:%M")
                     
+                    nom_PJ = None
+                    data_PJ = None
+                    
+                    if fichier_joint is not None:
+                        nom_PJ = fichier_joint.name
+                        data_PJ = fichier_joint.getvalue()
+                    elif joindre_rapport_auto and champ_selectionne != "Aucune parcelle":
+                        nom_PJ = f"rapport_{champ_selectionne}_{date.today().strftime('%Y%m%d')}.pdf"
+                        data_PJ = export_parcelle_pdf(champ_selectionne, date.today())
+                    
                     execute_query(
-                        "INSERT INTO messages_collab (expéditeur, expediteur_email, role, date_heure, destinataire, categorie_travail, titre, message, statut_tache) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        (auteur_nom, email_connecte, role_tech, horodatage, destinataire_choix, cat_travail, titre_msg.strip(), texte_msg.strip(), statut_t)
+                        "INSERT INTO messages_collab (expéditeur, expediteur_email, role, date_heure, destinataire, categorie_travail, titre, message, statut_tache, piece_jointe_nom, piece_jointe_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (auteur_nom, email_connecte, role_tech, horodatage, destinataire_choix, cat_travail, titre_msg.strip(), texte_msg.strip(), statut_t, nom_PJ, data_PJ)
                     )
                     st.success("✅ Publication enregistrée et partagée avec succès !")
                     st.rerun()
@@ -768,20 +825,17 @@ elif menu == "💬 Espace Collaboration & Réunions Meet":
     with col_m2:
         st.subheader("📋 Fil d'Actualité & Notes de Travail")
         
-        # Options de filtrage pour booster la performance et la lisibilité
         filtre_vue = st.radio("Filtrer l'affichage :", ["Tous les messages", "Mes messages / Reçus pour moi"], horizontal=True)
         
         df_msgs = load_table('messages_collab')
         if not df_msgs.empty:
             if filtre_vue == "Mes messages / Reçus pour moi":
-                # Filtre intelligent : affiche si "Tous" ou si l'e-mail de l'utilisateur correspond au destinataire
                 df_msgs = df_msgs[df_msgs['destinataire'].str.contains("Tous") | df_msgs['destinataire'].str.contains(email_connecte, case=False)]
 
             if df_msgs.empty:
                 st.info("Aucun message ne correspond à ce filtre.")
             else:
                 for _, m_row in df_msgs.iloc[::-1].iterrows():
-                    # Code couleur selon l'urgence/statut
                     badge_color = "#10b981"
                     if m_row.get('statut_tache') == "Urgent": badge_color = "#ef4444"
                     elif m_row.get('statut_tache') == "En cours de traitement": badge_color = "#f59e0b"
@@ -789,10 +843,22 @@ elif menu == "💬 Espace Collaboration & Réunions Meet":
                     st.markdown(f"""
                         <div style="background-color: #ffffff; padding: 14px; border-radius: 8px; border-left: 5px solid {badge_color}; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
                             <div style="display: flex; justify-content: space-between;">
-                                <b>📌 [{m_row.get('categorie_travail', 'Note')}>] {m_row.get('titre', 'Sans titre')}</b>
+                                <b>📌 [{m_row.get('categorie_travail', 'Note')}] {m_row.get('titre', 'Sans titre')}</b>
                                 <span style="font-size: 11px; background-color: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-weight: bold;">{m_row.get('statut_tache', 'Info')}</span>
                             </div>
                             <p style="margin: 6px 0; font-size: 13px; color: #4b5563;">{m_row['message']}</p>
+                    """, unsafe_allow_html=True)
+
+                    # Affichage du bouton de téléchargement si une pièce jointe ou un rapport est rattaché
+                    if m_row.get('piece_jointe_nom') and m_row.get('piece_jointe_data'):
+                        st.download_button(
+                            label=f"📎 Télécharger la pièce jointe : {m_row['piece_jointe_nom']}",
+                            data=m_row['piece_jointe_data'],
+                            file_name=m_row['piece_jointe_nom'],
+                            key=f"dl_msg_file_{m_row['id']}"
+                        )
+
+                    st.markdown(f"""
                             <div style="font-size: 11px; color: #6b7280; display: flex; justify-content: space-between; border-top: 1px solid #f3f4f6; padding-top: 6px; margin-top: 8px;">
                                 <span>👤 <b>{m_row['expéditeur']}</b> ({m_row['role']} — <code>{m_row.get('expediteur_email', 'N/A')}</code>)</span>
                                 <span>🎯 Destinataire : <b>{m_row.get('destinataire', 'Tous')}</b> | 🕒 {m_row['date_heure']}</span>
