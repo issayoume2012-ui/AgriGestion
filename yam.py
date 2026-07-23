@@ -79,7 +79,7 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS irrigation (id INTEGER PRIMARY KEY AUTOINCREMENT, champ_id INTEGER, date TEXT, volume_eau_m3 REAL, methode TEXT, duree_heures REAL)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS alertes_meteo (id INTEGER PRIMARY KEY AUTOINCREMENT, champ_id INTEGER, date TEXT, type_risque TEXT, niveau_alerte TEXT, recommandation_ts TEXT)''')
     
-    # Espace de travail amélioré
+    # Espace de travail
     cursor.execute('''CREATE TABLE IF NOT EXISTS messages_workspace (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         auteur TEXT,
@@ -94,6 +94,19 @@ def init_db():
                         champ_concerne TEXT
                     )''')
     
+    # Migration automatique de sécurité pour les tables existantes (évite les OperationalError si la table existait déjà sans certaines colonnes)
+    colonnes_a_verifier = [
+        ("champ_concerne", "TEXT"),
+        ("nom_fichier", "TEXT"),
+        ("fichier_path", "TEXT"),
+        ("type_contenu", "TEXT")
+    ]
+    for col_nom, col_type in colonnes_a_verifier:
+        try:
+            cursor.execute(f"ALTER TABLE messages_workspace ADD COLUMN {col_nom} {col_type}")
+        except sqlite3.OperationalError:
+            pass # La colonne existe déjà
+
     cursor.execute('''CREATE TABLE IF NOT EXISTS whitelist_users (
                         id INTEGER PRIMARY KEY AUTOINCREMENT, 
                         email TEXT UNIQUE, 
@@ -731,17 +744,22 @@ elif menu == "📈 Rentabilité & ROI":
 elif menu == "💬 Espace Collaboration & Workspace":
     st.title("💬 Espace Collaboration & Espace de Travail Multimédia")
     
-    col_m1, col_m2 = st.columns([2, 1])
-    with col_m1:
-        st.link_button("🚀 Ouvrir une réunion Google Meet", "https://meet.google.com/new", use_container_width=True)
-    with col_m2:
-        st.markdown(f"**Profil Connecté :** <span class='badge-role'>{role_tech}</span> | **E-mail :** `{email_connecte}`", unsafe_allow_html=True)
-        
+    # Espace de gestion des liens Google Meet (Générer ou Coller son propre lien)
+    st.markdown("<div class='card-container'>", unsafe_allow_html=True)
+    st.subheader("📹 Réunions en Ligne & Liens Google Meet")
+    col_meet1, col_meet2 = st.columns(2)
+    with col_meet1:
+        st.link_button("🚀 Créer une nouvelle réunion Google Meet", "https://meet.google.com/new", use_container_width=True)
+    with col_meet2:
+        custom_meet_link = st.text_input("Ou coller/partager un lien Google Meet personnalisé :", placeholder="Ex: https://meet.google.com/abc-defg-hij")
+        if custom_meet_link.strip():
+            st.markdown(f"🔗 **Lien prêt à rejoindre :** [{custom_meet_link}]({custom_meet_link})")
+    st.markdown("</div>", unsafe_allow_html=True)
+    
     st.divider()
     
     st.subheader("📁 Partager un rapport, une photo, une vidéo ou un document")
     
-    # Étape de saisie et de confirmation des destinataires/mails
     with st.form("form_workspace_media", clear_on_submit=False):
         col_c1, col_c2, col_c3 = st.columns(3)
         with col_c1:
@@ -749,10 +767,10 @@ elif menu == "💬 Espace Collaboration & Workspace":
         with col_c2:
             priorite = st.selectbox("Priorité :", ["Normal", "Important ⚠️", "Urgent 🚨"])
         with col_c3:
-            type_contenu = st.selectbox("Type de contenu :", ["Note textuelle", "Rapport PDF", "Photo 📷", "Vidéo 🎥", "Document 📄"])
+            type_contenu = st.selectbox("Type de contenu :", ["Note textuelle", "Rapport PDF", "Photo 📷", "Vidéo 🎥", "Document 📄", "Lien Réunion 📹"])
             
         champ_concerne = st.selectbox("Parcelle liée (Optionnel) :", ["Aucune"] + (list(db_champs['nom'].values) if not db_champs.empty else []))
-        texte_message = st.text_area("Légende / Message descriptif :", placeholder="Ex: Rapport d'inspection et photos de l'état de la culture...")
+        texte_message = st.text_area("Légende / Message descriptif ou lien Google Meet collé :", placeholder="Ex: Rapport d'inspection ou collez le lien de la réunion ici...")
         
         uploaded_file = st.file_uploader("Joindre un fichier (Photos, Vidéos, Docs, Rapports)", type=["png", "jpg", "jpeg", "mp4", "pdf", "docx", "xlsx"])
         
@@ -794,7 +812,6 @@ elif menu == "💬 Espace Collaboration & Workspace":
     df_messages = load_table('messages_workspace')
     if not df_messages.empty:
         for _, msg in df_messages.iloc[::-1].iterrows():
-            # Sécurisation des clés pour éviter tout KeyError
             m_auteur = msg.get('auteur', 'Inconnu')
             m_role = msg.get('role', 'Rôle')
             m_dest = msg.get('destinataire', 'Tous')
@@ -813,7 +830,6 @@ elif menu == "💬 Espace Collaboration & Workspace":
                     <p style="margin: 10px 0; color: #1f2937; font-size: 14px;">{m_texte}</p>
             """, unsafe_allow_html=True)
             
-            # Affichage dynamique des fichiers multimédias attachés de manière sécurisée
             f_path = msg.get('fichier_path', '')
             f_name = msg.get('nom_fichier', '')
             f_type = msg.get('type_contenu', '')
