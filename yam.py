@@ -398,51 +398,81 @@ if menu == "📊 Tableau de Bord":
         st.dataframe(df_c[["nom", "superficie_ha", "culture_actuelle", "statut"]], use_container_width=True)
 
 elif menu == "🌱 Cartographie & Parcelles":
-    st.title("🌱 Cartographie Dynamique & Parcelles")
+    st.title("🌱 Cartographie Dynamique & Gestion des Parcelles")
     if 'lat_active' not in st.session_state:
         st.session_state['lat_active'] = 14.6937
         st.session_state['lon_active'] = -17.4441
 
-    col_map, col_form = st.columns([2, 1])
-    with col_map:
-        st.subheader("🗺️ Carte Interactive")
+    tab_carte_interactive, tab_creer_champ, tab_gerer_champs = st.tabs(["🗺️ Carte Interactive & Visualisation", "➕ Créer un Nouveau Champ / Parcelle", "📋 Liste & Gestion des Champs Existants"])
+
+    with tab_carte_interactive:
+        st.subheader("📍 Visualisation Géographique de l'Exploitation")
         df_c = load_table('champs')
         m = folium.Map(location=[float(st.session_state['lat_active']), float(st.session_state['lon_active'])], zoom_start=13)
         for _, r in df_c.iterrows():
             folium.Marker(
                 location=[r['latitude'], r['longitude']],
-                popup=f"<b>{r['nom']}</b><br>Culture: {r['culture_actuelle']}",
+                popup=f"<b>{r['nom']}</b><br>Culture: {r['culture_actuelle']}<br>Superficie: {r['superficie_ha']} Ha",
                 icon=folium.Icon(color="green", icon="leaf")
             ).add_to(m)
-        map_data = st_folium(m, width="100%", height=400, key="folium_map_stable", returned_objects=["last_clicked"])
+        map_data = st_folium(m, width="100%", height=450, key="folium_map_stable", returned_objects=["last_clicked"])
         if map_data and map_data.get("last_clicked"):
             st.session_state['lat_active'] = round(map_data["last_clicked"]["lat"], 6)
             st.session_state['lon_active'] = round(map_data["last_clicked"]["lng"], 6)
+            st.info(f"📍 Coordonnées récupérées depuis la carte : Lat {st.session_state['lat_active']}, Lon {st.session_state['lon_active']}")
 
-    with col_form:
-        st.subheader("➕ Ajouter une Parcelle & Sécurité")
-        with st.form("form_champ_new_fix"):
-            nom_p = st.text_input("Nom de la nouvelle parcelle *")
-            surf_p = st.number_input("Superficie (Ha)", min_value=0.1, value=1.0)
-            lat_p = st.number_input("Latitude", value=float(st.session_state['lat_active']), format="%.6f")
-            lon_p = st.number_input("Longitude", value=float(st.session_state['lon_active']), format="%.6f")
-            cult_p = st.text_input("Culture principale")
-            stat_p = st.selectbox("Statut", ["En préparation", "Semé", "En croissance", "Prêt à récolter"])
-            pin_p = st.text_input("Code PIN de confidentialité (optionnel)", type="password")
+    with tab_creer_champ:
+        st.subheader("➕ Enregistrer une Nouvelle Parcelle / Champ")
+        st.write("Remplissez le formulaire ci-dessous pour ajouter un tout nouveau champ dans votre système.")
+        
+        with st.form("form_champ_new_fix_onglet"):
+            col_f1, col_f2 = st.columns(2)
+            with col_f1:
+                nom_p = st.text_input("Nom de la nouvelle parcelle *", placeholder="Ex: Champ Nord 3")
+                surf_p = st.number_input("Superficie (Ha)", min_value=0.1, value=2.0, step=0.1)
+                cult_p = st.text_input("Culture principale", placeholder="Ex: Arachide, Mil, Maraîchage...")
+            with col_f2:
+                lat_p = st.number_input("Latitude", value=float(st.session_state['lat_active']), format="%.6f")
+                lon_p = st.number_input("Longitude", value=float(st.session_state['lon_active']), format="%.6f")
+                stat_p = st.selectbox("Statut initial", ["En préparation", "Semé", "En croissance", "Prêt à récolter"])
             
-            if st.form_submit_button("💾 Enregistrer la Nouvelle Parcelle", use_container_width=True):
+            pin_p = st.text_input("Code PIN de confidentialité (optionnel)", type="password", placeholder="Laisser vide si libre d'accès")
+            
+            if st.form_submit_button("💾 Enregistrer et Créer la Nouvelle Parcelle", use_container_width=True, type="primary"):
                 if nom_p.strip():
-                    execute_query(
-                        "INSERT INTO champs (nom, superficie_ha, latitude, longitude, culture_actuelle, statut, icone_lieu, code_pin) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        (nom_p.strip(), surf_p, lat_p, lon_p, cult_p, stat_p, "leaf", pin_p.strip() if pin_p else ""),
-                        action_desc=f"Création de la parcelle '{nom_p.strip()}'",
-                        user_info=tech
-                    )
-                    execute_query("INSERT INTO partage_champs (champ_nom, technicien_email, droit) VALUES (?, ?, ?)", (nom_p.strip(), email_connecte, "Propriétaire / Créateur"))
-                    st.success("✅ Nouvelle parcelle enregistrée avec succès !")
-                    st.rerun()
+                    # Vérifier si le nom existe déjà
+                    df_check_exist = load_table('champs')
+                    if not df_check_exist.empty and nom_p.strip().lower() in df_check_exist['nom'].str.lower().values:
+                        st.error(f"❌ Une parcelle portant le nom '{nom_p.strip()}' existe déjà. Veuillez choisir un autre nom.")
+                    else:
+                        execute_query(
+                            "INSERT INTO champs (nom, superficie_ha, latitude, longitude, culture_actuelle, statut, icone_lieu, code_pin) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                            (nom_p.strip(), surf_p, lat_p, lon_p, cult_p, stat_p, "leaf", pin_p.strip() if pin_p else ""),
+                            action_desc=f"Création de la parcelle '{nom_p.strip()}'",
+                            user_info=tech
+                        )
+                        execute_query("INSERT INTO partage_champs (champ_nom, technicien_email, droit) VALUES (?, ?, ?)", (nom_p.strip(), email_connecte, "Propriétaire / Créateur"))
+                        st.success(f"✅ La nouvelle parcelle **{nom_p.strip()}** a été enregistrée avec succès !")
+                        st.rerun()
                 else:
-                    st.warning("⚠️ Veuillez renseigner un nom de parcelle.")
+                    st.warning("⚠️ Veuillez renseigner un nom valide pour la parcelle.")
+
+    with tab_gerer_champs:
+        st.subheader("📋 Liste et Suppression des Champs Existants")
+        df_champs_list = load_table('champs')
+        if not df_champs_list.empty:
+            for _, ch in df_champs_list.iterrows():
+                col_c1, col_c2 = st.columns([3, 1])
+                with col_c1:
+                    st.markdown(f"**🌾 {ch['nom']}** — Superficie : `{ch['superficie_ha']} Ha` | Culture : *{ch['culture_actuelle']}* | Statut : `{ch['statut']}`")
+                with col_c2:
+                    if st.button("🗑️ Supprimer", key=f"del_champ_{ch['id']}"):
+                        execute_query("DELETE FROM champs WHERE id = ?", (ch['id'],), action_desc=f"Suppression de la parcelle '{ch['nom']}'", user_info=tech)
+                        st.success(f"Parcelle '{ch['nom']}' supprimée.")
+                        st.rerun()
+                st.divider()
+        else:
+            st.info("Aucun champ enregistré pour le moment.")
 
 elif menu == "👥 Groupes & Membres":
     st.title("👥 Gestion des Groupes & des Membres")
