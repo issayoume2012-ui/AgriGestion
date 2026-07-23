@@ -110,7 +110,6 @@ def init_db():
     conn.close()
     return True
 
-# Initialisation mise en cache (exécutée une seule fois au démarrage)
 init_db()
 
 @st.cache_data(ttl=300)
@@ -420,84 +419,85 @@ if menu == "📊 Tableau de Bord":
         st.dataframe(df_c[["nom", "superficie_ha", "culture_actuelle", "statut"]], use_container_width=True)
 
 elif menu == "🌱 Cartographie & Parcelles":
-    st.title("🌱 Cartographie & Gestion Fluide des Parcelles")
+    st.title("🌱 Cartographie & Parcelles")
     
     if 'lat_active' not in st.session_state:
         st.session_state['lat_active'] = 14.6937
     if 'lon_active' not in st.session_state:
         st.session_state['lon_active'] = -17.4441
 
-    col_form, col_map = st.columns([1.1, 1.4], gap="medium")
-
-    with col_form:
-        st.markdown("<div class='card-container'>", unsafe_allow_html=True)
-        st.subheader("➕ Nouvelle Parcelle & A4")
-        st.write("Cliquez sur la carte pour capturer les coordonnées GPS instantanément.")
+    # 1. CARTE INTERACTIVE EN PREMIER (EN HAUT)
+    st.markdown("<div class='card-container'>", unsafe_allow_html=True)
+    st.subheader("🗺️ 1. Carte Interactive — Cliquez pour capturer les coordonnées GPS")
+    df_c = load_table('champs')
+    
+    m = folium.Map(location=[float(st.session_state['lat_active']), float(st.session_state['lon_active'])], zoom_start=13)
+    for _, r in df_c.iterrows():
+        folium.Marker(
+            location=[r['latitude'], r['longitude']],
+            popup=f"<b>{r['nom']}</b><br>Culture: {r['culture_actuelle']}<br>Superficie: {r['superficie_ha']} Ha",
+            icon=folium.Icon(color="green", icon="leaf")
+        ).add_to(m)
         
-        with st.form("form_champ_fluide"):
+    map_data = st_folium(m, width="100%", height=400, key="map_interactive_fluid_top", returned_objects=["last_clicked"])
+    if map_data and map_data.get("last_clicked"):
+        st.session_state['lat_active'] = round(map_data["last_clicked"]["lat"], 6)
+        st.session_state['lon_active'] = round(map_data["last_clicked"]["lng"], 6)
+        st.success(f"📍 Coordonnées GPS capturées avec succès : {st.session_state['lat_active']}, {st.session_state['lon_active']}")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.divider()
+
+    # 2. FORMULAIRE DE CRÉATION EN CLIQUANT / REMPLISSANT EN DESSOUS
+    st.markdown("<div class='card-container'>", unsafe_allow_html=True)
+    st.subheader("➕ 2. Enregistrement de la Nouvelle Parcelle & Fiche A4")
+    
+    with st.form("form_champ_fluide_top"):
+        col_f_1, col_f_2 = st.columns(2)
+        with col_f_1:
             nom_p = st.text_input("Nom de la parcelle *", placeholder="Ex: Champ Sud 02")
             surf_p = st.number_input("Superficie (Ha)", min_value=0.1, value=2.5, step=0.1)
             cult_p = st.text_input("Culture principale", placeholder="Ex: Tomate, Riz...")
-            
-            lat_p = st.number_input("Latitude GPS", value=float(st.session_state['lat_active']), format="%.6f")
-            lon_p = st.number_input("Longitude GPS", value=float(st.session_state['lon_active']), format="%.6f")
-            
             stat_p = st.selectbox("Statut initial", ["En préparation", "Semé", "En croissance", "Prêt à récolter"])
-            pin_p = st.text_input("Code PIN de sécurité (optionnel)", type="password", placeholder="Laisser vide si libre")
-            
-            st.markdown("<br>", unsafe_allow_html=True)
-            submit_parcelle = st.form_submit_button("💾 Enregistrer & Générer le PDF A4", use_container_width=True, type="primary")
-            
-            if submit_parcelle:
-                if nom_p.strip():
-                    df_check_exist = load_table('champs')
-                    if not df_check_exist.empty and nom_p.strip().lower() in df_check_exist['nom'].str.lower().values:
-                        st.error(f"❌ Une parcelle nommée '{nom_p.strip()}' existe déjà.")
-                    else:
-                        execute_query(
-                            "INSERT INTO champs (nom, superficie_ha, latitude, longitude, culture_actuelle, statut, icone_lieu, code_pin) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                            (nom_p.strip(), surf_p, lat_p, lon_p, cult_p, stat_p, "leaf", pin_p.strip() if pin_p else ""),
-                            action_desc=f"Création de la parcelle '{nom_p.strip()}'",
-                            user_info=tech
-                        )
-                        execute_query("INSERT INTO partage_champs (champ_nom, technicien_email, droit) VALUES (?, ?, ?)", (nom_p.strip(), email_connecte, "Propriétaire"))
-                        st.success(f"✅ Parcelle **{nom_p.strip()}** enregistrée avec succès !")
-                        
-                        st.session_state['last_created_pdf'] = export_fiche_parcelle_a4(nom_p.strip(), surf_p, cult_p, lat_p, lon_p, stat_p)
-                        st.session_state['last_created_name'] = nom_p.strip()
+        
+        with col_f_2:
+            lat_p = st.number_input("Latitude GPS (capturée ou modifiable)", value=float(st.session_state['lat_active']), format="%.6f")
+            lon_p = st.number_input("Longitude GPS (capturée ou modifiable)", value=float(st.session_state['lon_active']), format="%.6f")
+            pin_p = st.text_input("Code PIN de sécurité (optionnel)", type="password", placeholder="Laisser vide si accès libre")
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        submit_parcelle = st.form_submit_button("💾 Enregistrer la Parcelle & Générer le PDF A4", use_container_width=True, type="primary")
+        
+        if submit_parcelle:
+            if nom_p.strip():
+                df_check_exist = load_table('champs')
+                if not df_check_exist.empty and nom_p.strip().lower() in df_check_exist['nom'].str.lower().values:
+                    st.error(f"❌ Une parcelle nommée '{nom_p.strip()}' existe déjà.")
                 else:
-                    st.warning("⚠️ Veuillez indiquer un nom de parcelle valide.")
-        
-        if 'last_created_pdf' in st.session_state and 'last_created_name' in st.session_state:
-            st.markdown("<br>", unsafe_allow_html=True)
-            st.download_button(
-                label=f"📥 Télécharger la Fiche A4 ({st.session_state['last_created_name']})",
-                data=st.session_state['last_created_pdf'],
-                file_name=f"fiche_a4_{st.session_state['last_created_name']}.pdf",
-                mime="application/pdf",
-                use_container_width=True
-            )
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    with col_map:
-        st.markdown("<div class='card-container'>", unsafe_allow_html=True)
-        st.subheader("🗺️ Carte Interactive (Cliquez pour cibler)")
-        df_c = load_table('champs')
-        
-        m = folium.Map(location=[float(st.session_state['lat_active']), float(st.session_state['lon_active'])], zoom_start=13)
-        for _, r in df_c.iterrows():
-            folium.Marker(
-                location=[r['latitude'], r['longitude']],
-                popup=f"<b>{r['nom']}</b><br>Culture: {r['culture_actuelle']}<br>Superficie: {r['superficie_ha']} Ha",
-                icon=folium.Icon(color="green", icon="leaf")
-            ).add_to(m)
-            
-        map_data = st_folium(m, width="100%", height=420, key="map_interactive_fluid", returned_objects=["last_clicked"])
-        if map_data and map_data.get("last_clicked"):
-            st.session_state['lat_active'] = round(map_data["last_clicked"]["lat"], 6)
-            st.session_state['lon_active'] = round(map_data["last_clicked"]["lng"], 6)
-            st.success(f"📍 Coordonnées capturées : {st.session_state['lat_active']}, {st.session_state['lon_active']}")
-        st.markdown("</div>", unsafe_allow_html=True)
+                    execute_query(
+                        "INSERT INTO champs (nom, superficie_ha, latitude, longitude, culture_actuelle, statut, icone_lieu, code_pin) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (nom_p.strip(), surf_p, lat_p, lon_p, cult_p, stat_p, "leaf", pin_p.strip() if pin_p else ""),
+                        action_desc=f"Création de la parcelle '{nom_p.strip()}'",
+                        user_info=tech
+                    )
+                    execute_query("INSERT INTO partage_champs (champ_nom, technicien_email, droit) VALUES (?, ?, ?)", (nom_p.strip(), email_connecte, "Propriétaire"))
+                    st.success(f"✅ Parcelle **{nom_p.strip()}** enregistrée avec succès !")
+                    
+                    st.session_state['last_created_pdf'] = export_fiche_parcelle_a4(nom_p.strip(), surf_p, cult_p, lat_p, lon_p, stat_p)
+                    st.session_state['last_created_name'] = nom_p.strip()
+            else:
+                st.warning("⚠️ Veuillez indiquer un nom de parcelle valide.")
+    
+    if 'last_created_pdf' in st.session_state and 'last_created_name' in st.session_state:
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.download_button(
+            label=f"📥 Télécharger la Fiche A4 officielle ({st.session_state['last_created_name']})",
+            data=st.session_state['last_created_pdf'],
+            file_name=f"fiche_a4_{st.session_state['last_created_name']}.pdf",
+            mime="application/pdf",
+            use_container_width=True
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
 
     st.divider()
     st.subheader("📋 Liste des Parcelles Enregistrées")
