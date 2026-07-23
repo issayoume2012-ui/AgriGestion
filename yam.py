@@ -36,7 +36,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. GESTION DE LA BASE DE DONNÉES SQLITE
+# 2. GESTION DE LA BASE DE DONNÉES & CACHE SQLITE
 # ==========================================
 def get_connection():
     return sqlite3.connect('agrigestion.db', check_same_thread=False)
@@ -70,7 +70,6 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS irrigation (id INTEGER PRIMARY KEY AUTOINCREMENT, champ_nom TEXT, date TEXT, volume_eau_m3 REAL, methode TEXT, duree_heures REAL)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS alertes_meteo (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, type_risque TEXT, niveau_alerte TEXT, recommandation_ts TEXT)''')
     
-    # Table pour la Liste Blanche des utilisateurs autorisés
     cursor.execute('''CREATE TABLE IF NOT EXISTS whitelist_users (
                         id INTEGER PRIMARY KEY AUTOINCREMENT, 
                         email TEXT UNIQUE, 
@@ -80,7 +79,6 @@ def init_db():
                         role TEXT
                     )''')
     
-    # Table de gestion collégiale des parcelles (Partage entre Propriétaire et Techniciens)
     cursor.execute('''CREATE TABLE IF NOT EXISTS partage_champs (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         champ_nom TEXT,
@@ -88,7 +86,6 @@ def init_db():
                         droit TEXT
                     )''')
 
-    # Table collaborative enrichie (avec support fichiers/photos et rapports joints)
     cursor.execute('''CREATE TABLE IF NOT EXISTS messages_collab (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         expéditeur TEXT,
@@ -111,7 +108,6 @@ def init_db():
             ("issayoume2012@gmail.com", "issayoume2026", "Issa", "Youme", "Propriétaire")
         )
 
-    # Vérification et ajout automatique des colonnes manquantes (Migration sécurisée)
     cursor.execute("PRAGMA table_info(champs)")
     cols_champs = [col[1] for col in cursor.fetchall()]
     if "code_pin" not in cols_champs: 
@@ -132,6 +128,8 @@ def init_db():
 
 init_db()
 
+# Utilisation du cache Streamlit pour booster drastiquement la rapidité d'exécution
+@st.cache_data(ttl=60)
 def load_table(table_name):
     conn = get_connection()
     df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
@@ -144,9 +142,11 @@ def execute_query(query, params=()):
     cursor.execute(query, params)
     conn.commit()
     conn.close()
+    # Invalidation automatique du cache pour rafraîchir les données instantanément après une écriture
+    load_table.clear()
 
 # ==========================================
-# 3. AUTHENTIFICATION DYNAMIQUE (LISTE BLANCHE SQL)
+# 3. AUTHENTIFICATION DYNAMIQUE
 # ==========================================
 def auth_system():
     if "authenticated" not in st.session_state:
@@ -163,7 +163,6 @@ def auth_system():
 
             if submit_login:
                 email_propre = email_input.strip().lower()
-                
                 conn = get_connection()
                 cursor = conn.cursor()
                 cursor.execute("SELECT prenom, nom, role, password FROM whitelist_users WHERE LOWER(email) = ?", (email_propre,))
@@ -300,7 +299,6 @@ db_champs = load_table('champs')
 champ_id_actif = None
 champ_selectionne = "Aucune parcelle"
 
-# Filtrage pour la gestion collégiale : Si l'utilisateur n'est pas propriétaire, il ne voit que ses parcelles partagées ou toutes si admin
 if not db_champs.empty:
     if email_connecte != "issayoume2012@gmail.com" and role_tech.lower() != "propriétaire":
         df_partages = load_table('partage_champs')
@@ -316,7 +314,6 @@ if not db_champs.empty:
         
         row_champ_actuel = db_champs[db_champs['id'] == champ_id_actif].iloc[0]
         pin_enreg = row_champ_actuel.get('code_pin')
-        
         has_pin = pin_enreg is not None and str(pin_enreg).strip() != "" and str(pin_enreg).strip() != "None"
         
         if has_pin:
@@ -325,7 +322,6 @@ if not db_champs.empty:
                 
             if not st.session_state[f"pin_ok_{champ_id_actif}"]:
                 st.warning(f"🔒 Cette parcelle (**{champ_selectionne}**) est protégée par un code de confidentialité.")
-                
                 saisie_pin = st.text_input("Entrez le code PIN de la parcelle :", type="password", key=f"input_pin_{champ_id_actif}")
                 
                 col_btn1, col_btn2 = st.columns(2)
@@ -337,22 +333,19 @@ if not db_champs.empty:
                             st.rerun()
                         else:
                             st.error("❌ Code PIN incorrect.")
-                
                 with col_btn2:
                     if st.button("🔄 Oublié / Réinitialiser", key=f"btn_reset_pin_{champ_id_actif}", use_container_width=True):
                         st.session_state[f"reset_mode_{champ_id_actif}"] = True
                 
                 if st.session_state.get(f"reset_mode_{champ_id_actif}", False):
-                    st.info("💡 Saisissez un nouveau code PIN (laissez vide pour supprimer définitivement la protection) :")
                     nouveau_pin_saisi = st.text_input("Nouveau code PIN :", type="password", key=f"new_pin_val_{champ_id_actif}")
                     if st.button("💾 Enregistrer et Accéder", key=f"save_new_pin_{champ_id_actif}", type="primary"):
                         pin_final = nouveau_pin_saisi.strip() if nouveau_pin_saisi else None
                         execute_query("UPDATE champs SET code_pin = ? WHERE id = ?", (pin_final, champ_id_actif))
                         st.session_state[f"pin_ok_{champ_id_actif}"] = True
                         st.session_state[f"reset_mode_{champ_id_actif}"] = False
-                        st.success("✅ Code PIN mis à jour avec succès ! Accès ouvert.")
+                        st.success("✅ Code PIN mis à jour avec succès !")
                         st.rerun()
-                        
                 st.stop()
 
     with col_sel2:
@@ -433,7 +426,6 @@ elif menu == "🌱 Cartographie & Parcelles":
                         "INSERT INTO champs (nom, superficie_ha, latitude, longitude, culture_actuelle, statut, icone_lieu, code_pin) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                         (nom_p, surf_p, lat_p, lon_p, cult_p, stat_p, "leaf", pin_p.strip() if pin_p else "")
                     )
-                    # Assigner automatiquement la parcelle au propriétaire
                     execute_query("INSERT INTO partage_champs (champ_nom, technicien_email, droit) VALUES (?, ?, ?)", (nom_p, "issayoume2012@gmail.com", "Propriétaire"))
                     st.success("✅ Parcelle enregistrée avec succès !")
                     st.rerun()
@@ -493,76 +485,108 @@ elif menu == "👥 Groupes & Membres":
                         st.rerun()
 
 elif menu == "⏰ Pointage des Horaires":
-    st.title(f"⏰ Pointage - {champ_selectionne}")
+    st.title(f"⏰ Pointage strictly synchronisé — {champ_selectionne}")
     
-    # Filtrer les employés/techniciens uniquement liés à la parcelle active via partage_champs et whitelist_users
-    df_partages = load_table('partage_champs')
-    emails_autorises_champ = df_partages[df_partages['champ_nom'] == champ_selectionne]['technicien_email'].str.lower().tolist()
-    
-    df_wl_all = load_table('whitelist_users')
-    # Trouver les noms correspondants aux emails autorisés sur cette parcelle
-    techniciens_parcelle_noms = []
-    if not df_wl_all.empty and emails_autorises_champ:
-        df_match = df_wl_all[df_wl_all['email'].str.lower().isin(emails_autorises_champ)]
-        for _, u_row in df_match.iterrows():
-            techniciens_parcelle_noms.append(f"{u_row['prenom']} {u_row['nom']} ({u_row['role']})")
-
-    if not techniciens_parcelle_noms:
-        st.warning(f"⚠️ Aucun technicien ou responsable n'est actuellement assigné à la parcelle **{champ_selectionne}**.")
-        st.info("💡 Allez dans l'espace **'💬 Espace Collaboration' > 'Gestion Collégiale des Parcelles'** pour attribuer des techniciens à cette parcelle.")
+    if champ_selectionne == "Aucune parcelle":
+        st.warning("⚠️ Veuillez sélectionner une parcelle active pour gérer le pointage.")
     else:
-        st.info(f"Émargement synchronisé pour les 2 ou 3 responsables/techniciens gérant la parcelle **{champ_selectionne}**.")
+        # Récupération stricte des membres autorisés/partagés sur CETTE parcelle uniquement
+        df_partages = load_table('partage_champs')
+        emails_autorises = df_partages[df_partages['champ_nom'] == champ_selectionne]['technicien_email'].str.lower().tolist()
         
-        c_d1, c_d2 = st.columns(2)
-        with c_d1: date_p = st.date_input("Date du pointage", value=date.today(), key="global_date_pointage")
-        with c_d2: parc_p = st.text_input("Parcelle active", value=champ_selectionne, disabled=True)
+        df_employes_global = load_table('employes')
+        df_wl_global = load_table('whitelist_users')
         
-        st.divider()
+        # Consolider la liste des personnes rattachées à la parcelle (techniciens partagés OU employés de l'exploitation)
+        # Pour une robustesse totale, on croise les emails partagés avec la whitelist, ou on liste les employés enregistrés.
+        membres_parcelle = []
         
-        # Construire un DataFrame dédié uniquement aux membres de cette parcelle
-        data_pointage_parcelle = []
-        for tech_nom_complet in techniciens_parcelle_noms:
-            data_pointage_parcelle.append({
-                "Présent": True,
-                "Responsable / Technicien": tech_nom_complet,
-                "Tâche": "Suivi et gestion parcellaire",
-                "Heures": 8.0,
-                "Remarque": ""
-            })
-            
-        df_edition = pd.DataFrame(data_pointage_parcelle)
+        # 1. Ajouter les utilisateurs de la whitelist assignés à la parcelle
+        if not df_wl_global.empty and emails_autorises:
+            match_wl = df_wl_global[df_wl_global['email'].str.lower().isin(emails_autorises)]
+            for _, w in match_wl.iterrows():
+                membres_parcelle.append({
+                    "nom": f"{w['prenom']} {w['nom']} ({w['role']})",
+                    "groupe": "Équipe Encadrement / Technique"
+                })
+                
+        # 2. Si aucun technicien spécifique n'est dans la table de partage hormis le propriétaire, on regarde les employés généraux ou on invite au partage
+        if not membres_parcelle:
+            st.info(f"💡 Aucun technicien externe n'est rattaché par partage à la parcelle **{champ_selectionne}**. Les membres par défaut de l'exploitation s'affichent.")
+            if not df_employes_global.empty:
+                for _, emp in df_employes_global.iterrows():
+                    membres_parcelle.append({
+                        "nom": f"{emp['nom']} - {emp['role']}",
+                        "groupe": emp['groupe_nom']
+                    })
 
-        edited_df = st.data_editor(
-            df_edition,
-            column_config={
-                "Présent": st.column_config.CheckboxColumn("Présent ?", default=True),
-                "Responsable / Technicien": st.column_config.TextColumn("Responsable / Technicien", disabled=True),
-                "Tâche": st.column_config.TextColumn("Tâche effectuée"),
-                "Heures": st.column_config.NumberColumn("Heures", min_value=0.0, max_value=24.0, step=0.5),
-                "Remarque": st.column_config.TextColumn("Remarque")
-            },
-            hide_index=True, use_container_width=True, key="editor_pointage_parcelle_specifique"
-        )
-
-        if st.button("💾 Enregistrer le Pointage de cette Parcelle", use_container_width=True, type="primary"):
-            for _, row in edited_df.iterrows():
-                execute_query(
-                    "INSERT INTO pointage (date, employe_nom, groupe_nom, champ_nom, statut_presence, tache_effectuee, heures_travaillees, remarque) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (str(date_p), row["Responsable / Technicien"], "Gestion Collégiale", champ_selectionne, "Présent" if row["Présent"] else "Absent", row["Tâche"] if row["Présent"] else "-", float(row["Heures"]) if row["Présent"] else 0.0, str(row["Remarque"]))
-                )
-            st.success("✅ Pointage enregistré avec succès pour cette parcelle !")
-            st.rerun()
-
-    st.subheader("📋 Historique de Pointage pour cette Parcelle")
-    df_pt = load_table('pointage')
-    if not df_pt.empty:
-        df_pt_champ = df_pt[df_pt['champ_nom'] == champ_selectionne]
-        if not df_pt_champ.empty:
-            st.dataframe(df_pt_champ, use_container_width=True)
+        if not membres_parcelle:
+            st.warning("⚠️ Aucun membre ou employé n'est disponible pour le pointage. Veuillez ajouter des employés ou partager des accès.")
         else:
-            st.info("Aucun historique de pointage pour cette parcelle.")
-    else:
-        st.info("Aucun pointage enregistré.")
+            st.success(f"✅ Pointage actif et isolé pour la parcelle : **{champ_selectionne}** ({len(membres_parcelle)} membre(s) concerné(s)).")
+            
+            c_d1, c_d2 = st.columns(2)
+            with c_d1: date_p = st.date_input("Date du pointage", value=date.today(), key=f"date_pt_{champ_id_actif}")
+            with c_d2: parc_p = st.text_input("Parcelle ciblée", value=champ_selectionne, disabled=True)
+            
+            st.divider()
+            
+            # Construction du tableau interactif propre à la parcelle
+            lignes_pointage = []
+            for m in membres_parcelle:
+                lignes_pointage.append({
+                    "Présent": True,
+                    "Membre / Technicien": m["nom"],
+                    "Groupe": m["groupe"],
+                    "Tâche effectuée": "Travaux généraux de parcelle",
+                    "Heures": 8.0,
+                    "Remarque": ""
+                })
+                
+            df_edition_pointage = pd.DataFrame(lignes_pointage)
+
+            edited_pointage = st.data_editor(
+                df_edition_pointage,
+                column_config={
+                    "Présent": st.column_config.CheckboxColumn("Présent ?", default=True),
+                    "Membre / Technicien": st.column_config.TextColumn("Membre", disabled=True),
+                    "Groupe": st.column_config.TextColumn("Groupe", disabled=True),
+                    "Tâche effectuée": st.column_config.TextColumn("Tâche effectuée"),
+                    "Heures": st.column_config.NumberColumn("Heures", min_value=0.0, max_value=24.0, step=0.5),
+                    "Remarque": st.column_config.TextColumn("Remarque / Observation")
+                },
+                hide_index=True, use_container_width=True, key=f"table_editor_pt_{champ_id_actif}"
+            )
+
+            if st.button("💾 Enregistrer le Pointage de cette Parcelle", use_container_width=True, type="primary"):
+                for _, row in edited_pointage.iterrows():
+                    execute_query(
+                        "INSERT INTO pointage (date, employe_nom, groupe_nom, champ_nom, statut_presence, tache_effectuee, heures_travaillees, remarque) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            str(date_p), 
+                            row["Membre / Technicien"], 
+                            row["Groupe"], 
+                            champ_selectionne, 
+                            "Présent" if row["Présent"] else "Absent", 
+                            row["Tâche effectuée"] if row["Présent"] else "-", 
+                            float(row["Heures"]) if row["Présent"] else 0.0, 
+                            str(row["Remarque"])
+                        )
+                    )
+                st.success(f"✅ Pointage enregistré avec succès pour la parcelle **{champ_selectionne}** !")
+                st.rerun()
+
+        st.divider()
+        st.subheader(f"📋 Historique des Pointages pour : {champ_selectionne}")
+        df_pt_global = load_table('pointage')
+        if not df_pt_global.empty:
+            df_pt_parcelle = df_pt_global[df_pt_global['champ_nom'] == champ_selectionne]
+            if not df_pt_parcelle.empty:
+                st.dataframe(df_pt_parcelle.drop(columns=['id'], errors='ignore'), use_container_width=True)
+            else:
+                st.info("Aucun historique de pointage enregistré pour cette parcelle spécifique.")
+        else:
+            st.info("Aucun pointage dans la base de données.")
 
 elif menu == "📅 Planning & Travaux":
     st.title(f"📅 Planning & Travaux - {champ_selectionne}")
@@ -631,7 +655,6 @@ elif menu == "💰 Finances & Marges":
                 motif = st.text_input("Motif / Type de dépense (ex: Achat Carburant)")
                 mnt = st.number_input("Montant (FCFA)", min_value=0.0, value=0.0, step=100.0)
                 date_dep = st.date_input("Date de la dépense", value=date.today())
-                
                 photo_facture = st.file_uploader("📸 Photo ou Scan de la Facture", type=["png", "jpg", "jpeg", "pdf"])
                 
                 if st.form_submit_button("💾 Enregistrer la Dépense", use_container_width=True):
@@ -654,7 +677,6 @@ elif menu == "📦 Stocks d'Intrants":
             stk_i = st.number_input("Stock initial / actuel", min_value=0.0, value=10.0)
             unit_i = st.text_input("Unité (ex: Sacs, Litres, Kg)")
             seuil_i = st.number_input("Seuil d'alerte", min_value=0.0, value=2.0)
-            
             photo_fact_intrant = st.file_uploader("📸 Photo de la Facture Intrant", type=["png", "jpg", "jpeg"])
             
             if st.form_submit_button("💾 Enregistrer l'Intrant", use_container_width=True):
@@ -758,7 +780,6 @@ elif menu == "💬 Espace Collaboration & Réunions Meet":
     st.title("💬 Espace Collaboration Professionnelle & Réunions Google Meet")
     st.info("Espace de travail en ligne et partagé entre Propriétaire, Techniciens et gestionnaires de parcelles.")
 
-    # --- SECTION GESTION COLLÉGIALE DES PARCELLES ---
     with st.expander("🤝 Gestion Collégiale des Parcelles (Partage entre Propriétaire et Techniciens)", expanded=False):
         st.markdown("Attribuez l'accès de gestion d'une parcelle à des techniciens spécifiques de la liste blanche pour qu'ils puissent y travailler en équipe.")
         df_wl_all = load_table('whitelist_users')
@@ -788,7 +809,6 @@ elif menu == "💬 Espace Collaboration & Réunions Meet":
 
     st.divider()
 
-    # --- SECTION INTÉGRATION GOOGLE MEET ---
     col_meet1, col_meet2 = st.columns(2)
     with col_meet1:
         st.link_button("🚀 Ouvrir une réunion Google Meet instantanée", "https://meet.google.com/new", use_container_width=True)
@@ -799,9 +819,7 @@ elif menu == "💬 Espace Collaboration & Réunions Meet":
 
     st.divider()
 
-    # --- SECTION MESSAGERIE & RAPPORTS DE TRAVAIL CIBLÉS AVEC MULTIMÉDIA & RAPPORT PDF INTÉGRÉ ---
     col_m1, col_m2 = st.columns([1, 2])
-    
     with col_m1:
         st.subheader("📝 Publier une Consigne / Rapport")
         df_users_wl = load_table('whitelist_users')
@@ -816,18 +834,13 @@ elif menu == "💬 Espace Collaboration & Réunions Meet":
             titre_msg = st.text_input("Titre / Sujet *", placeholder="Ex: État de la parcelle")
             texte_msg = st.text_area("Contenu détaillé du message ou rapport :")
             statut_t = st.selectbox("Statut de la demande", ["À lire", "En cours de traitement", "Urgent", "Résolu / Validé"])
-            
-            # Prise de photo ou insertion de document
             fichier_joint = st.file_uploader("📸 Joindre une photo ou un document", type=["png", "jpg", "jpeg", "pdf", "xlsx", "docx"])
-            
-            # Option pour joindre directement le rapport PDF généré de la parcelle active
             joindre_rapport_auto = st.checkbox(f"📑 Joindre automatiquement le rapport PDF officiel de la parcelle active ({champ_selectionne})")
 
             if st.form_submit_button("📤 Diffuser / Envoyer", use_container_width=True):
                 if titre_msg.strip() and texte_msg.strip():
                     auteur_nom = f"{prenom_tech} {nom_tech}"
                     horodatage = datetime.now().strftime("%d/%m/%Y à %H:%M")
-                    
                     nom_PJ = None
                     data_PJ = None
                     
@@ -849,10 +862,9 @@ elif menu == "💬 Espace Collaboration & Réunions Meet":
 
     with col_m2:
         st.subheader("📋 Fil d'Actualité & Notes de Travail")
-        
         filtre_vue = st.radio("Filtrer l'affichage :", ["Tous les messages", "Mes messages / Reçus pour moi"], horizontal=True)
-        
         df_msgs = load_table('messages_collab')
+        
         if not df_msgs.empty:
             if filtre_vue == "Mes messages / Reçus pour moi":
                 df_msgs = df_msgs[df_msgs['destinataire'].str.contains("Tous") | df_msgs['destinataire'].str.contains(email_connecte, case=False)]
@@ -874,7 +886,6 @@ elif menu == "💬 Espace Collaboration & Réunions Meet":
                             <p style="margin: 6px 0; font-size: 13px; color: #4b5563;">{m_row['message']}</p>
                     """, unsafe_allow_html=True)
 
-                    # Affichage du bouton de téléchargement si une pièce jointe ou un rapport est rattaché
                     if m_row.get('piece_jointe_nom') and m_row.get('piece_jointe_data'):
                         st.download_button(
                             label=f"📎 Télécharger la pièce jointe : {m_row['piece_jointe_nom']}",
@@ -895,20 +906,16 @@ elif menu == "💬 Espace Collaboration & Réunions Meet":
 
 elif menu == "🔐 Paramètres & Liste Blanche":
     st.title("🔐 Gestion de la Liste Blanche (Contrôle d'Accès)")
-    
     est_proprietaire = (email_connecte == "issayoume2012@gmail.com")
 
     if not est_proprietaire:
-        st.warning("⚠️ Accès restreint : Seul le propriétaire de l'application (`issayoume2012@gmail.com`) est autorisé à modifier ou révoquer les accès de la liste blanche.")
-        st.subheader("📋 Liste des E-mails Autorisés (Consultation)")
+        st.warning("⚠️ Accès restreint : Seul le propriétaire de l'application est autorisé à modifier les accès.")
         df_wl = load_table('whitelist_users')
         if not df_wl.empty:
             for _, row in df_wl.iterrows():
                 st.markdown(f"📧 **{row['email']}** | 👤 *{row['prenom']} {row['nom']}* (`{row['role']}`)")
     else:
-        st.info("Espace exclusif propriétaire : Ajoutez ou révoquez des accès en toute sécurité.")
         col_wl1, col_wl2 = st.columns([1, 1])
-
         with col_wl1:
             st.subheader("➕ Ajouter un utilisateur autorisé")
             with st.form("form_add_whitelist"):
@@ -953,7 +960,6 @@ elif menu == "🔐 Paramètres & Liste Blanche":
 elif menu == "📑 EXPORT RAPPORT PARCELLE":
     st.title("📑 Centre d'Exportation de Rapport Officiel")
     st.info(f"Génération du rapport PDF signé et daté pour la parcelle active : **{champ_selectionne}**")
-    
     date_exp = st.date_input("Date officielle du rapport", value=date.today())
     
     if champ_selectionne and champ_selectionne != "Aucune parcelle":
