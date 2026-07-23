@@ -259,7 +259,7 @@ def export_parcelle_pdf(champ_nom, date_rapport):
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#10b981')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTNAME', (0, 0), (-1, 0), Helvetica-Bold if 'Helvetica-Bold' in globals() else 'Helvetica-Bold'),
                 ('FONTSIZE', (0, 0), (-1, -1), 6),
                 ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
             ]))
@@ -326,13 +326,10 @@ champ_selectionne = "Aucune parcelle"
 
 if not db_champs.empty:
     liste_champs = {row['nom']: row['id'] for _, row in db_champs.iterrows()}
-    col_sel1, col_sel2 = st.columns([3, 1])
+    col_sel1, col_sel2, col_sel3 = st.columns([2, 1, 1])
     with col_sel1:
-        champ_selectionne = st.selectbox("📍 Parcelle Active (Accès Libre) :", list(liste_champs.keys()))
+        champ_selectionne = st.selectbox("📍 Parcelle Active :", list(liste_champs.keys()))
         champ_id_actif = liste_champs[champ_selectionne]
-        
-        df_p_act = load_table('partage_champs')
-        affectations_cette_parcelle = df_p_act[df_p_act['champ_nom'] == champ_selectionne] if not df_p_act.empty else pd.DataFrame()
         
         row_champ_actuel = db_champs[db_champs['id'] == champ_id_actif].iloc[0]
         pin_enreg = row_champ_actuel.get('code_pin')
@@ -352,16 +349,23 @@ if not db_champs.empty:
                         st.rerun()
                     else:
                         st.error("❌ Code PIN incorrect.")
-                st.stop()
+                # NON BLOQUANT : On n'arrête plus le script ici, on permet de basculer vers Cartographie pour créer de nouvelles parcelles !
 
     with col_sel2:
+        st.write("") # Espacement aligné
+        if st.button("➕ Créer un Nouveau Champ"):
+            st.session_state.menu_force_carto = True
+            st.rerun()
+
+    with col_sel3:
+        st.write("")
         if st.button("🚪 Déconnexion"):
             st.session_state.authenticated = False
             st.rerun()
 else:
     col_n1, col_n2 = st.columns([3, 1])
     with col_n1:
-        st.info("ℹ️ Aucune parcelle enregistrée. Vous pouvez en créer une dès maintenant ci-dessous ou via le menu Cartographie.")
+        st.info("ℹ️ Aucune parcelle enregistrée. Utilisez l'onglet Cartographie pour en créer une.")
     with col_n2:
         if st.button("🚪 Déconnexion"):
             st.session_state.authenticated = False
@@ -403,7 +407,42 @@ elif menu == "🌱 Cartographie & Parcelles":
         st.session_state['lat_active'] = 14.6937
         st.session_state['lon_active'] = -17.4441
 
-    tab_carte_interactive, tab_creer_champ, tab_gerer_champs = st.tabs(["🗺️ Carte Interactive & Visualisation", "➕ Créer un Nouveau Champ / Parcelle", "📋 Liste & Gestion des Champs Existants"])
+    tab_creer_champ, tab_carte_interactive, tab_gerer_champs = st.tabs(["➕ Créer une Nouvelle Parcelle (Hors Existants)", "🗺️ Carte Interactive & Visualisation", "📋 Liste & Gestion des Champs Existants"])
+
+    with tab_creer_champ:
+        st.subheader("➕ Formulaire Indépendant d'Enregistrement d'une Nouvelle Parcelle")
+        st.write("Ce formulaire vous permet d'ajouter un nouveau champ directement sans être bloqué par les parcelles existantes.")
+        
+        with st.form("form_champ_hors_existant"):
+            col_f1, col_f2 = st.columns(2)
+            with col_f1:
+                nom_p = st.text_input("Nom de la nouvelle parcelle *", placeholder="Ex: Champ Sud 4")
+                surf_p = st.number_input("Superficie (Ha)", min_value=0.1, value=2.5, step=0.1)
+                cult_p = st.text_input("Culture principale", placeholder="Ex: Maïs, Niébé, Arachide...")
+            with col_f2:
+                lat_p = st.number_input("Latitude", value=float(st.session_state['lat_active']), format="%.6f")
+                lon_p = st.number_input("Longitude", value=float(st.session_state['lon_active']), format="%.6f")
+                stat_p = st.selectbox("Statut initial", ["En préparation", "Semé", "En croissance", "Prêt à récolter"])
+            
+            pin_p = st.text_input("Code PIN de confidentialité (optionnel)", type="password", placeholder="Laisser vide si libre d'accès")
+            
+            if st.form_submit_button("💾 Valider et Enregistrer cette Nouvelle Parcelle", use_container_width=True, type="primary"):
+                if nom_p.strip():
+                    df_check_exist = load_table('champs')
+                    if not df_check_exist.empty and nom_p.strip().lower() in df_check_exist['nom'].str.lower().values:
+                        st.error(f"❌ Une parcelle portant le nom '{nom_p.strip()}' existe déjà. Veuillez choisir un autre nom.")
+                    else:
+                        execute_query(
+                            "INSERT INTO champs (nom, superficie_ha, latitude, longitude, culture_actuelle, statut, icone_lieu, code_pin) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                            (nom_p.strip(), surf_p, lat_p, lon_p, cult_p, stat_p, "leaf", pin_p.strip() if pin_p else ""),
+                            action_desc=f"Création indépendante de la parcelle '{nom_p.strip()}'",
+                            user_info=tech
+                        )
+                        execute_query("INSERT INTO partage_champs (champ_nom, technicien_email, droit) VALUES (?, ?, ?)", (nom_p.strip(), email_connecte, "Propriétaire / Créateur"))
+                        st.success(f"✅ La nouvelle parcelle **{nom_p.strip()}** a été créée avec succès et est immédiatement disponible !")
+                        st.rerun()
+                else:
+                    st.warning("⚠️ Veuillez renseigner un nom valide pour la parcelle.")
 
     with tab_carte_interactive:
         st.subheader("📍 Visualisation Géographique de l'Exploitation")
@@ -420,42 +459,6 @@ elif menu == "🌱 Cartographie & Parcelles":
             st.session_state['lat_active'] = round(map_data["last_clicked"]["lat"], 6)
             st.session_state['lon_active'] = round(map_data["last_clicked"]["lng"], 6)
             st.info(f"📍 Coordonnées récupérées depuis la carte : Lat {st.session_state['lat_active']}, Lon {st.session_state['lon_active']}")
-
-    with tab_creer_champ:
-        st.subheader("➕ Enregistrer une Nouvelle Parcelle / Champ")
-        st.write("Remplissez le formulaire ci-dessous pour ajouter un tout nouveau champ dans votre système.")
-        
-        with st.form("form_champ_new_fix_onglet"):
-            col_f1, col_f2 = st.columns(2)
-            with col_f1:
-                nom_p = st.text_input("Nom de la nouvelle parcelle *", placeholder="Ex: Champ Nord 3")
-                surf_p = st.number_input("Superficie (Ha)", min_value=0.1, value=2.0, step=0.1)
-                cult_p = st.text_input("Culture principale", placeholder="Ex: Arachide, Mil, Maraîchage...")
-            with col_f2:
-                lat_p = st.number_input("Latitude", value=float(st.session_state['lat_active']), format="%.6f")
-                lon_p = st.number_input("Longitude", value=float(st.session_state['lon_active']), format="%.6f")
-                stat_p = st.selectbox("Statut initial", ["En préparation", "Semé", "En croissance", "Prêt à récolter"])
-            
-            pin_p = st.text_input("Code PIN de confidentialité (optionnel)", type="password", placeholder="Laisser vide si libre d'accès")
-            
-            if st.form_submit_button("💾 Enregistrer et Créer la Nouvelle Parcelle", use_container_width=True, type="primary"):
-                if nom_p.strip():
-                    # Vérifier si le nom existe déjà
-                    df_check_exist = load_table('champs')
-                    if not df_check_exist.empty and nom_p.strip().lower() in df_check_exist['nom'].str.lower().values:
-                        st.error(f"❌ Une parcelle portant le nom '{nom_p.strip()}' existe déjà. Veuillez choisir un autre nom.")
-                    else:
-                        execute_query(
-                            "INSERT INTO champs (nom, superficie_ha, latitude, longitude, culture_actuelle, statut, icone_lieu, code_pin) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                            (nom_p.strip(), surf_p, lat_p, lon_p, cult_p, stat_p, "leaf", pin_p.strip() if pin_p else ""),
-                            action_desc=f"Création de la parcelle '{nom_p.strip()}'",
-                            user_info=tech
-                        )
-                        execute_query("INSERT INTO partage_champs (champ_nom, technicien_email, droit) VALUES (?, ?, ?)", (nom_p.strip(), email_connecte, "Propriétaire / Créateur"))
-                        st.success(f"✅ La nouvelle parcelle **{nom_p.strip()}** a été enregistrée avec succès !")
-                        st.rerun()
-                else:
-                    st.warning("⚠️ Veuillez renseigner un nom valide pour la parcelle.")
 
     with tab_gerer_champs:
         st.subheader("📋 Liste et Suppression des Champs Existants")
