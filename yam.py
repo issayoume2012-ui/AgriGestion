@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime, date
 import io
 import sqlite3
+import os
 
 # Importation pour la cartographie dynamique interactive
 import folium
@@ -24,12 +25,18 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
+# Création du dossier pour stocker les fichiers médias et rapports partagés
+UPLOAD_DIR = "uploads_workspace"
+if not os.path.exists(UPLOAD_DIR):
+    os.makedirs(UPLOAD_DIR)
+
 st.markdown("""
     <style>
         .stApp { background-color: #f4f7f6; }
         div.stButton > button { width: 100%; border-radius: 8px; font-weight: 600; padding: 0.5rem 1rem; }
         .main-header { background: white; padding: 15px 20px; border-radius: 12px; box-shadow: 0 2px 6px rgba(0,0,0,0.05); margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
         .card-container { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-bottom: 15px; }
+        .badge-role { background-color: #e5e7eb; padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: bold; color: #374151; }
         @media(max-width: 768px) {
             .stMetric { font-size: 14px !important; }
         }
@@ -72,13 +79,19 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS irrigation (id INTEGER PRIMARY KEY AUTOINCREMENT, champ_id INTEGER, date TEXT, volume_eau_m3 REAL, methode TEXT, duree_heures REAL)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS alertes_meteo (id INTEGER PRIMARY KEY AUTOINCREMENT, champ_id INTEGER, date TEXT, type_risque TEXT, niveau_alerte TEXT, recommandation_ts TEXT)''')
     
-    # Table messages pour l'espace de travail / collaboration fonctionnel
+    # Espace de travail amélioré (ciblage, messages & rapports stockés)
     cursor.execute('''CREATE TABLE IF NOT EXISTS messages_workspace (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         auteur TEXT,
                         role TEXT,
+                        destinataire TEXT,
+                        priorite TEXT,
                         texte TEXT,
-                        date_heure TEXT
+                        date_heure TEXT,
+                        type_contenu TEXT,
+                        fichier_path TEXT,
+                        nom_fichier TEXT,
+                        champ_concerne TEXT
                     )''')
     
     cursor.execute('''CREATE TABLE IF NOT EXISTS whitelist_users (
@@ -112,7 +125,7 @@ def init_db():
     if cursor.fetchone()[0] == 0:
         cursor.execute(
             "INSERT INTO whitelist_users (email, password, prenom, nom, role, modules_autorises) VALUES (?, ?, ?, ?, ?, ?)",
-            ("issayoume2012@gmail.com", "issayoume2026", "Issa", "Youme", "Propriétaire", "TOUS")
+            ("issayoume2012@gmail.com", "issayoume2026", "Issa", "Youme", "Administration", "TOUS")
         )
 
     conn.commit()
@@ -137,7 +150,7 @@ def execute_query(query, params=(), action_desc="", user_info=None):
         date_act = datetime.now().strftime("%d/%m/%Y à %H:%M")
         cursor.execute(
             "INSERT INTO historique_modifications (date_heure, utilisateur, email, role, action, details) VALUES (?, ?, ?, ?, ?, ?)",
-            (date_act, f"{user_info.get('prenom', '')} {user_info.get('nom', '')}", user_info.get('gmail', ''), user_info.get('role', ''), action_desc, "Mise à jour réussie")
+            (date_act, f"{user_info.get('prenom', '')} {user_info.get('nom', '')}", user_info.get('gmail', ''), user_info.get('role', ''), action_desc, "Succès")
         )
 
     conn.commit()
@@ -158,7 +171,7 @@ def auth_system():
             st.markdown("""
                 <div style="background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.08);">
                     <h2 style="text-align: center; color: #10b981; margin-bottom: 5px;">🌾 AgriGestion Pro</h2>
-                    <p style="text-align: center; color: #6b7280; font-size: 14px; margin-bottom: 25px;">Espace d'authentification sécurisé</p>
+                    <p style="text-align: center; color: #6b7280; font-size: 14px; margin-bottom: 25px;">Plateforme Intégrée de Gestion Agricole</p>
             """, unsafe_allow_html=True)
 
             with st.form("form_login_admin"):
@@ -195,7 +208,7 @@ if not auth_system():
     st.stop()
 
 # ==========================================
-# 4. EXPORTATIONS PDF FORMAT A4 STRICT
+# 4. EXPORTATIONS PDF FORMAT A4 STRICT (PARCELLE ACTIVE)
 # ==========================================
 def export_fiche_parcelle_a4(nom_p, surf_p, cult_p, lat_p, lon_p, stat_p):
     buffer = io.BytesIO()
@@ -234,10 +247,7 @@ def export_fiche_parcelle_a4(nom_p, surf_p, cult_p, lat_p, lon_p, stat_p):
     elements.append(t)
     elements.append(Spacer(1, 15))
     elements.append(Paragraph("2. Note d'Exploitation & Suivi", subtitle_style))
-    elements.append(Paragraph("Cette fiche certifie l'enregistrement de la parcelle dans le système de gestion agricole intégré AgriGestion Pro. Conserver ce document pour le suivi des intrants, des interventions phytosanitaires et des récoltes.", normal_style))
-    elements.append(Spacer(1, 20))
-    elements.append(Paragraph("<i>Document officiel généré automatiquement — Conforme aux normes d'exploitation agricole A4.</i>", ParagraphStyle('Foot', parent=normal_style, fontSize=8, textColor=colors.gray)))
-    
+    elements.append(Paragraph("Cette fiche certifie l'enregistrement de la parcelle dans le système de gestion agricole intégré AgriGestion Pro.", normal_style))
     doc.build(elements)
     return buffer.getvalue()
 
@@ -262,16 +272,15 @@ def export_parcelle_pdf(champ_nom, date_rapport):
     champ_id = int(champ_info['id'].values[0]) if not champ_info.empty else None
 
     tables_to_export = {}
-    df_part = load_table('partage_champs')
-    tables_to_export["1. Équipe & Rôles assignés"] = df_part[df_part['champ_nom'] == champ_nom][['technicien_email', 'droit']] if not df_part.empty else pd.DataFrame()
-
     if champ_id:
         df_pt = load_table('pointage')
-        tables_to_export["2. Pointage & Présences"] = df_pt[df_pt['champ_nom'] == champ_nom][['date', 'employe_nom', 'tache_effectuee', 'heures_travaillees']] if not df_pt.empty else pd.DataFrame()
+        tables_to_export["1. Pointages & Présences"] = df_pt[df_pt['champ_nom'] == champ_nom][['date', 'employe_nom', 'tache_effectuee', 'heures_travaillees']] if not df_pt.empty else pd.DataFrame()
+        
         df_rec = load_table('recoltes')
-        tables_to_export["3. Récoltes"] = df_rec[df_rec['champ_id'] == champ_id][['culture', 'date_recolte', 'quantite_kg', 'prix_unitaire']] if not df_rec.empty else pd.DataFrame()
+        tables_to_export["2. Récoltes de la Parcelle"] = df_rec[df_rec['champ_id'] == champ_id][['culture', 'date_recolte', 'quantite_kg', 'prix_unitaire']] if not df_rec.empty else pd.DataFrame()
+        
         df_dep = load_table('depenses')
-        tables_to_export["4. Dépenses"] = df_dep[df_dep['champ_id'] == champ_id][['type', 'montant', 'date']] if not df_dep.empty else pd.DataFrame()
+        tables_to_export["3. Dépenses & Intrants"] = df_dep[df_dep['champ_id'] == champ_id][['type', 'montant', 'date']] if not df_dep.empty else pd.DataFrame()
 
     for section_title, df_sec in tables_to_export.items():
         elements.append(Paragraph(section_title, subtitle_style))
@@ -288,65 +297,73 @@ def export_parcelle_pdf(champ_nom, date_rapport):
             ]))
             elements.append(t)
         else:
-            elements.append(Paragraph("<i>Aucune donnée enregistrée.</i>", normal_style))
+            elements.append(Paragraph("<i>Aucune donnée enregistrée pour cette parcelle.</i>", normal_style))
         elements.append(Spacer(1, 6))
 
     doc.build(elements)
     return buffer.getvalue()
 
 # ==========================================
-# 5. NAVIGATION & HEADER FLUIDE
+# 5. NAVIGATION & HEADER CLASSIFIÉ PAR RÔLE
 # ==========================================
 tech = st.session_state.get('registered_tech', {})
 prenom_tech = tech.get('prenom', 'Utilisateur')
 nom_tech = tech.get('nom', '')
 role_tech = tech.get('role', 'Technicien')
 email_connecte = tech.get('gmail', '').lower()
-modules_autorises_user = tech.get('modules_autorises', 'TOUS')
 
 st.markdown(f"""
     <div class="main-header">
-        <div><b>🌾 AgriGestion Pro</b> | <span style="color: #10b981; font-weight: 600;">{prenom_tech} {nom_tech}</span> — Rôle : <b>{role_tech}</b></div>
+        <div><b>🌾 AgriGestion Pro</b> | <span style="color: #10b981; font-weight: 600;">{prenom_tech} {nom_tech}</span> — Rôle : <span class="badge-role">{role_tech}</span></div>
     </div>
 """, unsafe_allow_html=True)
 
-tous_les_menus = [
+# Classement hiérarchique des menus par profil
+menu_administration = [
+    "🔐 Paramètres & Liste Blanche",
+    "📜 Historique"
+]
+
+menu_gestionnaire = [
     "📊 Tableau de Bord",
-    "🌱 Cartographie & Parcelles",
     "👥 Groupes & Membres",
+    "💰 Finances & Marges",
+    "📦 Stocks d'Intrants",
+    "🚜 Maintenance Matériel",
+    "📈 Rentabilité & ROI"
+]
+
+menu_techniciens = [
+    "🌱 Cartographie & Parcelles",
     "⏰ Pointage des Horaires",
     "📅 Planning & Travaux",
     "🌾 Récoltes & Rendements",
-    "💰 Finances & Marges",
-    "📦 Stocks d'Intrants",
     "🌧️ Pluviométrie",
     "⚠️ Incidents",
-    "🚜 Maintenance Matériel",
     "🏷️ Traçabilité & Lots",
     "💧 Irrigation & Eau",
     "🌤️ Risques & Météo",
-    "📈 Rentabilité & ROI",
-    "💬 Espace Collaboration & Meet",
-    "📜 Historique",
-    "🔐 Paramètres & Liste Blanche",
     "📑 EXPORT RAPPORT PARCELLE"
 ]
 
-if modules_autorises_user == "TOUS" or email_connecte == "issayoume2012@gmail.com":
-    menu_options = tous_les_menus
-else:
-    menu_options = ["📊 Tableau de Bord", "💬 Espace Collaboration & Meet", "📜 Historique", "📑 EXPORT RAPPORT PARCELLE"]
-    liste_mod_autorises = [m.strip() for m in modules_autorises_user.split(",") if m.strip()]
-    for m in tous_les_menus:
-        if any(mod == m for mod in liste_mod_autorises) and m not in menu_options:
-            menu_options.insert(1, m)
+menu_commun = [
+    "💬 Espace Collaboration & Workspace"
+]
+
+# Composition du menu dynamique selon le rôle
+if role_tech == "Administration" or email_connecte == "issayoume2012@gmail.com":
+    tous_les_menus = menu_commun + menu_administration + menu_gestionnaire + menu_techniciens
+elif role_tech == "Gestionnaire":
+    tous_les_menus = menu_commun + menu_gestionnaire + menu_techniciens
+else: # Technicien par défaut
+    tous_les_menus = menu_commun + menu_techniciens
 
 if "selected_menu" not in st.session_state:
-    st.session_state.selected_menu = menu_options[0]
+    st.session_state.selected_menu = tous_les_menus[0]
 
 col_nav1, col_nav2 = st.columns([3, 1])
 with col_nav1:
-    menu = st.selectbox("📌 Navigation Principale", menu_options, index=menu_options.index(st.session_state.selected_menu) if st.session_state.selected_menu in menu_options else 0, label_visibility="collapsed")
+    menu = st.selectbox("📌 Navigation Principale (Classée par Rôle)", tous_les_menus, index=tous_les_menus.index(st.session_state.selected_menu) if st.session_state.selected_menu in tous_les_menus else 0)
     st.session_state.selected_menu = menu
 with col_nav2:
     if st.button("🚪 Déconnexion", use_container_width=True):
@@ -357,7 +374,7 @@ db_champs = load_table('champs')
 champ_id_actif = None
 champ_selectionne = "Aucune parcelle"
 
-# Masquer la barre de sélection globale si l'on est dans le menu Cartographie & Parcelles
+# Sélection globale de la parcelle active (sauf sur la cartographie)
 if menu != "🌱 Cartographie & Parcelles":
     if not db_champs.empty:
         liste_champs = {row['nom']: row['id'] for _, row in db_champs.iterrows()}
@@ -393,20 +410,11 @@ if menu != "🌱 Cartographie & Parcelles":
     st.divider()
 
 # ==========================================
-# 6. MODULES APPLICATIFS ÉPURÉS ET SYNCHRONISÉS
+# 6. MODULES APPLICATIFS STRUCTURÉS
 # ==========================================
 
 if menu == "📊 Tableau de Bord":
-    st.title("📊 Tableau de Bord Global")
-    
-    col_tb_action1, col_tb_action2 = st.columns([2, 4])
-    with col_tb_action1:
-        if st.button("🌱 + Créer une nouvelle parcelle", type="primary", use_container_width=True):
-            st.session_state.selected_menu = "🌱 Cartographie & Parcelles"
-            st.rerun()
-    
-    st.divider()
-    
+    st.title("📊 Tableau de Bord Global (Espace Gestionnaire)")
     m1, m2, m3, m4 = st.columns(4)
     df_c = load_table('champs')
     df_e = load_table('employes')
@@ -424,13 +432,13 @@ if menu == "📊 Tableau de Bord":
     m4.metric("Récoltes Totales", f"{tot_rec/1000:.2f} T")
     st.divider()
     if df_c.empty:
-        st.info("👋 Aucune parcelle enregistrée. Rendez-vous dans 'Cartographie & Parcelles' pour en créer une.")
+        st.info("👋 Aucune parcelle enregistrée.")
     else:
-        st.subheader("📍 Aperçu des Parcelles")
+        st.subheader("📍 Aperçu Global des Parcelles")
         st.dataframe(df_c[["nom", "superficie_ha", "culture_actuelle", "statut"]], use_container_width=True)
 
 elif menu == "🌱 Cartographie & Parcelles":
-    st.title("🌱 Cartographie & Parcelles")
+    st.title("🌱 Cartographie & Parcelles (Espace Technicien)")
     
     if 'lat_active' not in st.session_state:
         st.session_state['lat_active'] = 14.6937
@@ -453,14 +461,11 @@ elif menu == "🌱 Cartographie & Parcelles":
     if map_data and map_data.get("last_clicked"):
         st.session_state['lat_active'] = round(map_data["last_clicked"]["lat"], 6)
         st.session_state['lon_active'] = round(map_data["last_clicked"]["lng"], 6)
-        st.success(f"📍 Coordonnées GPS capturées avec succès : {st.session_state['lat_active']}, {st.session_state['lon_active']}")
+        st.success(f"📍 Coordonnées GPS capturées : {st.session_state['lat_active']}, {st.session_state['lon_active']}")
     st.markdown("</div>", unsafe_allow_html=True)
 
-    st.divider()
-
     st.markdown("<div class='card-container'>", unsafe_allow_html=True)
-    st.subheader("➕ 2. Enregistrement de la Nouvelle Parcelle & Fiche A4")
-    
+    st.subheader("➕ 2. Enregistrement d'une Nouvelle Parcelle & Fiche A4")
     with st.form("form_champ_fluide_top"):
         col_f_1, col_f_2 = st.columns(2)
         with col_f_1:
@@ -468,67 +473,35 @@ elif menu == "🌱 Cartographie & Parcelles":
             surf_p = st.number_input("Superficie (Ha)", min_value=0.1, value=2.5, step=0.1)
             cult_p = st.text_input("Culture principale", placeholder="Ex: Tomate, Riz...")
             stat_p = st.selectbox("Statut initial", ["En préparation", "Semé", "En croissance", "Prêt à récolter"])
-        
         with col_f_2:
-            lat_p = st.number_input("Latitude GPS (capturée ou modifiable)", value=float(st.session_state['lat_active']), format="%.6f")
-            lon_p = st.number_input("Longitude GPS (capturée ou modifiable)", value=float(st.session_state['lon_active']), format="%.6f")
-            pin_p = st.text_input("Code PIN de sécurité (optionnel)", type="password", placeholder="Laisser vide si accès libre")
+            lat_p = st.number_input("Latitude GPS", value=float(st.session_state['lat_active']), format="%.6f")
+            lon_p = st.number_input("Longitude GPS", value=float(st.session_state['lon_active']), format="%.6f")
+            pin_p = st.text_input("Code PIN de sécurité (optionnel)", type="password")
         
-        st.markdown("<br>", unsafe_allow_html=True)
         submit_parcelle = st.form_submit_button("💾 Enregistrer la Parcelle & Générer le PDF A4", use_container_width=True, type="primary")
-        
         if submit_parcelle:
             if nom_p.strip():
-                df_check_exist = load_table('champs')
-                if not df_check_exist.empty and nom_p.strip().lower() in df_check_exist['nom'].str.lower().values:
-                    st.error(f"❌ Une parcelle nommée '{nom_p.strip()}' existe déjà.")
-                else:
-                    execute_query(
-                        "INSERT INTO champs (nom, superficie_ha, latitude, longitude, culture_actuelle, statut, icone_lieu, code_pin) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        (nom_p.strip(), surf_p, lat_p, lon_p, cult_p, stat_p, "leaf", pin_p.strip() if pin_p else ""),
-                        action_desc=f"Création de la parcelle '{nom_p.strip()}'",
-                        user_info=tech
-                    )
-                    execute_query("INSERT INTO partage_champs (champ_nom, technicien_email, droit) VALUES (?, ?, ?)", (nom_p.strip(), email_connecte, "Propriétaire"))
-                    st.success(f"✅ Parcelle **{nom_p.strip()}** enregistrée avec succès !")
-                    
-                    st.session_state['last_created_pdf'] = export_fiche_parcelle_a4(nom_p.strip(), surf_p, cult_p, lat_p, lon_p, stat_p)
-                    st.session_state['last_created_name'] = nom_p.strip()
+                execute_query(
+                    "INSERT INTO champs (nom, superficie_ha, latitude, longitude, culture_actuelle, statut, icone_lieu, code_pin) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (nom_p.strip(), surf_p, lat_p, lon_p, cult_p, stat_p, "leaf", pin_p.strip() if pin_p else ""),
+                    action_desc=f"Création de la parcelle '{nom_p.strip()}'",
+                    user_info=tech
+                )
+                st.success(f"✅ Parcelle **{nom_p.strip()}** enregistrée avec succès !")
+                st.session_state['last_created_pdf'] = export_fiche_parcelle_a4(nom_p.strip(), surf_p, cult_p, lat_p, lon_p, stat_p)
+                st.session_state['last_created_name'] = nom_p.strip()
             else:
-                st.warning("⚠️ Veuillez indiquer un nom de parcelle valide.")
+                st.warning("⚠️ Indiquez un nom de parcelle.")
     
-    if 'last_created_pdf' in st.session_state and 'last_created_name' in st.session_state:
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.download_button(
-            label=f"📥 Télécharger la Fiche A4 officielle ({st.session_state['last_created_name']})",
-            data=st.session_state['last_created_pdf'],
-            file_name=f"fiche_a4_{st.session_state['last_created_name']}.pdf",
-            mime="application/pdf",
-            use_container_width=True
-        )
+    if 'last_created_pdf' in st.session_state:
+        st.download_button("📥 Télécharger la Fiche A4 officielle", data=st.session_state['last_created_pdf'], file_name=f"fiche_a4_{st.session_state['last_created_name']}.pdf", mime="application/pdf", use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
-    st.divider()
-    st.subheader("📋 Liste des Parcelles Enregistrées")
-    df_champs_list = load_table('champs')
-    if not df_champs_list.empty:
-        for _, ch in df_champs_list.iterrows():
-            col_li1, col_li2 = st.columns([4, 1])
-            with col_li1:
-                st.markdown(f"**🌾 {ch['nom']}** — `{ch['superficie_ha']} Ha` | Culture : *{ch['culture_actuelle']}* | Statut : `{ch['statut']}`")
-            with col_li2:
-                if st.button("🗑️ Supprimer", key=f"del_ch_{ch['id']}"):
-                    execute_query("DELETE FROM champs WHERE id = ?", (ch['id'],), action_desc=f"Suppression parcelle '{ch['nom']}'", user_info=tech)
-                    st.rerun()
-            st.divider()
-    else:
-        st.info("Aucune parcelle enregistrée pour le moment.")
-
 elif menu == "👥 Groupes & Membres":
-    st.title("👥 Groupes & Membres")
+    st.title("👥 Gestion des Groupes & Membres (Espace Gestionnaire)")
     col_g1, col_g2 = st.columns(2)
     with col_g1:
-        st.subheader("1️⃣ Groupes")
+        st.subheader("1️⃣ Groupes de Travail")
         with st.form("form_grp"):
             nom_g = st.text_input("Nom du groupe")
             chef_g = st.text_input("Chef de groupe")
@@ -537,61 +510,45 @@ elif menu == "👥 Groupes & Membres":
                     execute_query("INSERT INTO equipes (nom_groupe, chef_groupe) VALUES (?, ?)", (nom_g.strip(), chef_g.strip()), action_desc=f"Création groupe '{nom_g}'", user_info=tech)
                     st.success("✅ Groupe créé !")
                     st.rerun()
-        df_g = load_table('equipes')
-        if not df_g.empty:
-            st.dataframe(df_g, use_container_width=True)
+        st.dataframe(load_table('equipes'), use_container_width=True)
 
     with col_g2:
-        st.subheader("2️⃣ Employés")
+        st.subheader("2️⃣ Membres / Employés")
         df_eq_disp = load_table('equipes')
         if not df_eq_disp.empty:
             with st.form("form_emp"):
                 nom_emp = st.text_input("Nom et Prénom")
-                role_emp = st.text_input("Rôle (ex: Ouvrier)")
-                grp_emp = st.selectbox("Groupe", df_eq_disp['nom_groupe'].tolist())
+                role_emp = st.text_input("Rôle (ex: Ouvrier, Mécanicien)")
+                grp_emp = st.selectbox("Groupe assigné", df_eq_disp['nom_groupe'].tolist())
                 tarif = st.number_input("Tarif journalier (FCFA)", min_value=0.0, value=2500.0)
                 if st.form_submit_button("Ajouter l'Employé", use_container_width=True):
                     if nom_emp.strip():
                         execute_query("INSERT INTO employes (nom, role, groupe_nom, tarif_journalier) VALUES (?, ?, ?, ?)", (nom_emp.strip(), role_emp.strip(), grp_emp, tarif), action_desc=f"Ajout employé '{nom_emp}'", user_info=tech)
                         st.success("✅ Employé ajouté !")
                         st.rerun()
-        df_e = load_table('employes')
-        if not df_e.empty:
-            st.dataframe(df_e, use_container_width=True)
+        st.dataframe(load_table('employes'), use_container_width=True)
 
 elif menu == "⏰ Pointage des Horaires":
-    st.title(f"⏰ Pointage des Horaires — {champ_selectionne}")
+    st.title(f"⏰ Pointage des Horaires — {champ_selectionne} (Espace Technicien)")
     if champ_selectionne == "Aucune parcelle":
         st.warning("⚠️ Veuillez sélectionner une parcelle active.")
     else:
         df_emp = load_table('employes')
         if df_emp.empty:
-            st.warning("⚠️ Aucun employé enregistré dans le système.")
+            st.warning("⚠️ Aucun employé enregistré.")
         else:
             groupes_disponibles = df_emp['groupe_nom'].dropna().unique().tolist() if 'groupe_nom' in df_emp.columns else []
             
-            st.markdown("<div class='card-container'>", unsafe_allow_html=True)
-            st.subheader("🔍 Filtres & Paramètres globaux du Pointage")
-            
-            col_f1, col_f2, col_f3 = st.columns(3)
-            with col_f1:
-                groupes_selectionnes = st.multiselect("Filtrer par Groupe(s) :", groupes_disponibles, default=groupes_disponibles)
-            with col_f2:
-                date_p = st.date_input("Date du pointage", value=date.today())
-            with col_f3:
-                tache_globale = st.selectbox("Tâche par défaut pour la sélection :", ["Travaux", "Labour", "Semis", "Désherbage", "Récolte", "Irrigation"])
-            
-            if groupes_selectionnes:
-                df_emp_filtre = df_emp[df_emp['groupe_nom'].isin(groupes_selectionnes)]
-            else:
-                df_emp_filtre = df_emp
-
-            st.markdown("</div>", unsafe_allow_html=True)
-
-            if df_emp_filtre.empty:
-                st.info(f"Aucun travailleur trouvé pour les groupes sélectionnés sur la parcelle **{champ_selectionne}**.")
-            else:
-                st.write(f"📋 **{len(df_emp_filtre)} travailleur(s) concerné(s)** pour ce pointage :")
+            with st.form("form_pointage_params"):
+                col_f1, col_f2, col_f3 = st.columns(3)
+                with col_f1:
+                    groupes_selectionnes = st.multiselect("Filtrer par Groupe(s) :", groupes_disponibles, default=groupes_disponibles)
+                with col_f2:
+                    date_p = st.date_input("Date du pointage", value=date.today())
+                with col_f3:
+                    tache_globale = st.selectbox("Tâche par défaut :", ["Travaux", "Labour", "Semis", "Désherbage", "Récolte", "Irrigation"])
+                
+                df_emp_filtre = df_emp[df_emp['groupe_nom'].isin(groupes_selectionnes)] if groupes_selectionnes else df_emp
                 
                 lignes = [{
                     "Présent": True, 
@@ -602,18 +559,17 @@ elif menu == "⏰ Pointage des Horaires":
                     "Remarque": ""
                 } for _, e in df_emp_filtre.iterrows()]
                 
-                edited = st.data_editor(pd.DataFrame(lignes), hide_index=True, use_container_width=True, key=f"editor_pointage_multi_{champ_id_actif}")
-                
-                if st.button("💾 Enregistrer le Pointage de la Parcelle", use_container_width=True, type="primary"):
+                edited = st.data_editor(pd.DataFrame(lignes), hide_index=True, use_container_width=True)
+                if st.form_submit_button("💾 Enregistrer le Pointage Global", use_container_width=True, type="primary"):
                     for _, r in edited.iterrows():
                         if r["Présent"]:
                             execute_query(
                                 "INSERT INTO pointage (date, employe_nom, groupe_nom, champ_nom, statut_presence, tache_effectuee, heures_travaillees, remarque) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                                 (str(date_p), r["Employé"], r["Groupe"], champ_selectionne, "Présent", r["Tâche"], float(r["Heures"]), str(r["Remarque"])),
-                                action_desc=f"Pointage de {r['Employé']} sur {champ_selectionne} ({r['Heures']}h)",
+                                action_desc=f"Pointage de {r['Employé']} sur {champ_selectionne}",
                                 user_info=tech
                             )
-                    st.success(f"✅ Pointage validé avec succès pour la parcelle **{champ_selectionne}** !")
+                    st.success("✅ Pointage enregistré avec succès !")
                     st.rerun()
 
 elif menu == "📅 Planning & Travaux":
@@ -631,13 +587,13 @@ elif menu == "📅 Planning & Travaux":
         st.dataframe(df_t[df_t['champ_id'] == champ_id_actif] if not df_t.empty else pd.DataFrame(), use_container_width=True)
 
 elif menu == "🌾 Récoltes & Rendements":
-    st.title(f"🌾 Récoltes — {champ_selectionne}")
+    st.title(f"🌾 Récoltes & Rendements — {champ_selectionne}")
     if champ_id_actif:
         with st.form("form_rec"):
             cult = st.text_input("Culture")
             qte = st.number_input("Quantité (Kg)", min_value=0.0)
             pu = st.number_input("Prix unitaire (FCFA)", min_value=0.0, value=300.0)
-            if st.form_submit_button("Enregistrer", use_container_width=True):
+            if st.form_submit_button("Enregistrer Récolte", use_container_width=True):
                 execute_query("INSERT INTO recoltes (champ_id, culture, date_recolte, quantite_kg, prix_unitaire) VALUES (?, ?, ?, ?, ?)", (champ_id_actif, cult, str(date.today()), qte, pu), action_desc=f"Récolte '{cult}' ({qte} Kg)", user_info=tech)
                 st.success("✅ Enregistré !")
                 st.rerun()
@@ -645,12 +601,12 @@ elif menu == "🌾 Récoltes & Rendements":
         st.dataframe(df_r[df_r['champ_id'] == champ_id_actif] if not df_r.empty else pd.DataFrame(), use_container_width=True)
 
 elif menu == "💰 Finances & Marges":
-    st.title(f"💰 Finances — {champ_selectionne}")
+    st.title(f"💰 Finances & Marges — {champ_selectionne} (Espace Gestionnaire)")
     if champ_id_actif:
         with st.form("form_fin"):
-            motif = st.text_input("Motif de la dépense")
+            motif = st.text_input("Motif de la dépense (ex: Achat Engrais)")
             mnt = st.number_input("Montant (FCFA)", min_value=0.0)
-            if st.form_submit_button("Enregistrer", use_container_width=True):
+            if st.form_submit_button("Enregistrer Dépense", use_container_width=True):
                 execute_query("INSERT INTO depenses (champ_id, type, montant, date, facture_nom) VALUES (?, ?, ?, ?, 'Aucune')", (champ_id_actif, motif, mnt, str(date.today())), action_desc=f"Dépense '{motif}' ({mnt} FCFA)", user_info=tech)
                 st.success("✅ Dépense enregistrée !")
                 st.rerun()
@@ -658,13 +614,13 @@ elif menu == "💰 Finances & Marges":
         st.dataframe(df_d[df_d['champ_id'] == champ_id_actif] if not df_d.empty else pd.DataFrame(), use_container_width=True)
 
 elif menu == "📦 Stocks d'Intrants":
-    st.title("📦 Stocks d'Intrants")
+    st.title("📦 Stocks d'Intrants (Espace Gestionnaire)")
     with st.form("form_int"):
         nom_i = st.text_input("Nom de l'intrant")
         cat_i = st.selectbox("Catégorie", ["Engrais", "Semence", "Pesticide", "Carburant"])
-        stk = st.number_input("Stock", min_value=0.0)
+        stk = st.number_input("Stock actuel", min_value=0.0)
         unite = st.text_input("Unité (Sacs, Litres, Kg)")
-        if st.form_submit_button("Ajouter", use_container_width=True):
+        if st.form_submit_button("Ajouter l'intrant", use_container_width=True):
             execute_query("INSERT INTO intrants (nom, categorie, stock_actuel, unite, seuil_alerte, facture_nom) VALUES (?, ?, ?, ?, 2.0, 'Aucune')", (nom_i, cat_i, stk, unite), action_desc=f"Ajout intrant '{nom_i}'", user_info=tech)
             st.success("✅ Ajouté !")
             st.rerun()
@@ -674,7 +630,7 @@ elif menu == "🌧️ Pluviométrie":
     st.title(f"🌧️ Pluviométrie — {champ_selectionne}")
     if champ_id_actif:
         with st.form("form_plu"):
-            mm = st.number_input("Hauteur (mm)", min_value=0.0)
+            mm = st.number_input("Hauteur de pluie (mm)", min_value=0.0)
             if st.form_submit_button("Enregistrer", use_container_width=True):
                 execute_query("INSERT INTO pluviometrie (champ_id, date, pluie_mm) VALUES (?, ?, ?)", (champ_id_actif, str(date.today()), mm), action_desc=f"Pluviométrie {mm} mm", user_info=tech)
                 st.success("✅ Enregistré !")
@@ -686,9 +642,9 @@ elif menu == "⚠️ Incidents":
     st.title(f"⚠️ Incidents — {champ_selectionne}")
     if champ_id_actif:
         with st.form("form_inc"):
-            desc = st.text_area("Description")
+            desc = st.text_area("Description de l'incident")
             grav = st.selectbox("Gravité", ["Faible", "Modéré", "Critique"])
-            if st.form_submit_button("Déclarer", use_container_width=True):
+            if st.form_submit_button("Déclarer l'incident", use_container_width=True):
                 execute_query("INSERT INTO incidents (champ_id, date, description, gravite, action) VALUES (?, ?, ?, ?, 'En attente')", (champ_id_actif, str(date.today()), desc, grav), action_desc=f"Incident ({grav})", user_info=tech)
                 st.success("✅ Déclaré !")
                 st.rerun()
@@ -696,7 +652,7 @@ elif menu == "⚠️ Incidents":
         st.dataframe(df_inc[df_inc['champ_id'] == champ_id_actif] if not df_inc.empty else pd.DataFrame(), use_container_width=True)
 
 elif menu == "🚜 Maintenance Matériel":
-    st.title("🚜 Maintenance Matériel")
+    st.title("🚜 Maintenance Matériel (Espace Gestionnaire)")
     with st.form("form_mat"):
         nom_eq = st.text_input("Nom de l'équipement")
         cat_eq = st.selectbox("Catégorie", ["Tracteur", "Motopompe", "Semoir", "Pulvérisateur"])
@@ -704,10 +660,9 @@ elif menu == "🚜 Maintenance Matériel":
         d_rev = st.date_input("Dernière révision", value=date.today())
         p_rev = st.date_input("Prochaine révision", value=date.today())
         if st.form_submit_button("Ajouter le Matériel", use_container_width=True):
-            if nom_eq.strip():
-                execute_query("INSERT INTO materiel (nom_equipement, categorie, statut_marche, date_derniere_revision, prochaine_revision) VALUES (?, ?, ?, ?, ?)", (nom_eq.strip(), cat_eq, stat_m, str(d_rev), str(p_rev)), action_desc=f"Ajout matériel '{nom_eq}'", user_info=tech)
-                st.success("✅ Matériel ajouté !")
-                st.rerun()
+            execute_query("INSERT INTO materiel (nom_equipement, categorie, statut_marche, date_derniere_revision, prochaine_revision) VALUES (?, ?, ?, ?, ?)", (nom_eq, cat_eq, stat_m, str(d_rev), str(p_rev)), action_desc=f"Ajout matériel '{nom_eq}'", user_info=tech)
+            st.success("✅ Ajouté !")
+            st.rerun()
     st.dataframe(load_table('materiel'), use_container_width=True)
 
 elif menu == "🏷️ Traçabilité & Lots":
@@ -716,56 +671,49 @@ elif menu == "🏷️ Traçabilité & Lots":
         with st.form("form_trac"):
             lot = st.text_input("Code du lot", placeholder="Ex: LOT-TOMATE-2026-01")
             cult_tr = st.text_input("Culture associée")
-            norme = st.text_input("Norme de certification", placeholder="Ex: GlobalGAP / Bio")
+            norme = st.text_input("Norme de certification (ex: GlobalGAP)")
             acheteur = st.text_input("Acheteur / Destination")
             if st.form_submit_button("Enregistrer le Lot", use_container_width=True):
                 if lot.strip():
-                    execute_query("INSERT INTO tracabilite (champ_id, lot_code, culture, date_recolte, norme_certification, acheteur) VALUES (?, ?, ?, ?, ?, ?)", (champ_id_actif, lot.strip(), cult_tr.strip(), str(date.today()), norme.strip(), acheteur.strip()), action_desc=f"Création lot traçabilité '{lot}'", user_info=tech)
-                    st.success("✅ Lot enregistré avec succès !")
+                    execute_query("INSERT INTO tracabilite (champ_id, lot_code, culture, date_recolte, norme_certification, acheteur) VALUES (?, ?, ?, ?, ?, ?)", (champ_id_actif, lot.strip(), cult_tr, str(date.today()), norme, acheteur), action_desc=f"Lot '{lot}'", user_info=tech)
+                    st.success("✅ Lot enregistré !")
                     st.rerun()
         df_trac = load_table('tracabilite')
         st.dataframe(df_trac[df_trac['champ_id'] == champ_id_actif] if not df_trac.empty else pd.DataFrame(), use_container_width=True)
-    else:
-        st.warning("⚠️ Veuillez sélectionner une parcelle active.")
 
 elif menu == "💧 Irrigation & Eau":
     st.title(f"💧 Irrigation & Eau — {champ_selectionne}")
     if champ_id_actif:
         with st.form("form_irrig"):
             vol_eau = st.number_input("Volume d'eau (m3)", min_value=0.0, value=50.0)
-            methode = st.selectbox("Méthode d'irrigation", ["Goutte-à-goutte", "Aspersion", "Gravitaire", "Pivots"])
+            methode = st.selectbox("Méthode d'irrigation", ["Goutte-à-goutte", "Aspersion", "Gravitaire"])
             duree = st.number_input("Durée (heures)", min_value=0.1, value=2.0)
-            if st.form_submit_button("Enregistrer l'Irrigation", use_container_width=True):
-                execute_query("INSERT INTO irrigation (champ_id, date, volume_eau_m3, methode, duree_heures) VALUES (?, ?, ?, ?, ?)", (champ_id_actif, str(date.today()), vol_eau, methode, duree), action_desc=f"Enregistrement irrigation {vol_eau}m3", user_info=tech)
-                st.success("✅ Irrigation enregistrée !")
+            if st.form_submit_button("Enregistrer", use_container_width=True):
+                execute_query("INSERT INTO irrigation (champ_id, date, volume_eau_m3, methode, duree_heures) VALUES (?, ?, ?, ?, ?)", (champ_id_actif, str(date.today()), vol_eau, methode, duree), action_desc=f"Irrigation {vol_eau}m3", user_info=tech)
+                st.success("✅ Enregistré !")
                 st.rerun()
         df_irrig = load_table('irrigation')
         st.dataframe(df_irrig[df_irrig['champ_id'] == champ_id_actif] if not df_irrig.empty else pd.DataFrame(), use_container_width=True)
-    else:
-        st.warning("⚠️ Veuillez sélectionner une parcelle active.")
 
 elif menu == "🌤️ Risques & Météo":
     st.title(f"🌤️ Risques & Météo — {champ_selectionne}")
     if champ_id_actif:
         with st.form("form_meteo"):
-            risque = st.selectbox("Type de risque climatique", ["Sécheresse", "Inondation / Fortes pluies", "Vents violents", "Attaque parasitaire / Mildiou"])
+            risque = st.selectbox("Type de risque", ["Sécheresse", "Inondation", "Vents violents", "Attaque parasitaire"])
             niveau = st.selectbox("Niveau d'alerte", ["Faible", "Modéré", "Élevé", "Critique"])
-            reco = st.text_area("Recommandations techniques", placeholder="Ex: Activer l'irrigation d'appoint / Traitement préventif...")
-            if st.form_submit_button("Enregistrer l'Alerte", use_container_width=True):
-                execute_query("INSERT INTO alertes_meteo (champ_id, date, type_risque, niveau_alerte, recommandation_ts) VALUES (?, ?, ?, ?, ?)", (champ_id_actif, str(date.today()), risque, niveau, reco), action_desc=f"Alerte météo '{risque}'", user_info=tech)
+            reco = st.text_area("Recommandations techniques")
+            if st.form_submit_button("Enregistrer Alerte", use_container_width=True):
+                execute_query("INSERT INTO alertes_meteo (champ_id, date, type_risque, niveau_alerte, recommandation_ts) VALUES (?, ?, ?, ?, ?)", (champ_id_actif, str(date.today()), risque, niveau, reco), action_desc=f"Alerte '{risque}'", user_info=tech)
                 st.success("✅ Alerte enregistrée !")
                 st.rerun()
         df_meteo = load_table('alertes_meteo')
         st.dataframe(df_meteo[df_meteo['champ_id'] == champ_id_actif] if not df_meteo.empty else pd.DataFrame(), use_container_width=True)
-    else:
-        st.warning("⚠️ Veuillez sélectionner une parcelle active.")
 
 elif menu == "📈 Rentabilité & ROI":
-    st.title(f"📈 Rentabilité & ROI — {champ_selectionne}")
+    st.title(f"📈 Rentabilité & ROI — {champ_selectionne} (Espace Gestionnaire)")
     if champ_id_actif:
         df_d = load_table('depenses')
         df_r = load_table('recoltes')
-        
         df_d_champ = df_d[df_d['champ_id'] == champ_id_actif] if not df_d.empty else pd.DataFrame()
         df_r_champ = df_r[df_r['champ_id'] == champ_id_actif] if not df_r.empty else pd.DataFrame()
         
@@ -774,86 +722,156 @@ elif menu == "📈 Rentabilité & ROI":
         marge = total_rec - total_dep
         
         col1, col2, col3 = st.columns(3)
-        col1.metric("Dépenses de la parcelle", f"{total_dep:,.0f} FCFA")
-        col2.metric("Ventes de la parcelle", f"{total_rec:,.0f} FCFA")
-        col3.metric("Marge Nette de la parcelle", f"{marge:,.0f} FCFA")
-        
-        st.divider()
-        st.subheader("📋 Détail des Dépenses de la Parcelle")
-        st.dataframe(df_d_champ, use_container_width=True)
-        
-        st.subheader("📋 Détail des Récoltes de la Parcelle")
-        st.dataframe(df_r_champ, use_container_width=True)
+        col1.metric("Dépenses", f"{total_dep:,.0f} FCFA")
+        col2.metric("Ventes", f"{total_rec:,.0f} FCFA")
+        col3.metric("Marge Nette", f"{marge:,.0f} FCFA")
     else:
-        st.warning("⚠️ Veuillez sélectionner une parcelle active.")
+        st.warning("Sélectionnez une parcelle active.")
 
-elif menu == "💬 Espace Collaboration & Meet":
-    st.title("💬 Espace Collaboration & Espace de Travail")
+elif menu == "💬 Espace Collaboration & Workspace":
+    st.title("💬 Espace Collaboration & Espace de Travail Multimédia")
     
-    st.link_button("🚀 Ouvrir une réunion Google Meet", "https://meet.google.com/new", use_container_width=True)
+    col_m1, col_m2 = st.columns([2, 1])
+    with col_m1:
+        st.link_button("🚀 Ouvrir une réunion Google Meet", "https://meet.google.com/new", use_container_width=True)
+    with col_m2:
+        st.markdown(f"**Profil Connecté :** <span class='badge-role'>{role_tech}</span>", unsafe_allow_html=True)
+        
     st.divider()
     
-    st.subheader("💬 Messagerie instantanée de l'exploitation")
-    st.markdown("Échangez des notes rapides, consignes ou remarques entre l'équipe technique et la direction.")
-
-    # Formulaire fonctionnel pour envoyer un message dans l'espace de travail
-    with st.form("form_workspace_chat", clear_on_submit=True):
-        texte_message = st.text_area("Rédiger un message ou une note :", placeholder="Ex: Besoins en engrais validés pour la parcelle...")
-        submit_msg = st.form_submit_button("Envoyer le message", use_container_width=True, type="primary")
+    st.subheader("📁 Partager un rapport, une photo, une vidéo ou un document")
+    with st.form("form_workspace_media", clear_on_submit=True):
+        col_c1, col_c2, col_c3 = st.columns(3)
+        with col_c1:
+            destinataire = st.selectbox("Destinataire visé :", ["Tous", "Techniciens", "Gestionnaires", "Propriétaires"])
+        with col_c2:
+            priorite = st.selectbox("Priorité :", ["Normal", "Important ⚠️", "Urgent 🚨"])
+        with col_c3:
+            type_contenu = st.selectbox("Type de contenu :", ["Note textuelle", "Rapport PDF", "Photo 📷", "Vidéo 🎥", "Document 📄"])
+            
+        champ_concerne = st.selectbox("Parcelle liée (Optionnel) :", ["Aucune"] + (list(db_champs['nom'].values) if not db_champs.empty else []))
+        texte_message = st.text_area("Légende / Message descriptif :", placeholder="Ex: Rapport d'inspection et photos de l'état de la culture...")
+        
+        uploaded_file = st.file_uploader("Joindre un fichier (Photos, Vidéos, Docs, Rapports)", type=["png", "jpg", "jpeg", "mp4", "pdf", "docx", "xlsx"])
+        
+        submit_msg = st.form_submit_button("📤 Publier dans l'Espace de Travail", use_container_width=True, type="primary")
         
         if submit_msg:
-            if texte_message.strip():
+            fichier_path = ""
+            nom_fichier = ""
+            if uploaded_file is not None:
+                nom_fichier = uploaded_file.name
+                fichier_path = os.path.join(UPLOAD_DIR, nom_fichier)
+                with open(fichier_path, "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+            
+            if texte_message.strip() or uploaded_file is not None:
                 auteur_complet = f"{tech.get('prenom', '')} {tech.get('nom', '')}".strip()
-                role_utilisateur = tech.get('role', 'Technicien')
                 date_heure_actuelle = datetime.now().strftime("%d/%m/%Y à %H:%M")
                 
                 execute_query(
-                    "INSERT INTO messages_workspace (auteur, role, texte, date_heure) VALUES (?, ?, ?, ?)",
-                    (auteur_complet, role_utilisateur, texte_message.strip(), date_heure_actuelle),
-                    action_desc=f"Message posté dans l'espace de travail par {auteur_complet}",
+                    "INSERT INTO messages_workspace (auteur, role, destinataire, priorite, texte, date_heure, type_contenu, fichier_path, nom_fichier, champ_concerne) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (auteur_complet, role_tech, destinataire, priorite, texte_message.strip(), date_heure_actuelle, type_contenu, fichier_path, nom_fichier, champ_concerne),
+                    action_desc=f"Publication workspace ({type_contenu}) pour {destinataire}",
                     user_info=tech
                 )
-                st.success("✅ Message publié avec succès !")
+                st.success("✅ Publication enregistrée et partagée avec succès !")
                 st.rerun()
             else:
-                st.warning("⚠️ Le message ne peut pas être vide.")
+                st.warning("⚠️ Veuillez saisir un message ou joindre un fichier.")
 
     st.divider()
-    st.subheader("📜 Historique des messages de l'équipe")
+    st.subheader("📜 Fil d'actualité, Médias, Rapports & Consignes de l'Exploitation")
     df_messages = load_table('messages_workspace')
     if not df_messages.empty:
-        # Affichage du plus récent au plus ancien ou inversement
         for _, msg in df_messages.iloc[::-1].iterrows():
             st.markdown(f"""
-                <div style="background: white; padding: 12px 15px; border-radius: 8px; border-left: 4px solid #10b981; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
-                    <small style="color: #6b7280;"><b>{msg['auteur']}</b> ({msg['role']}) — <i>{msg['date_heure']}</i></small>
-                    <p style="margin: 5px 0 0 0; color: #1f2937; font-size: 14px;">{msg['texte']}</p>
+                <div style="background: white; padding: 15px; border-radius: 10px; border-left: 4px solid #10b981; margin-bottom: 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
+                    <div style="display: flex; justify-content: space-between;">
+                        <small style="color: #6b7280;"><b>{msg['auteur']}</b> ({msg['role']}) ➔ Cible : <b>{msg['destinataire']}</b> {f"| 📍 <i>{msg['champ_concerne']}</i>" if msg['champ_concerne'] != 'Aucune' else ''}</small>
+                        <small style="color: #ef4444; font-weight: bold;">{msg['priorite']}</small>
+                    </div>
+                    <p style="margin: 10px 0; color: #1f2937; font-size: 14px;">{msg['texte']}</p>
+            """, unsafe_allow_html=True)
+            
+            # Affichage dynamique des fichiers multimédias attachés
+            f_path = msg['get']('file_path') if hasattr(msg, 'get') else msg.get('fichier_path', '')
+            f_name = msg.get('nom_fichier', '')
+            f_type = msg.get('type_contenu', '')
+            
+            if f_path and os.path.exists(f_path):
+                if f_type == "Photo 📷" or f_name.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    st.image(f_path, caption=f_name, width=400)
+                elif f_type == "Vidéo 🎥" or f_name.lower().endswith(('.mp4', '.mov')):
+                    st.video(f_path)
+                else:
+                    with open(f_path, "rb") as file_download:
+                        st.download_button(
+                            label=f"📥 Télécharger le fichier joint : {f_name}",
+                            data=file_download,
+                            file_name=f_name,
+                            key=f"dl_ws_{msg['id']}"
+                        )
+            
+            st.markdown(f"""
+                    <div style="text-align: right; margin-top: 5px;"><small style="color: #9ca3af; font-size: 11px;">{msg['date_heure']}</small></div>
                 </div>
             """, unsafe_allow_html=True)
     else:
-        st.info("Aucun message dans l'espace de travail pour le moment. Soyez le premier à écrire !")
+        st.info("Aucun contenu dans l'espace de travail.")
 
 elif menu == "📜 Historique":
-    st.title("📜 Historique des Modifications")
+    st.title("📜 Historique des Modifications (Espace Administration)")
     df_h = load_table('historique_modifications')
     st.dataframe(df_h.iloc[::-1] if not df_h.empty else df_h, use_container_width=True)
 
 elif menu == "🔐 Paramètres & Liste Blanche":
-    st.title("🔐 Paramètres & Liste Blanche")
+    st.title("🔐 Paramètres & Liste Blanche (Espace Administration)")
+    with st.form("form_add_user"):
+        st.subheader("Ajouter un nouvel utilisateur / rôle")
+        mail_new = st.text_input("E-mail professionnel")
+        pwd_new = st.text_input("Mot de passe", type="password")
+        prenom_new = st.text_input("Prénom")
+        nom_new = st.text_input("Nom")
+        role_new = st.selectbox("Rôle attribué", ["Administration", "Gestionnaire", "Technicien"])
+        if st.form_submit_button("Enregistrer l'utilisateur", use_container_width=True):
+            if mail_new.strip():
+                execute_query("INSERT INTO whitelist_users (email, password, prenom, nom, role, modules_autorises) VALUES (?, ?, ?, ?, ?, 'TOUS')", (mail_new.strip().lower(), pwd_new, prenom_new, nom_new, role_new), action_desc=f"Ajout utilisateur {mail_new}", user_info=tech)
+                st.success("✅ Utilisateur ajouté avec succès !")
+                st.rerun()
     st.dataframe(load_table('whitelist_users'), use_container_width=True)
 
 elif menu == "📑 EXPORT RAPPORT PARCELLE":
-    st.title("📑 Export Rapport A4")
-    date_exp = st.date_input("Date officielle", value=date.today())
+    st.title(f"📑 Export Rapport A4 — {champ_selectionne} (Espace Technicien)")
+    date_exp = st.date_input("Date officielle du rapport", value=date.today())
     if champ_selectionne and champ_selectionne != "Aucune parcelle":
         pdf_bytes = export_parcelle_pdf(champ_selectionne, date_exp)
-        st.download_button(
-            label=f"📥 Télécharger le Rapport A4 de '{champ_selectionne}'",
-            data=pdf_bytes,
-            file_name=f"rapport_{champ_selectionne}.pdf",
-            mime="application/pdf",
-            use_container_width=True,
-            type="primary"
-        )
+        col_dl1, col_dl2 = st.columns(2)
+        with col_dl1:
+            st.download_button(
+                label=f"📥 Télécharger le Rapport A4 de '{champ_selectionne}'",
+                data=pdf_bytes,
+                file_name=f"rapport_parcelle_{champ_selectionne}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                type="primary"
+            )
+        with col_dl2:
+            if st.button("📤 Envoyer & Archiver ce Rapport dans l'Espace de Travail", use_container_width=True):
+                nom_fic_pdf = f"Rapport_{champ_selectionne}_{date.today().strftime('%Y%m%d')}.pdf"
+                f_path = os.path.join(UPLOAD_DIR, nom_fic_pdf)
+                with open(f_path, "wb") as f:
+                    f.write(pdf_bytes)
+                
+                auteur_complet = f"{tech.get('prenom', '')} {tech.get('nom', '')}".strip()
+                date_heure_actuelle = datetime.now().strftime("%d/%m/%Y à %H:%M")
+                
+                execute_query(
+                    "INSERT INTO messages_workspace (auteur, role, destinataire, priorite, texte, date_heure, type_contenu, fichier_path, nom_fichier, champ_concerne) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (auteur_complet, role_tech, "Tous", "Important ⚠️", f"Rapport technique officiel généré pour la parcelle {champ_selectionne}.", date_heure_actuelle, "Rapport PDF", f_path, nom_fic_pdf, champ_selectionne),
+                    action_desc=f"Archivage rapport PDF {champ_selectionne} dans workspace",
+                    user_info=tech
+                )
+                st.success("✅ Rapport envoyé et archivé avec succès dans l'Espace Collaboration & Workspace !")
     else:
-        st.warning("Sélectionnez une parcelle valide.")
+        st.warning("⚠️ Veuillez sélectionner une parcelle active valide pour générer le rapport.")
