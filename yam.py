@@ -102,7 +102,6 @@ def init_db():
                         piece_jointe_data BLOB
                     )''')
     
-    # Vérification et mise à jour des colonnes si besoin
     cursor.execute("PRAGMA table_info(whitelist_users)")
     cols_wl = [col[1] for col in cursor.fetchall()]
     if "modules_autorises" not in cols_wl:
@@ -115,7 +114,6 @@ def init_db():
             ("issayoume2012@gmail.com", "issayoume2026", "Issa", "Youme", "Propriétaire", "TOUS")
         )
     else:
-        # S'assurer que le compte admin a tous les droits
         cursor.execute("UPDATE whitelist_users SET modules_autorises = 'TOUS' WHERE email = 'issayoume2012@gmail.com'")
 
     conn.commit()
@@ -243,7 +241,7 @@ def export_parcelle_pdf(champ_nom, date_rapport):
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#10b981')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTNAME', (0, 0), (-1, 0), Helvetica-Bold if 'Helvetica-Bold' in globals() else 'Helvetica-Bold'),
                 ('FONTSIZE', (0, 0), (-1, -1), 6),
                 ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
             ]))
@@ -260,7 +258,7 @@ def export_parcelle_pdf(champ_nom, date_rapport):
     return buffer.getvalue()
 
 # ==========================================
-# 5. NAVIGATION & RÔLES / FILTRAGE DES MODULES
+# 5. NAVIGATION & RÔLES / FILTRAGE STRICT DES MODULES
 # ==========================================
 tech = st.session_state.get('registered_tech', {})
 prenom_tech = tech.get('prenom', 'Utilisateur')
@@ -296,15 +294,14 @@ tous_les_menus = [
     "📑 EXPORT RAPPORT PARCELLE"
 ]
 
-# Filtrage dynamique des menus selon les autorisations de l'utilisateur
+# Filtrage strict et exact des menus selon les autorisations
 if modules_autorises_user == "TOUS" or email_connecte == "issayoume2012@gmail.com":
     menu_options = tous_les_menus
 else:
-    # Liste de base toujours accessible
     menu_options = ["📊 Tableau de Bord", "💬 Espace Collaboration & Réunions Meet", "📑 EXPORT RAPPORT PARCELLE"]
     liste_mod_autorises = [m.strip() for m in modules_autorises_user.split(",") if m.strip()]
     for m in tous_les_menus:
-        if any(mod in m for mod in liste_mod_autorises) and m not in menu_options:
+        if any(mod == m for mod in liste_mod_autorises) and m not in menu_options:
             menu_options.insert(1, m)
 
 menu = st.selectbox("📌 Menu Principal de Navigation", menu_options)
@@ -778,38 +775,48 @@ elif menu == "📈 Rentabilité & ROI":
 
 elif menu == "💬 Espace Collaboration & Réunions Meet":
     st.title("💬 Espace Collaboration & Affectation des Rôles par Parcelle")
-    st.info("Attribuez les rôles précis (Propriétaire, Gestionnaire Administratif, Technicien) pour chaque parcelle.")
+    
+    # -------------------------------------------------------------
+    # SÉCURITÉ DYNAMIQUE : Propriétaire OU Rôle Administrateur / Superviseur
+    # -------------------------------------------------------------
+    est_proprietaire_principal = (email_connecte == "issayoume2012@gmail.com")
+    est_admin_superviseur = ("administrateur" in role_tech.lower() or "superviseur" in role_tech.lower() or "propriétaire" in role_tech.lower())
+    
+    est_habilite_attribution = est_proprietaire_principal or est_admin_superviseur
 
-    with st.expander("🤝 Attribuer un Rôle et une Parcelle (Propriétaires, Gestionnaires, Techniciens)", expanded=True):
-        df_wl_all = load_table('whitelist_users')
-        df_ch_all = load_table('champs')
-        
-        if not df_ch_all.empty and not df_wl_all.empty:
-            with st.form("form_partage_champ_role"):
-                c_p1 = st.selectbox("Sélectionner la Parcelle", df_ch_all['nom'].tolist())
-                c_p2 = st.selectbox("Utilisateur / Collaborateur", df_wl_all['email'].tolist())
-                c_p3 = st.selectbox("Rôle / Droits sur cette parcelle", [
-                    "Propriétaire (Superviseur total)", 
-                    "Gestionnaire Administratif & Financier", 
-                    "Technicien de Terrain & Pointage",
-                    "Consultant / Observateur"
-                ])
-                if st.form_submit_button("🔗 Affecter ce Rôle à la Parcelle", use_container_width=True):
-                    execute_query("INSERT INTO partage_champs (champ_nom, technicien_email, droit) VALUES (?, ?, ?)", (c_p1, c_p2, c_p3))
-                    st.success(f"✅ Le rôle **{c_p3}** a été affecté à **{c_p2}** sur la parcelle **{c_p1}** !")
-                    st.rerun()
+    if est_habilite_attribution:
+        with st.expander("🤝 Attribuer un Rôle et une Parcelle (Zone Administrateur)", expanded=True):
+            df_wl_all = load_table('whitelist_users')
+            df_ch_all = load_table('champs')
             
-            st.subheader("📋 Récapitulatif des Rôles par Parcelle")
-            df_parts = load_table('partage_champs')
-            if not df_parts.empty:
-                for _, prt in df_parts.iterrows():
-                    col_pr1, col_pr2 = st.columns([4, 1])
-                    with col_pr1:
-                        st.markdown(f"📍 Parcelle : **{prt['champ_nom']}** ➡️ Utilisateur : `{prt['technicien_email']}` | Rôle : *{prt['droit']}*")
-                    with col_pr2:
-                        if st.button("🗑️ Retirer", key=f"del_part_{prt['id']}"):
-                            execute_query("DELETE FROM partage_champs WHERE id = ?", (prt['id'],))
-                            st.rerun()
+            if not df_ch_all.empty and not df_wl_all.empty:
+                with st.form("form_partage_champ_role"):
+                    c_p1 = st.selectbox("Sélectionner la Parcelle", df_ch_all['nom'].tolist())
+                    c_p2 = st.selectbox("Utilisateur / Collaborateur", df_wl_all['email'].tolist())
+                    c_p3 = st.selectbox("Rôle / Droits sur cette parcelle", [
+                        "Propriétaire (Superviseur total)", 
+                        "Gestionnaire Administratif & Financier", 
+                        "Technicien de Terrain & Pointage",
+                        "Consultant / Observateur"
+                    ])
+                    if st.form_submit_button("🔗 Affecter ce Rôle à la Parcelle", use_container_width=True):
+                        execute_query("INSERT INTO partage_champs (champ_nom, technicien_email, droit) VALUES (?, ?, ?)", (c_p1, c_p2, c_p3))
+                        st.success(f"✅ Le rôle **{c_p3}** a été affecté à **{c_p2}** sur la parcelle **{c_p1}** !")
+                        st.rerun()
+                
+                st.subheader("📋 Récapitulatif des Rôles par Parcelle")
+                df_parts = load_table('partage_champs')
+                if not df_parts.empty:
+                    for _, prt in df_parts.iterrows():
+                        col_pr1, col_pr2 = st.columns([4, 1])
+                        with col_pr1:
+                            st.markdown(f"📍 Parcelle : **{prt['champ_nom']}** ➡️ Utilisateur : `{prt['technicien_email']}` | Rôle : *{prt['droit']}*")
+                        with col_pr2:
+                            if st.button("🗑️ Retirer", key=f"del_part_{prt['id']}"):
+                                execute_query("DELETE FROM partage_champs WHERE id = ?", (prt['id'],))
+                                st.rerun()
+    else:
+        st.info("🔒 L'outil d'attribution des rôles et parcelles est restreint au propriétaire et aux administrateurs.")
 
     st.divider()
 
@@ -908,7 +915,8 @@ elif menu == "🔐 Paramètres & Liste Blanche":
                 new_password = st.text_input("Mot de passe *", type="password")
                 new_prenom = st.text_input("Prénom")
                 new_nom = st.text_input("Nom")
-                new_role = st.selectbox("Rôle Global", ["Propriétaire", "Gestionnaire Administratif", "Technicien de Terrain", "Consultant"])
+                # Désormais, vous pouvez choisir directement le rôle de confiance ici
+                new_role = st.selectbox("Rôle Global", ["Propriétaire", "Administrateur / Superviseur", "Gestionnaire Administratif", "Technicien de Terrain", "Consultant"])
                 
                 st.markdown("---")
                 st.markdown("🎯 **Gestion fine des accès (Module par Module ou Global)**")
@@ -929,14 +937,14 @@ elif menu == "🔐 Paramètres & Liste Blanche":
                             str_modules = "TOUS"
                         else:
                             liste_mods_selectionnes = []
-                            if mod_pointage: liste_mods_selectionnes.append("Pointage des Horaires")
-                            if mod_finances: liste_mods_selectionnes.append("Finances & Marges")
-                            if mod_recoltes: liste_mods_selectionnes.append("Récoltes & Rendements")
-                            if mod_taches: liste_mods_selectionnes.append("Planning & Travaux")
-                            if mod_pluie: liste_mods_selectionnes.append("Pluviométrie")
-                            if mod_irrigation: liste_mods_selectionnes.append("Irrigation & Eau")
-                            if mod_stocks: liste_mods_selectionnes.append("Stocks d'Intrants")
-                            if mod_incidents: liste_mods_selectionnes.append("Incidents")
+                            if mod_pointage: liste_mods_selectionnes.append("⏰ Pointage des Horaires")
+                            if mod_finances: liste_mods_selectionnes.append("💰 Finances & Marges")
+                            if mod_recoltes: liste_mods_selectionnes.append("🌾 Récoltes & Rendements")
+                            if mod_taches: liste_mods_selectionnes.append("📅 Planning & Travaux")
+                            if mod_pluie: liste_mods_selectionnes.append("🌧️ Pluviométrie")
+                            if mod_irrigation: liste_mods_selectionnes.append("💧 Irrigation & Eau")
+                            if mod_stocks: liste_mods_selectionnes.append("📦 Stocks d'Intrants")
+                            if mod_incidents: liste_mods_selectionnes.append("⚠️ Incidents")
                             str_modules = ",".join(liste_mods_selectionnes)
 
                         try:
