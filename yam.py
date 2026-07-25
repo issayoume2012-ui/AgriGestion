@@ -460,7 +460,7 @@ if menu == "📊 Tableau de Bord":
 
 
 elif menu == "🌱 Cartographie & Parcelles":
-    st.title("🌱 Cartographie & Éditeur de Parcelles (Style ArcGIS Pro)")
+    st.title("🌱 Cartographie & Éditeur de Parcelles (YAM Gestion)")
     
     # Initialisation des états
     if 'lat_active' not in st.session_state:
