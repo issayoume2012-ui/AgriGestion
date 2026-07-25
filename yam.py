@@ -677,6 +677,7 @@ elif menu == "🌱 Cartographie & Parcelles":
     else:
         st.info("Aucune parcelle enregistrée.")
     st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 elif menu == "👥 Groupes & Membres":
     st.title("👥 Gestion des Groupes & Membres (Espace Gestionnaire)")
