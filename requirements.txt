@@ -5,3 +5,7 @@ streamlit-folium>=0.15.0
 reportlab>=4.0.0
 streamlit-js-eval
 geopy
+streamlit
+streamlit-folium
+folium
+geopy
