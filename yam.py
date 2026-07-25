@@ -459,12 +459,14 @@ if menu == "📊 Tableau de Bord":
 import math
 from streamlit_js_eval import get_geolocation
 
+import math
+
 elif menu == "🌱 Cartographie & Parcelles":
     st.title("🌱 Cartographie & Parcelles (Espace Technicien)")
     
     # Initialisation des états dynamiques
     if 'lat_active' not in st.session_state:
-        st.session_state['lat_active'] = 14.6937  # Valeur temporaire avant détection GPS
+        st.session_state['lat_active'] = 14.6937
     if 'lon_active' not in st.session_state:
         st.session_state['lon_active'] = -17.4441
     if 'polygon_coords' not in st.session_state:
@@ -473,11 +475,10 @@ elif menu == "🌱 Cartographie & Parcelles":
     st.markdown("<div class='card-container'>", unsafe_allow_html=True)
     st.subheader("🗺️ 1. Géolocalisation & Carte Google Interactive")
     
-    # --- BARRE D'OUTILS ET RECHERCHE SYNC ---
+    # Outils de recherche et de géolocalisation
     col_tools1, col_tools2, col_tools3 = st.columns([2, 2, 1])
     
     with col_tools1:
-        # Recherche style Google Maps (Geocoding)
         search_query = st.text_input("🔍 Rechercher une zone / village / ville :", placeholder="Ex: Touba, Bambey, Niakhar...")
         if search_query:
             try:
@@ -491,21 +492,25 @@ elif menu == "🌱 Cartographie & Parcelles":
                     st.success(f"📍 Positionné sur : {location.address}")
                 else:
                     st.warning("Zone non trouvée. Essayez un nom plus précis.")
-            except Exception as e:
+            except Exception:
                 st.info("Saisissez un nom de lieu valide.")
 
     with col_tools2:
         st.write("🛰️ **Position Terrain :**")
         if st.button("📍 Ma Position GPS Actuelle (Temps Réel)", use_container_width=True, type="secondary"):
-            loc = get_geolocation()
-            if loc and 'coords' in loc:
-                st.session_state['lat_active'] = loc['coords']['latitude']
-                st.session_state['lon_active'] = loc['coords']['longitude']
-                st.session_state['polygon_coords'] = []
-                st.success("✅ Position GPS actualisée avec succès !")
-                st.rerun()
-            else:
-                st.info("👉 Récupération du signal GPS... Autorisez la géolocalisation sur votre appareil.")
+            try:
+                from streamlit_js_eval import get_geolocation
+                loc = get_geolocation()
+                if loc and 'coords' in loc:
+                    st.session_state['lat_active'] = loc['coords']['latitude']
+                    st.session_state['lon_active'] = loc['coords']['longitude']
+                    st.session_state['polygon_coords'] = []
+                    st.success("✅ Position GPS actualisée avec succès !")
+                    st.rerun()
+                else:
+                    st.info("👉 Récupération du signal GPS... Autorisez la géolocalisation sur votre appareil.")
+            except Exception as e:
+                st.warning("Module de géolocalisation en cours d'initialisation.")
 
     with col_tools3:
         st.write(" ")
@@ -518,14 +523,14 @@ elif menu == "🌱 Cartographie & Parcelles":
 
     df_c = load_table('champs')
     
-    # 1. Création de la carte synchronisée
+    # 1. Carte interactive Folium
     m = folium.Map(
         location=[float(st.session_state['lat_active']), float(st.session_state['lon_active'])], 
         zoom_start=15,
         tiles=None
     )
 
-    # 2. Couches Google Maps
+    # 2. Couches de fonds de carte Google Maps
     folium.TileLayer(
         tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
         attr="Google",
@@ -550,14 +555,14 @@ elif menu == "🌱 Cartographie & Parcelles":
         control=True
     ).add_to(m)
 
-    # 3. Marqueur de position GPS actuelle du technicien si disponible
+    # 3. Position actuelle
     folium.Marker(
         location=[st.session_state['lat_active'], st.session_state['lon_active']],
-        popup="Votre Position Actuelle",
+        popup="Position Actuelle",
         icon=folium.Icon(color="blue", icon="user")
     ).add_to(m)
 
-    # 4. Affichage des parcelles enregistrées en base de données
+    # 4. Parcelles enregistrées
     for _, r in df_c.iterrows():
         folium.Marker(
             location=[r['latitude'], r['longitude']],
@@ -593,7 +598,7 @@ elif menu == "🌱 Cartographie & Parcelles":
 
     folium.LayerControl(position="topright", collapsed=False).add_to(m)
     
-    # Affichage de la carte interactive (Hauteur compacte 350px)
+    # Carte Streamlit
     map_data = st_folium(
         m, 
         width="100%", 
@@ -602,7 +607,7 @@ elif menu == "🌱 Cartographie & Parcelles":
         returned_objects=["last_clicked"]
     )
     
-    # Synchronisation instantanée du clic sur la carte
+    # Capture des clics pour tracer la parcelle
     if map_data and map_data.get("last_clicked"):
         click_lat = round(map_data["last_clicked"]["lat"], 6)
         click_lon = round(map_data["last_clicked"]["lng"], 6)
@@ -613,7 +618,7 @@ elif menu == "🌱 Cartographie & Parcelles":
             st.session_state['lon_active'] = click_lon
             st.rerun()
 
-    # Calcul automatique de la superficie et du centre géométrique
+    # Calcul de la superficie et du centre géométrique
     calc_surf_ha = 0.0
     center_lat_val = float(st.session_state['lat_active'])
     center_lon_val = float(st.session_state['lon_active'])
@@ -644,7 +649,7 @@ elif menu == "🌱 Cartographie & Parcelles":
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # 2. Formulaire d'enregistrement synchronisé
+    # 2. Formulaire d'enregistrement
     st.markdown("<div class='card-container'>", unsafe_allow_html=True)
     st.subheader("➕ 2. Enregistrement & Fiche A4")
     
@@ -682,7 +687,7 @@ elif menu == "🌱 Cartographie & Parcelles":
             else:
                 st.warning("⚠️ Indiquez un nom de parcelle.")
     
-    # Bouton PDF
+    # Téléchargement PDF
     if 'last_created_pdf' in st.session_state:
         st.markdown("---")
         st.download_button(
