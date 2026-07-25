@@ -463,19 +463,21 @@ elif menu == "🌱 Cartographie & Parcelles":
         st.session_state['lat_active'] = 14.6937
     if 'lon_active' not in st.session_state:
         st.session_state['lon_active'] = -17.4441
+    if 'calculated_surface_ha' not in st.session_state:
+        st.session_state['calculated_surface_ha'] = 2.5
 
     st.markdown("<div class='card-container'>", unsafe_allow_html=True)
-    st.subheader("🗺️ 1. Carte Interactive — Cliquez pour capturer les coordonnées GPS")
+    st.subheader("🗺️ 1. Carte Interactive — Dessinez votre parcelle ou cliquez pour capturer le point")
     df_c = load_table('champs')
     
-    # Initialisation de la carte Folium
+    # 1. Création de la carte Folium sans fond par défaut
     m = folium.Map(
         location=[float(st.session_state['lat_active']), float(st.session_state['lon_active'])], 
         zoom_start=13,
-        tiles=None  # Désactivation des tuiles par défaut
+        tiles=None
     )
 
-    # 🟢 1. Google Maps Hybride (Satellite + Noms des routes/villes)
+    # 2. Fonds de carte Google Maps
     folium.TileLayer(
         tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
         attr="Google",
@@ -484,7 +486,6 @@ elif menu == "🌱 Cartographie & Parcelles":
         control=True
     ).add_to(m)
 
-    # 🏔️ 2. Google Maps Relief / Topographie (Pentes & Courbes)
     folium.TileLayer(
         tiles="https://mt1.google.com/vt/lyrs=p&x={x}&y={y}&z={z}",
         attr="Google",
@@ -493,7 +494,6 @@ elif menu == "🌱 Cartographie & Parcelles":
         control=True
     ).add_to(m)
 
-    # 🗺️ 3. Google Maps Standard (Plan de ville)
     folium.TileLayer(
         tiles="https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}",
         attr="Google",
@@ -502,16 +502,24 @@ elif menu == "🌱 Cartographie & Parcelles":
         control=True
     ).add_to(m)
 
-    # 📡 4. Google Maps Satellite Pur (Sans les noms de rues)
-    folium.TileLayer(
-        tiles="https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
-        attr="Google",
-        name="📷 Google Satellite Pur",
-        overlay=False,
-        control=True
-    ).add_to(m)
+    # 3. Outil de dessin sur la carte (Dessiner la parcelle)
+    from folium.plugins import Draw
+    draw = Draw(
+        export=True,
+        filename='parcelle_contour.geojson',
+        position='topleft',
+        draw_options={
+            'polyline': False,
+            'rectangle': True,
+            'polygon': True,
+            'circle': False,
+            'marker': True,
+            'circlemarker': False
+        }
+    )
+    draw.add_to(m)
 
-    # Ajout des marqueurs de parcelles
+    # 4. Marqueurs des parcelles existantes
     for _, r in df_c.iterrows():
         folium.Marker(
             location=[r['latitude'], r['longitude']],
@@ -519,25 +527,75 @@ elif menu == "🌱 Cartographie & Parcelles":
             icon=folium.Icon(color="green", icon="leaf")
         ).add_to(m)
 
-    # Contrôle des calques (Sélecteur en haut à droite)
     folium.LayerControl(position="topright", collapsed=False).add_to(m)
     
-    # Affichage Streamlit
-    map_data = st_folium(m, width="100%", height=500, key="map_interactive_fluid_top", returned_objects=["last_clicked"])
-    if map_data and map_data.get("last_clicked"):
-        st.session_state['lat_active'] = round(map_data["last_clicked"]["lat"], 6)
-        st.session_state['lon_active'] = round(map_data["last_clicked"]["lng"], 6)
-        st.success(f"📍 Coordonnées GPS capturées : {st.session_state['lat_active']}, {st.session_state['lon_active']}")
+    # Render de la carte Streamlit
+    map_data = st_folium(
+        m, 
+        width="100%", 
+        height=500, 
+        key="map_interactive_draw", 
+        returned_objects=["last_clicked", "last_active_drawing"]
+    )
+    
+    # Traitement du dessin (calcul de superficie et centre GPS)
+    if map_data:
+        if map_data.get("last_active_drawing"):
+            geometry = map_data["last_active_drawing"].get("geometry", {})
+            coords = geometry.get("coordinates", [])
+            
+            # Si c'est un polygone
+            if geometry.get("type") == "Polygon" and coords:
+                poly_pts = coords[0]
+                lats = [p[1] for p in poly_pts]
+                lons = [p[0] for p in poly_pts]
+                
+                # Calcul du centre de la parcelle
+                center_lat = round(sum(lats) / len(lats), 6)
+                center_lon = round(sum(lons) / len(lons), 6)
+                st.session_state['lat_active'] = center_lat
+                st.session_state['lon_active'] = center_lon
+
+                # Formule de calcul approximatif de surface géodésique
+                lat_avg = np.radians(center_lat)
+                meters_per_deg_lat = 111139.0
+                meters_per_deg_lon = 111139.0 * np.cos(lat_avg)
+                
+                xy = [(p[0] * meters_per_deg_lon, p[1] * meters_per_deg_lat) for p in poly_pts]
+                area = 0.0
+                n = len(xy)
+                for i in range(n):
+                    j = (i + 1) % n
+                    area += xy[i][0] * xy[j][1]
+                    area -= xy[j][0] * xy[i][1]
+                area_m2 = abs(area) / 2.0
+                area_ha = round(area_m2 / 10000.0, 2)
+                
+                if area_ha > 0:
+                    st.session_state['calculated_surface_ha'] = area_ha
+                st.success(f"✍️ **Tracé capturé :** Centre GPS ({center_lat}, {center_lon}) | Superficie estimée : **{st.session_state['calculated_surface_ha']} Ha**")
+
+        elif map_data.get("last_clicked"):
+            st.session_state['lat_active'] = round(map_data["last_clicked"]["lat"], 6)
+            st.session_state['lon_active'] = round(map_data["last_clicked"]["lng"], 6)
+            st.info(f"📍 **Point GPS sélectionné :** {st.session_state['lat_active']}, {st.session_state['lon_active']}")
+
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # 2. Formulaire d'enregistrement de parcelle
+    # 2. Formulaire d'enregistrement et Impression PDF A4
     st.markdown("<div class='card-container'>", unsafe_allow_html=True)
-    st.subheader("➕ 2. Enregistrement d'une Nouvelle Parcelle & Fiche A4")
+    st.subheader("➕ 2. Enregistrement d'une Nouvelle Parcelle & Fiche A4 Officielle")
+    
     with st.form("form_champ_fluide_top"):
         col_f_1, col_f_2 = st.columns(2)
         with col_f_1:
             nom_p = st.text_input("Nom de la parcelle *", placeholder="Ex: Champ Sud 02")
-            surf_p = st.number_input("Superficie (Ha)", min_value=0.1, value=2.5, step=0.1)
+            surf_p = st.number_input(
+                "Superficie (Ha)", 
+                min_value=0.01, 
+                value=float(st.session_state['calculated_surface_ha']), 
+                step=0.1
+            )
             cult_p = st.text_input("Culture principale", placeholder="Ex: Tomate, Riz...")
             stat_p = st.selectbox("Statut initial", ["En préparation", "Semé", "En croissance", "Prêt à récolter"])
         with col_f_2:
@@ -545,7 +603,7 @@ elif menu == "🌱 Cartographie & Parcelles":
             lon_p = st.number_input("Longitude GPS", value=float(st.session_state['lon_active']), format="%.6f")
             pin_p = st.text_input("Code PIN de sécurité (optionnel)", type="password")
         
-        submit_parcelle = st.form_submit_button("💾 Enregistrer la Parcelle & Générer le PDF A4", use_container_width=True, type="primary")
+        submit_parcelle = st.form_submit_button("💾 Enregistrer la Parcelle & Générer la Fiche A4", use_container_width=True, type="primary")
         if submit_parcelle:
             if nom_p.strip():
                 execute_query(
@@ -555,13 +613,45 @@ elif menu == "🌱 Cartographie & Parcelles":
                     user_info=tech
                 )
                 st.success(f"✅ Parcelle **{nom_p.strip()}** enregistrée avec succès !")
-                st.session_state['last_created_pdf'] = export_fiche_parcelle_a4(nom_p.strip(), surf_p, cult_p, lat_p, lon_p, stat_p)
-                st.session_state['last_created_name'] = nom_p.strip()
+                
+                # Génération de la fiche A4 via la fonction ReportLab
+                try:
+                    pdf_data = export_fiche_parcelle_a4(nom_p.strip(), surf_p, cult_p, lat_p, lon_p, stat_p)
+                    st.session_state['last_created_pdf'] = pdf_data
+                    st.session_state['last_created_name'] = nom_p.strip()
+                except Exception as e:
+                    st.error(f"Erreur lors de la création de la Fiche A4 : {e}")
             else:
                 st.warning("⚠️ Indiquez un nom de parcelle.")
     
+    # Bouton de téléchargement de la Fiche A4
     if 'last_created_pdf' in st.session_state:
-        st.download_button("📥 Télécharger la Fiche A4 officielle", data=st.session_state['last_created_pdf'], file_name=f"fiche_a4_{st.session_state['last_created_name']}.pdf", mime="application/pdf", use_container_width=True)
+        st.markdown("---")
+        st.download_button(
+            label=f"📄 Télécharger la Fiche A4 Officielle ({st.session_state.get('last_created_name', 'Parcelle')})", 
+            data=st.session_state['last_created_pdf'], 
+            file_name=f"fiche_a4_{st.session_state.get('last_created_name', 'parcelle')}.pdf", 
+            mime="application/pdf", 
+            use_container_width=True,
+            type="primary"
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # 3. Suppression des Parcelles
+    st.markdown("<div class='card-container'>", unsafe_allow_html=True)
+    st.subheader("🗑️ Gestion / Suppression des Parcelles")
+    if not df_c.empty:
+        for _, cp in df_c.iterrows():
+            col_cp1, col_cp2 = st.columns([4, 1])
+            with col_cp1:
+                st.write(f"📍 **{cp['nom']}** — {cp['superficie_ha']} Ha | Culture : {cp['culture_actuelle']}")
+            with col_cp2:
+                if st.button("🗑️ Supprimer", key=f"del_champ_{cp['id']}"):
+                    execute_query("DELETE FROM champs WHERE id = ?", (cp['id'],), action_desc=f"Suppression parcelle '{cp['nom']}'", user_info=tech)
+                    st.success("Parcelle supprimée !")
+                    st.rerun()
+    else:
+        st.info("Aucune parcelle enregistrée.")
     st.markdown("</div>", unsafe_allow_html=True)
 
     # 3. Section Suppression des Parcelles
