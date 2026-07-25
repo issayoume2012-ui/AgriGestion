@@ -459,25 +459,38 @@ if menu == "📊 Tableau de Bord":
 elif menu == "🌱 Cartographie & Parcelles":
     st.title("🌱 Cartographie & Parcelles (Espace Technicien)")
     
+    # Initialisation des variables d'état
     if 'lat_active' not in st.session_state:
         st.session_state['lat_active'] = 14.6937
     if 'lon_active' not in st.session_state:
         st.session_state['lon_active'] = -17.4441
-    if 'calculated_surface_ha' not in st.session_state:
-        st.session_state['calculated_surface_ha'] = 2.5
+    if 'polygon_coords' not in st.session_state:
+        st.session_state['polygon_coords'] = []
 
     st.markdown("<div class='card-container'>", unsafe_allow_html=True)
-    st.subheader("🗺️ 1. Carte Interactive — Dessinez votre parcelle ou cliquez pour capturer le point")
+    st.subheader("🗺️ 1. Délimitation Manuelle & Cartographie Google")
+    
+    # Consignes pour l'utilisateur
+    st.caption("👉 Cliquez sur la carte pour ajouter les points des sommets de votre parcelle (minimum 3 points pour former la parcelle).")
+    
+    col_btn1, col_btn2 = st.columns([1, 1])
+    with col_btn1:
+        if st.button("🔄 Effacer le tracé en cours", use_container_width=True):
+            st.session_state['polygon_coords'] = []
+            st.rerun()
+    with col_btn2:
+        st.write(f"📍 **Points enregistrés :** {len(st.session_state['polygon_coords'])} point(s)")
+
     df_c = load_table('champs')
     
-    # 1. Création de la carte Folium sans fond par défaut
+    # 1. Création de la carte Folium (Hauteur réduite à 350px)
     m = folium.Map(
         location=[float(st.session_state['lat_active']), float(st.session_state['lon_active'])], 
-        zoom_start=13,
+        zoom_start=14,
         tiles=None
     )
 
-    # 2. Fonds de carte Google Maps
+    # 2. Fonds de carte Google Maps (Hybride par défaut + Topo + Standard)
     folium.TileLayer(
         tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
         attr="Google",
@@ -489,7 +502,7 @@ elif menu == "🌱 Cartographie & Parcelles":
     folium.TileLayer(
         tiles="https://mt1.google.com/vt/lyrs=p&x={x}&y={y}&z={z}",
         attr="Google",
-        name="🏔️ Google Topographie (Relief)",
+        name="🏔️ Google Relief (Topographie)",
         overlay=False,
         control=True
     ).add_to(m)
@@ -502,24 +515,7 @@ elif menu == "🌱 Cartographie & Parcelles":
         control=True
     ).add_to(m)
 
-    # 3. Outil de dessin sur la carte (Dessiner la parcelle)
-    from folium.plugins import Draw
-    draw = Draw(
-        export=True,
-        filename='parcelle_contour.geojson',
-        position='topleft',
-        draw_options={
-            'polyline': False,
-            'rectangle': True,
-            'polygon': True,
-            'circle': False,
-            'marker': True,
-            'circlemarker': False
-        }
-    )
-    draw.add_to(m)
-
-    # 4. Marqueurs des parcelles existantes
+    # 3. Affichage des parcelles déjà enregistrées en base
     for _, r in df_c.iterrows():
         folium.Marker(
             location=[r['latitude'], r['longitude']],
@@ -527,80 +523,104 @@ elif menu == "🌱 Cartographie & Parcelles":
             icon=folium.Icon(color="green", icon="leaf")
         ).add_to(m)
 
-    folium.LayerControl(position="topright", collapsed=False).add_to(m)
+    # 4. Dessin du polygone personnalisé en cours de création par le technicien
+    coords_list = st.session_state['polygon_coords']
+    if len(coords_list) > 0:
+        # Placement de marqueurs rouges sur chaque point sélectionné
+        for idx, pt in enumerate(coords_list):
+            folium.CircleMarker(
+                location=pt,
+                radius=5,
+                color="red",
+                fill=True,
+                fill_color="red",
+                popup=f"Point {idx+1}"
+            ).add_to(m)
+        
+        # Si au moins 2 points, on trace la ligne
+        if len(coords_list) >= 2:
+            folium.PolyLine(coords_list, color="red", weight=2.5, opacity=0.8).add_to(m)
+        
+        # Si au moins 3 points, on ferme le polygone avec une couleur de remplissage
+        if len(coords_list) >= 3:
+            folium.Polygon(
+                locations=coords_list,
+                color="red",
+                weight=3,
+                fill=True,
+                fill_color="yellow",
+                fill_opacity=0.4
+            ).add_to(m)
+
+    folium.LayerControl(position="topright", collapsed=True).add_to(m)
     
-    # Render de la carte Streamlit
+    # Affichage Streamlit avec hauteur compacte (350px)
     map_data = st_folium(
         m, 
         width="100%", 
-        height=500, 
-        key="map_interactive_draw", 
-        returned_objects=["last_clicked", "last_active_drawing"]
+        height=350, 
+        key="map_interactive_emp", 
+        returned_objects=["last_clicked"]
     )
     
-    # Traitement du dessin (calcul de superficie et centre GPS)
-    if map_data:
-        if map_data.get("last_active_drawing"):
-            geometry = map_data["last_active_drawing"].get("geometry", {})
-            coords = geometry.get("coordinates", [])
-            
-            # Si c'est un polygone
-            if geometry.get("type") == "Polygon" and coords:
-                poly_pts = coords[0]
-                lats = [p[1] for p in poly_pts]
-                lons = [p[0] for p in poly_pts]
-                
-                # Calcul du centre de la parcelle
-                center_lat = round(sum(lats) / len(lats), 6)
-                center_lon = round(sum(lons) / len(lons), 6)
-                st.session_state['lat_active'] = center_lat
-                st.session_state['lon_active'] = center_lon
+    # Capture du clic pour ajouter un point au tracé
+    if map_data and map_data.get("last_clicked"):
+        click_lat = round(map_data["last_clicked"]["lat"], 6)
+        click_lon = round(map_data["last_clicked"]["lng"], 6)
+        
+        # Evite d'ajouter 2 fois le même point d'affilée
+        if not coords_list or coords_list[-1] != [click_lat, click_lon]:
+            st.session_state['polygon_coords'].append([click_lat, click_lon])
+            st.session_state['lat_active'] = click_lat
+            st.session_state['lon_active'] = click_lon
+            st.rerun()
 
-                # Formule de calcul approximatif de surface géodésique
-                lat_avg = np.radians(center_lat)
-                meters_per_deg_lat = 111139.0
-                meters_per_deg_lon = 111139.0 * np.cos(lat_avg)
-                
-                xy = [(p[0] * meters_per_deg_lon, p[1] * meters_per_deg_lat) for p in poly_pts]
-                area = 0.0
-                n = len(xy)
-                for i in range(n):
-                    j = (i + 1) % n
-                    area += xy[i][0] * xy[j][1]
-                    area -= xy[j][0] * xy[i][1]
-                area_m2 = abs(area) / 2.0
-                area_ha = round(area_m2 / 10000.0, 2)
-                
-                if area_ha > 0:
-                    st.session_state['calculated_surface_ha'] = area_ha
-                st.success(f"✍️ **Tracé capturé :** Centre GPS ({center_lat}, {center_lon}) | Superficie estimée : **{st.session_state['calculated_surface_ha']} Ha**")
+    # Calcul automatique de la superficie (Ha) et du centre si >= 3 points
+    calc_surf_ha = 2.5
+    center_lat_val = float(st.session_state['lat_active'])
+    center_lon_val = float(st.session_state['lon_active'])
 
-        elif map_data.get("last_clicked"):
-            st.session_state['lat_active'] = round(map_data["last_clicked"]["lat"], 6)
-            st.session_state['lon_active'] = round(map_data["last_clicked"]["lng"], 6)
-            st.info(f"📍 **Point GPS sélectionné :** {st.session_state['lat_active']}, {st.session_state['lon_active']}")
+    if len(coords_list) >= 3:
+        lats = [p[0] for p in coords_list]
+        lons = [p[1] for p in coords_list]
+        center_lat_val = round(sum(lats) / len(lats), 6)
+        center_lon_val = round(sum(lons) / len(lons), 6)
+        
+        # Calcul approximatif de la surface
+        lat_avg = np.radians(center_lat_val)
+        m_per_deg_lat = 111139.0
+        m_per_deg_lon = 111139.0 * np.cos(lat_avg)
+        
+        xy = [(p[1] * m_per_deg_lon, p[0] * m_per_deg_lat) for p in coords_list]
+        area = 0.0
+        n = len(xy)
+        for i in range(n):
+            j = (i + 1) % n
+            area += xy[i][0] * xy[j][1]
+            area -= xy[j][0] * xy[i][1]
+        area_m2 = abs(area) / 2.0
+        calc_surf_ha = round(area_m2 / 10000.0, 2)
+        if calc_surf_ha == 0:
+            calc_surf_ha = 0.01
+        
+        st.success(f"📐 **Parcelle délimitée !** Centre : ({center_lat_val}, {center_lon_val}) | Superficie estimée : **{calc_surf_ha} Ha**")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
     # 2. Formulaire d'enregistrement et Impression PDF A4
     st.markdown("<div class='card-container'>", unsafe_allow_html=True)
-    st.subheader("➕ 2. Enregistrement d'une Nouvelle Parcelle & Fiche A4 Officielle")
+    st.subheader("➕ 2. Enregistrement de la Parcelle & Fiche A4")
     
-    with st.form("form_champ_fluide_top"):
+    with st.form("form_champ_technicien_a4"):
         col_f_1, col_f_2 = st.columns(2)
         with col_f_1:
             nom_p = st.text_input("Nom de la parcelle *", placeholder="Ex: Champ Sud 02")
-            surf_p = st.number_input(
-                "Superficie (Ha)", 
-                min_value=0.01, 
-                value=float(st.session_state['calculated_surface_ha']), 
-                step=0.1
-            )
+            surf_p = st.number_input("Superficie (Ha)", min_value=0.01, value=float(calc_surf_ha), step=0.1)
             cult_p = st.text_input("Culture principale", placeholder="Ex: Tomate, Riz...")
             stat_p = st.selectbox("Statut initial", ["En préparation", "Semé", "En croissance", "Prêt à récolter"])
         with col_f_2:
-            lat_p = st.number_input("Latitude GPS", value=float(st.session_state['lat_active']), format="%.6f")
-            lon_p = st.number_input("Longitude GPS", value=float(st.session_state['lon_active']), format="%.6f")
+            lat_p = st.number_input("Latitude du Centre GPS", value=float(center_lat_val), format="%.6f")
+            lon_p = st.number_input("Longitude du Centre GPS", value=float(center_lon_val), format="%.6f")
             pin_p = st.text_input("Code PIN de sécurité (optionnel)", type="password")
         
         submit_parcelle = st.form_submit_button("💾 Enregistrer la Parcelle & Générer la Fiche A4", use_container_width=True, type="primary")
@@ -614,17 +634,21 @@ elif menu == "🌱 Cartographie & Parcelles":
                 )
                 st.success(f"✅ Parcelle **{nom_p.strip()}** enregistrée avec succès !")
                 
-                # Génération de la fiche A4 via la fonction ReportLab
+                # Réinitialisation du tracé
+                st.session_state['polygon_coords'] = []
+                
+                # Génération du PDF A4
                 try:
                     pdf_data = export_fiche_parcelle_a4(nom_p.strip(), surf_p, cult_p, lat_p, lon_p, stat_p)
                     st.session_state['last_created_pdf'] = pdf_data
                     st.session_state['last_created_name'] = nom_p.strip()
+                    st.rerun()
                 except Exception as e:
-                    st.error(f"Erreur lors de la création de la Fiche A4 : {e}")
+                    st.error(f"Erreur lors de la génération du PDF A4 : {e}")
             else:
                 st.warning("⚠️ Indiquez un nom de parcelle.")
     
-    # Bouton de téléchargement de la Fiche A4
+    # Bouton pour Télécharger la Fiche A4
     if 'last_created_pdf' in st.session_state:
         st.markdown("---")
         st.download_button(
@@ -652,23 +676,6 @@ elif menu == "🌱 Cartographie & Parcelles":
                     st.rerun()
     else:
         st.info("Aucune parcelle enregistrée.")
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    # 3. Section Suppression des Parcelles
-    st.markdown("<div class='card-container'>", unsafe_allow_html=True)
-    st.subheader("🗑️ Gestion / Suppression des Parcelles")
-    if not df_c.empty:
-        for _, cp in df_c.iterrows():
-            col_cp1, col_cp2 = st.columns([4, 1])
-            with col_cp1:
-                st.write(f"📍 **{cp['nom']}** — {cp['superficie_ha']} Ha | Culture : {cp['culture_actuelle']}")
-            with col_cp2:
-                if st.button("🗑️ Supprimer", key=f"del_champ_{cp['id']}"):
-                    execute_query("DELETE FROM champs WHERE id = ?", (cp['id'],), action_desc=f"Suppression parcelle '{cp['nom']}'", user_info=tech)
-                    st.success("Parcelle supprimée !")
-                    st.rerun()
-    else:
-        st.info("Aucune parcelle à supprimer.")
     st.markdown("</div>", unsafe_allow_html=True)
 
 elif menu == "👥 Groupes & Membres":
