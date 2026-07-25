@@ -3,3 +3,5 @@ pandas>=2.0.0
 folium>=0.14.0
 streamlit-folium>=0.15.0
 reportlab>=4.0.0
+streamlit-js-eval
+geopy
