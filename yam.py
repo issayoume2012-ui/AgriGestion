@@ -457,74 +457,75 @@ if menu == "📊 Tableau de Bord":
         st.dataframe(df_c[["nom", "superficie_ha", "culture_actuelle", "statut"]], use_container_width=True)
 
 import math
+from streamlit_js_eval import get_geolocation
 
 elif menu == "🌱 Cartographie & Parcelles":
     st.title("🌱 Cartographie & Parcelles (Espace Technicien)")
     
-    # Dictionnaire des zones / régions avec coordonnées GPS de centre
-    ZONES_SENEGAL = {
-        "Dakar": (14.6937, -17.4441),
-        "Thiès": (14.7910, -16.9256),
-        "Diourbel": (14.6560, -16.2320),
-        "Saint-Louis": (16.0326, -16.4818),
-        "Kaolack": (14.1500, -16.0833),
-        "Ziguinchor": (12.5833, -16.2719),
-        "Tambacounda": (13.7700, -13.6700),
-        "Kolda": (12.8833, -14.9500),
-        "Louga": (15.6186, -16.2244),
-        "Fatick": (14.3333, -16.4167),
-        "Kédougou": (12.5500, -12.1833),
-        "Matam": (15.6559, -13.2554),
-        "Kaffrine": (14.1059, -15.5413),
-        "Sédhiou": (12.7081, -15.5569)
-    }
-
-    # Initialisation des états
-    if 'zone_selected' not in st.session_state:
-        st.session_state['zone_selected'] = "Dakar"
+    # Initialisation des états dynamiques
     if 'lat_active' not in st.session_state:
-        st.session_state['lat_active'] = ZONES_SENEGAL["Dakar"][0]
+        st.session_state['lat_active'] = 14.6937  # Valeur temporaire avant détection GPS
     if 'lon_active' not in st.session_state:
-        st.session_state['lon_active'] = ZONES_SENEGAL["Dakar"][1]
+        st.session_state['lon_active'] = -17.4441
     if 'polygon_coords' not in st.session_state:
         st.session_state['polygon_coords'] = []
 
     st.markdown("<div class='card-container'>", unsafe_allow_html=True)
-    st.subheader("🗺️ 1. Carte Interactive Google & Tracé de Parcelle")
+    st.subheader("🗺️ 1. Géolocalisation & Carte Google Interactive")
     
-    # 📍 Sélecteur de zone dynamique
-    col_z1, col_z2, col_z3 = st.columns([2, 1, 1])
-    with col_z1:
-        selected_zone = st.selectbox(
-            "📍 Sélectionner la Zone / Région d'intervention :", 
-            options=list(ZONES_SENEGAL.keys()),
-            index=list(ZONES_SENEGAL.keys()).index(st.session_state['zone_selected'])
-        )
-        # Si changement de zone, centrer la carte sur la nouvelle région
-        if selected_zone != st.session_state['zone_selected']:
-            st.session_state['zone_selected'] = selected_zone
-            st.session_state['lat_active'] = ZONES_SENEGAL[selected_zone][0]
-            st.session_state['lon_active'] = ZONES_SENEGAL[selected_zone][1]
-            st.session_state['polygon_coords'] = []  # Réinitialise le tracé précédent
-            st.rerun()
+    # --- BARRE D'OUTILS ET RECHERCHE SYNC ---
+    col_tools1, col_tools2, col_tools3 = st.columns([2, 2, 1])
+    
+    with col_tools1:
+        # Recherche style Google Maps (Geocoding)
+        search_query = st.text_input("🔍 Rechercher une zone / village / ville :", placeholder="Ex: Touba, Bambey, Niakhar...")
+        if search_query:
+            try:
+                from geopy.geocoders import Nominatim
+                geolocator = Nominatim(user_agent="agrigestion_app")
+                location = geolocator.geocode(search_query + ", Senegal")
+                if location:
+                    st.session_state['lat_active'] = location.latitude
+                    st.session_state['lon_active'] = location.longitude
+                    st.session_state['polygon_coords'] = []
+                    st.success(f"📍 Positionné sur : {location.address}")
+                else:
+                    st.warning("Zone non trouvée. Essayez un nom plus précis.")
+            except Exception as e:
+                st.info("Saisissez un nom de lieu valide.")
 
-    with col_z2:
-        st.caption("👉 Cliquez sur la carte pour poser les sommets.")
-    with col_z3:
+    with col_tools2:
+        st.write("🛰️ **Position Terrain :**")
+        if st.button("📍 Ma Position GPS Actuelle (Temps Réel)", use_container_width=True, type="secondary"):
+            loc = get_geolocation()
+            if loc and 'coords' in loc:
+                st.session_state['lat_active'] = loc['coords']['latitude']
+                st.session_state['lon_active'] = loc['coords']['longitude']
+                st.session_state['polygon_coords'] = []
+                st.success("✅ Position GPS actualisée avec succès !")
+                st.rerun()
+            else:
+                st.info("👉 Récupération du signal GPS... Autorisez la géolocalisation sur votre appareil.")
+
+    with col_tools3:
+        st.write(" ")
+        st.write(" ")
         if st.button("🔄 Effacer tracé", use_container_width=True):
             st.session_state['polygon_coords'] = []
             st.rerun()
 
+    st.caption("👉 **Délimitation :** Cliquez sur la carte satellite Google pour poser les sommets de votre parcelle. La synchronisation est automatique.")
+
     df_c = load_table('champs')
     
-    # 1. Création de la carte Folium (Recentrée sur la zone active)
+    # 1. Création de la carte synchronisée
     m = folium.Map(
         location=[float(st.session_state['lat_active']), float(st.session_state['lon_active'])], 
-        zoom_start=12,
+        zoom_start=15,
         tiles=None
     )
 
-    # 2. Tuiles Google Maps
+    # 2. Couches Google Maps
     folium.TileLayer(
         tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
         attr="Google",
@@ -536,7 +537,7 @@ elif menu == "🌱 Cartographie & Parcelles":
     folium.TileLayer(
         tiles="https://mt1.google.com/vt/lyrs=p&x={x}&y={y}&z={z}",
         attr="Google",
-        name="🏔️ Google Topographie / Relief",
+        name="🏔️ Google Relief / Topographie",
         overlay=False,
         control=True
     ).add_to(m)
@@ -549,7 +550,14 @@ elif menu == "🌱 Cartographie & Parcelles":
         control=True
     ).add_to(m)
 
-    # 3. Affichage des parcelles existantes
+    # 3. Marqueur de position GPS actuelle du technicien si disponible
+    folium.Marker(
+        location=[st.session_state['lat_active'], st.session_state['lon_active']],
+        popup="Votre Position Actuelle",
+        icon=folium.Icon(color="blue", icon="user")
+    ).add_to(m)
+
+    # 4. Affichage des parcelles enregistrées en base de données
     for _, r in df_c.iterrows():
         folium.Marker(
             location=[r['latitude'], r['longitude']],
@@ -557,7 +565,7 @@ elif menu == "🌱 Cartographie & Parcelles":
             icon=folium.Icon(color="green", icon="leaf")
         ).add_to(m)
 
-    # 4. Dessin du polygone personnalisé
+    # 5. Dessin du polygone dynamique
     coords_list = st.session_state['polygon_coords']
     if len(coords_list) > 0:
         for idx, pt in enumerate(coords_list):
@@ -585,16 +593,16 @@ elif menu == "🌱 Cartographie & Parcelles":
 
     folium.LayerControl(position="topright", collapsed=False).add_to(m)
     
-    # Carte Streamlit (Hauteur compacte 350px)
+    # Affichage de la carte interactive (Hauteur compacte 350px)
     map_data = st_folium(
         m, 
         width="100%", 
         height=350, 
-        key=f"map_zone_{st.session_state['zone_selected']}", 
+        key=f"map_sync_{st.session_state['lat_active']}_{st.session_state['lon_active']}", 
         returned_objects=["last_clicked"]
     )
     
-    # Capture dynamique du clic GPS
+    # Synchronisation instantanée du clic sur la carte
     if map_data and map_data.get("last_clicked"):
         click_lat = round(map_data["last_clicked"]["lat"], 6)
         click_lon = round(map_data["last_clicked"]["lng"], 6)
@@ -605,8 +613,8 @@ elif menu == "🌱 Cartographie & Parcelles":
             st.session_state['lon_active'] = click_lon
             st.rerun()
 
-    # Calcul dynamique de surface et centre
-    calc_surf_ha = 2.5
+    # Calcul automatique de la superficie et du centre géométrique
+    calc_surf_ha = 0.0
     center_lat_val = float(st.session_state['lat_active'])
     center_lon_val = float(st.session_state['lon_active'])
 
@@ -632,24 +640,24 @@ elif menu == "🌱 Cartographie & Parcelles":
         if calc_surf_ha == 0:
             calc_surf_ha = 0.01
         
-        st.success(f"📐 **Zone : {selected_zone}** | Centre GPS ({center_lat_val}, {center_lon_val}) | Surface : **{calc_surf_ha} Ha**")
+        st.success(f"📐 **Tracé synchronisé ({len(coords_list)} sommets) :** Centre ({center_lat_val}, {center_lon_val}) | Surface : **{calc_surf_ha} Ha**")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # 2. Formulaire pré-rempli dynamiquement selon la zone et les clics
+    # 2. Formulaire d'enregistrement synchronisé
     st.markdown("<div class='card-container'>", unsafe_allow_html=True)
-    st.subheader("➕ 2. Enregistrement de la Parcelle & Fiche A4")
+    st.subheader("➕ 2. Enregistrement & Fiche A4")
     
-    with st.form("form_champ_zone_a4"):
+    with st.form("form_champ_gps_sync"):
         col_f_1, col_f_2 = st.columns(2)
         with col_f_1:
-            nom_p = st.text_input("Nom de la parcelle *", placeholder=f"Ex: Parcelle {selected_zone} 01")
-            surf_p = st.number_input("Superficie (Ha)", min_value=0.01, value=float(calc_surf_ha), step=0.1)
-            cult_p = st.text_input("Culture principale", placeholder="Ex: Tomate, Riz, Arachide...")
+            nom_p = st.text_input("Nom de la parcelle *", placeholder="Ex: Champ Nord 01")
+            surf_p = st.number_input("Superficie (Ha)", min_value=0.01, value=float(calc_surf_ha if calc_surf_ha > 0 else 1.0), step=0.1)
+            cult_p = st.text_input("Culture principale", placeholder="Ex: Maïs, Arachide, Oignon...")
             stat_p = st.selectbox("Statut initial", ["En préparation", "Semé", "En croissance", "Prêt à récolter"])
         with col_f_2:
-            lat_p = st.number_input("Latitude du Centre GPS", value=float(center_lat_val), format="%.6f")
-            lon_p = st.number_input("Longitude du Centre GPS", value=float(center_lon_val), format="%.6f")
+            lat_p = st.number_input("Latitude Centre GPS", value=float(center_lat_val), format="%.6f")
+            lon_p = st.number_input("Longitude Centre GPS", value=float(center_lon_val), format="%.6f")
             pin_p = st.text_input("Code PIN de sécurité (optionnel)", type="password")
         
         submit_parcelle = st.form_submit_button("💾 Enregistrer la Parcelle & Générer la Fiche A4", use_container_width=True, type="primary")
@@ -658,10 +666,10 @@ elif menu == "🌱 Cartographie & Parcelles":
                 execute_query(
                     "INSERT INTO champs (nom, superficie_ha, latitude, longitude, culture_actuelle, statut, icone_lieu, code_pin) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (nom_p.strip(), surf_p, lat_p, lon_p, cult_p, stat_p, "leaf", pin_p.strip() if pin_p else ""),
-                    action_desc=f"Création de la parcelle '{nom_p.strip()}' à {selected_zone}",
+                    action_desc=f"Création de la parcelle '{nom_p.strip()}'",
                     user_info=tech
                 )
-                st.success(f"✅ Parcelle **{nom_p.strip()}** enregistrée avec succès !")
+                st.success(f"✅ Parcelle **{nom_p.strip()}** enregistrée !")
                 st.session_state['polygon_coords'] = []
                 
                 try:
@@ -670,11 +678,11 @@ elif menu == "🌱 Cartographie & Parcelles":
                     st.session_state['last_created_name'] = nom_p.strip()
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Erreur lors de la génération de la Fiche A4 : {e}")
+                    st.error(f"Erreur lors de la génération du PDF : {e}")
             else:
                 st.warning("⚠️ Indiquez un nom de parcelle.")
     
-    # Téléchargement PDF
+    # Bouton PDF
     if 'last_created_pdf' in st.session_state:
         st.markdown("---")
         st.download_button(
@@ -689,12 +697,12 @@ elif menu == "🌱 Cartographie & Parcelles":
 
     # 3. Suppression des Parcelles
     st.markdown("<div class='card-container'>", unsafe_allow_html=True)
-    st.subheader("🗑️ Gestion / Suppression des Parcelles")
+    st.subheader("🗑️ Liste & Suppression des Parcelles")
     if not df_c.empty:
         for _, cp in df_c.iterrows():
             col_cp1, col_cp2 = st.columns([4, 1])
             with col_cp1:
-                st.write(f"📍 **{cp['nom']}** — {cp['superficie_ha']} Ha | Culture : {cp['culture_actuelle']}")
+                st.write(f"📍 **{cp['nom']}** — {cp['superficie_ha']} Ha | GPS : ({cp['latitude']}, {cp['longitude']}) | Culture : {cp['culture_actuelle']}")
             with col_cp2:
                 if st.button("🗑️ Supprimer", key=f"del_champ_{cp['id']}"):
                     execute_query("DELETE FROM champs WHERE id = ?", (cp['id'],), action_desc=f"Suppression parcelle '{cp['nom']}'", user_info=tech)
