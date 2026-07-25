@@ -4,7 +4,8 @@ from datetime import datetime, date
 import io
 import sqlite3
 import os
-
+import math
+from streamlit_js_eval import get_geolocation
 # Importation pour la cartographie dynamique interactive
 import folium
 from streamlit_folium import st_folium
@@ -455,11 +456,6 @@ if menu == "📊 Tableau de Bord":
     else:
         st.subheader("📍 Aperçu Global des Parcelles")
         st.dataframe(df_c[["nom", "superficie_ha", "culture_actuelle", "statut"]], use_container_width=True)
-
-import math
-from streamlit_js_eval import get_geolocation
-
-import math
 
 elif menu == "🌱 Cartographie & Parcelles":
     st.title("🌱 Cartographie & Parcelles (Espace Technicien)")
