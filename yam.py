@@ -458,8 +458,6 @@ if menu == "📊 Tableau de Bord":
         st.subheader("📍 Aperçu Global des Parcelles")
         st.dataframe(df_c[["nom", "superficie_ha", "culture_actuelle", "statut"]], use_container_width=True)
 
-import math
-from folium.plugins import Draw
 
 elif menu == "🌱 Cartographie & Parcelles":
     st.title("🌱 Cartographie & Éditeur de Parcelles (Style ArcGIS Pro)")
