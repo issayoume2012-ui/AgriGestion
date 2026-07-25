@@ -19,7 +19,7 @@ from reportlab.lib import colors
 # 1. CONFIGURATION DE LA PAGE & DESIGN ÉPURÉ
 # ==========================================
 st.set_page_config(
-    page_title="AgriGestion Pro",
+    page_title="AgriGestion YAM",
     page_icon="🌾",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -468,21 +468,69 @@ elif menu == "🌱 Cartographie & Parcelles":
     st.subheader("🗺️ 1. Carte Interactive — Cliquez pour capturer les coordonnées GPS")
     df_c = load_table('champs')
     
-    m = folium.Map(location=[float(st.session_state['lat_active']), float(st.session_state['lon_active'])], zoom_start=13)
+    # Initialisation de la carte Folium
+    m = folium.Map(
+        location=[float(st.session_state['lat_active']), float(st.session_state['lon_active'])], 
+        zoom_start=13,
+        tiles=None  # Désactivation des tuiles par défaut
+    )
+
+    # 🟢 1. Google Maps Hybride (Satellite + Noms des routes/villes)
+    folium.TileLayer(
+        tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
+        attr="Google",
+        name="🛰️ Google Hybride (Satellite + Routes)",
+        overlay=False,
+        control=True
+    ).add_to(m)
+
+    # 🏔️ 2. Google Maps Relief / Topographie (Pentes & Courbes)
+    folium.TileLayer(
+        tiles="https://mt1.google.com/vt/lyrs=p&x={x}&y={y}&z={z}",
+        attr="Google",
+        name="🏔️ Google Topographie (Relief)",
+        overlay=False,
+        control=True
+    ).add_to(m)
+
+    # 🗺️ 3. Google Maps Standard (Plan de ville)
+    folium.TileLayer(
+        tiles="https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}",
+        attr="Google",
+        name="🗺️ Google Plan Standard",
+        overlay=False,
+        control=True
+    ).add_to(m)
+
+    # 📡 4. Google Maps Satellite Pur (Sans les noms de rues)
+    folium.TileLayer(
+        tiles="https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
+        attr="Google",
+        name="📷 Google Satellite Pur",
+        overlay=False,
+        control=True
+    ).add_to(m)
+
+    # Ajout des marqueurs de parcelles
     for _, r in df_c.iterrows():
         folium.Marker(
             location=[r['latitude'], r['longitude']],
             popup=f"<b>{r['nom']}</b><br>Culture: {r['culture_actuelle']}<br>Superficie: {r['superficie_ha']} Ha",
             icon=folium.Icon(color="green", icon="leaf")
         ).add_to(m)
-        
-    map_data = st_folium(m, width="100%", height=400, key="map_interactive_fluid_top", returned_objects=["last_clicked"])
+
+    # Contrôle des calques (Sélecteur en haut à droite)
+    folium.LayerControl(position="topright", collapsed=False).add_to(m)
+    
+    # Affichage Streamlit
+    map_data = st_folium(m, width="100%", height=500, key="map_interactive_fluid_top", returned_objects=["last_clicked"])
     if map_data and map_data.get("last_clicked"):
         st.session_state['lat_active'] = round(map_data["last_clicked"]["lat"], 6)
         st.session_state['lon_active'] = round(map_data["last_clicked"]["lng"], 6)
         st.success(f"📍 Coordonnées GPS capturées : {st.session_state['lat_active']}, {st.session_state['lon_active']}")
     st.markdown("</div>", unsafe_allow_html=True)
 
+    # 2. Formulaire d'enregistrement de parcelle
     st.markdown("<div class='card-container'>", unsafe_allow_html=True)
     st.subheader("➕ 2. Enregistrement d'une Nouvelle Parcelle & Fiche A4")
     with st.form("form_champ_fluide_top"):
@@ -516,7 +564,7 @@ elif menu == "🌱 Cartographie & Parcelles":
         st.download_button("📥 Télécharger la Fiche A4 officielle", data=st.session_state['last_created_pdf'], file_name=f"fiche_a4_{st.session_state['last_created_name']}.pdf", mime="application/pdf", use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # Section Suppression des Parcelles
+    # 3. Section Suppression des Parcelles
     st.markdown("<div class='card-container'>", unsafe_allow_html=True)
     st.subheader("🗑️ Gestion / Suppression des Parcelles")
     if not df_c.empty:
