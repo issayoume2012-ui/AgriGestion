@@ -146,12 +146,12 @@ def init_db():
                         details TEXT
                     )''')
 
-    cursor.execute("SELECT COUNT(*) FROM whitelist_users")
-    if cursor.fetchone()[0] == 0:
-        cursor.execute(
-            "INSERT INTO whitelist_users (email, password, prenom, nom, role, modules_autorises) VALUES (?, ?, ?, ?, ?, ?)",
-            ("issayoume2012@gmail.com", "issayoume2026", "Issa", "Youme", "Administration", "TOUS")
-        )
+    # CORRECTION : Insertion ou mise à jour forcée de l'administrateur principal
+    cursor.execute(
+        "INSERT INTO whitelist_users (email, password, prenom, nom, role, modules_autorises) VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(email) DO UPDATE SET password=excluded.password, role=excluded.role, modules_autorises=excluded.modules_autorises",
+        ("issayoume2012@gmail.com", "issayoume2026", "Issa", "Youme", "Administration", "TOUS")
+    )
 
     conn.commit()
     conn.close()
