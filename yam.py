@@ -146,11 +146,11 @@ def init_db():
                         details TEXT
                     )''')
 
-    # CORRECTION : Insertion ou mise à jour forcée de l'administrateur principal
+    # CORRECTION : Insertion ou mise à jour forcée de l'administrateur principal avec les nouveaux identifiants
     cursor.execute(
         "INSERT INTO whitelist_users (email, password, prenom, nom, role, modules_autorises) VALUES (?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(email) DO UPDATE SET password=excluded.password, role=excluded.role, modules_autorises=excluded.modules_autorises",
-        ("issayoume2012@gmail.com", "issayoume2026", "Issa", "Youme", "Administration", "TOUS")
+        ("iy@2012", "issayoume2026", "Issa", "Youme", "Administration", "TOUS")
     )
 
     conn.commit()
@@ -200,7 +200,7 @@ def auth_system():
             """, unsafe_allow_html=True)
 
             with st.form("form_login_admin"):
-                email_input = st.text_input("Adresse e-mail professionnelle *", placeholder="issayoume2012@gmail.com")
+                email_input = st.text_input("Adresse e-mail professionnelle *", placeholder="iy@2012")
                 password_input = st.text_input("Mot de passe d'accès *", type="password")
                 st.markdown("<br>", unsafe_allow_html=True)
                 submit_login = st.form_submit_button("Se Connecter", use_container_width=True, type="primary")
@@ -378,8 +378,8 @@ menu_commun = [
     "💬 Espace Collaboration & Workspace"
 ]
 
-# Correction des permissions : Assurer l'accès complet selon le rôle ou l'administrateur principal
-if role_tech == "Administration" or email_connecte == "issayoume2012@gmail.com":
+# Correction des permissions : Assurer l'accès complet selon le rôle ou l'administrateur principal (mis à jour avec iy@2012)
+if role_tech == "Administration" or email_connecte == "iy@2012":
     tous_les_menus = menu_commun + menu_administration + menu_gestionnaire + menu_techniciens
 elif role_tech == "Gestionnaire":
     tous_les_menus = menu_commun + menu_gestionnaire + menu_techniciens
@@ -1266,7 +1266,7 @@ elif menu == "🔐 Paramètres & Liste Blanche":
         for _, usr in df_wl.iterrows():
             cu1, cu2 = st.columns([4, 1])
             cu1.write(f"👤 **{usr['prenom']} {usr['nom']}** ({usr['email']}) — Rôle : **{usr['role']}**")
-            if usr['email'].lower() != "issayoume2012@gmail.com":
+            if usr['email'].lower() != "iy@2012":
                 if cu2.button("🗑️ Supprimer", key=f"del_usr_{usr['id']}"):
                     execute_query("DELETE FROM whitelist_users WHERE id = ?", (usr['id'],), action_desc=f"Suppression utilisateur '{usr['email']}'", user_info=tech)
                     st.success("Utilisateur supprimé !")
