@@ -46,10 +46,16 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. GESTION DE LA BASE DE DONNÉES ULTRA-RAPIDE
+# 2. GESTION DE LA BASE DE DONNÉES & SÉCURITÉ XXL
 # ==========================================
+DB_FILE = 'agrigestion.db'
+
 def get_connection():
-    return sqlite3.connect('agrigestion.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    # Sécurité XXL : Activation des clés étrangères et mode WAL pour la robustesse SQLite
+    conn.execute("PRAGMA foreign_keys = ON;")
+    conn.execute("PRAGMA journal_mode = WAL;")
+    return conn
 
 @st.cache_resource
 def init_db():
@@ -292,7 +298,6 @@ def export_parcelle_pdf(champ_nom, date_rapport):
 
     tables_to_export = {}
     if champ_id:
-        # Correction stricte : Filtrage rigoureux par nom de parcelle pour les pointages
         df_pt = load_table('pointage')
         if not df_pt.empty and 'champ_nom' in df_pt.columns:
             df_pt_filtered = df_pt[df_pt['champ_nom'].astype(str).str.strip().str.lower() == str(champ_nom).strip().lower()]
@@ -373,9 +378,12 @@ menu_commun = [
     "💬 Espace Collaboration & Workspace"
 ]
 
+# Correction des permissions : Assurer l'accès complet selon le rôle ou l'administrateur principal
 if role_tech == "Administration" or email_connecte == "issayoume2012@gmail.com":
     tous_les_menus = menu_commun + menu_administration + menu_gestionnaire + menu_techniciens
 elif role_tech == "Gestionnaire":
+    tous_les_menus = menu_commun + menu_gestionnaire + menu_techniciens
+elif role_tech == "Propriétaire":
     tous_les_menus = menu_commun + menu_gestionnaire + menu_techniciens
 else: 
     tous_les_menus = menu_commun + menu_techniciens
@@ -431,7 +439,7 @@ if menu != "🌱 Cartographie & Parcelles":
     st.divider()
 
 # ==========================================
-# 6. MODULES APPLICATIFS STRUCTURÉS (AVEC SUPPRESSIONS)
+# 6. MODULES APPLICATIFS STRUCTURÉS
 # ==========================================
 
 if menu == "📊 Tableau de Bord":
@@ -462,7 +470,6 @@ if menu == "📊 Tableau de Bord":
 elif menu == "🌱 Cartographie & Parcelles":
     st.title("🌱 Cartographie & Éditeur de Parcelles (YAM Gestion)")
     
-    # Initialisation des états
     if 'lat_active' not in st.session_state:
         st.session_state['lat_active'] = 14.6937
     if 'lon_active' not in st.session_state:
@@ -471,7 +478,6 @@ elif menu == "🌱 Cartographie & Parcelles":
     st.markdown("<div class='card-container'>", unsafe_allow_html=True)
     st.subheader("🗺️ 1. Éditeur de Dessin SIG & Navigation Google Maps")
     
-    # Barre de recherche dynamique (Navigation rapide)
     col_s1, col_s2 = st.columns([3, 1])
     with col_s1:
         search_query = st.text_input("🔍 Rechercher une zone / village / localité :", placeholder="Ex: Touba, Bambey, Niakhar, Diourbel...")
@@ -493,14 +499,12 @@ elif menu == "🌱 Cartographie & Parcelles":
 
     df_c = load_table('champs')
     
-    # 1. Instanciation de la carte Folium centrée sur la zone
     m = folium.Map(
         location=[float(st.session_state['lat_active']), float(st.session_state['lon_active'])], 
         zoom_start=15,
         tiles=None
     )
 
-    # 2. Couches de fonds de carte Google Maps
     folium.TileLayer(
         tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
         attr="Google",
@@ -525,7 +529,6 @@ elif menu == "🌱 Cartographie & Parcelles":
         control=True
     ).add_to(m)
 
-    # 3. Affichage des parcelles existantes
     for _, r in df_c.iterrows():
         folium.Marker(
             location=[r['latitude'], r['longitude']],
@@ -533,7 +536,6 @@ elif menu == "🌱 Cartographie & Parcelles":
             icon=folium.Icon(color="green", icon="leaf")
         ).add_to(m)
 
-    # 4. OUTIL D'ÉDITION STYLE ARCGIS PRO (Dessin vectoriel rapide sans lag)
     draw = Draw(
         export=False,
         position='topleft',
@@ -555,7 +557,6 @@ elif menu == "🌱 Cartographie & Parcelles":
 
     folium.LayerControl(position="topright", collapsed=False).add_to(m)
     
-    # Rendu dynamique de la carte (Sans rafraîchissement lourd)
     output = st_folium(
         m, 
         width="100%", 
@@ -564,12 +565,10 @@ elif menu == "🌱 Cartographie & Parcelles":
         returned_objects=["all_drawings"]
     )
 
-    # Variables d'extraction des données géométriques
     calc_surf_ha = 0.0
     center_lat_val = float(st.session_state['lat_active'])
     center_lon_val = float(st.session_state['lon_active'])
 
-    # Traitement instantané des formes dessinées par l'utilisateur
     if output and output.get("all_drawings"):
         drawings = output["all_drawings"]
         if len(drawings) > 0:
@@ -577,9 +576,7 @@ elif menu == "🌱 Cartographie & Parcelles":
             geom_type = last_geometry.get("type")
             coords = last_geometry.get("coordinates", [])
 
-            # Cas 1 : Polygone ou Rectangle dessiné
             if geom_type in ["Polygon", "Rectangle"] and len(coords) > 0:
-                # Récupération des coordonnées GPS (lon, lat)
                 ring = coords[0]
                 lats = [pt[1] for pt in ring]
                 lons = [pt[0] for pt in ring]
@@ -587,7 +584,6 @@ elif menu == "🌱 Cartographie & Parcelles":
                 center_lat_val = round(sum(lats) / len(lats), 6)
                 center_lon_val = round(sum(lons) / len(lons), 6)
 
-                # Calcul géodésique de la surface
                 lat_avg = math.radians(center_lat_val)
                 m_per_deg_lat = 111139.0
                 m_per_deg_lon = 111139.0 * math.cos(lat_avg)
@@ -606,7 +602,6 @@ elif menu == "🌱 Cartographie & Parcelles":
 
                 st.success(f"📐 **Emprise capturée ({geom_type}) :** Centre GPS ({center_lat_val}, {center_lon_val}) | Superficie : **{calc_surf_ha} Ha**")
 
-            # Cas 2 : Marqueur simple posé
             elif geom_type == "Point" and len(coords) >= 2:
                 center_lon_val = round(coords[0], 6)
                 center_lat_val = round(coords[1], 6)
@@ -614,7 +609,6 @@ elif menu == "🌱 Cartographie & Parcelles":
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # 2. Formulaire pré-rempli automatiquement avec les données capturées
     st.markdown("<div class='card-container'>", unsafe_allow_html=True)
     st.subheader("➕ 2. Enregistrement de la Parcelle & Génération Fiche A4")
     
@@ -651,7 +645,6 @@ elif menu == "🌱 Cartographie & Parcelles":
             else:
                 st.warning("⚠️ Indiquez un nom de parcelle.")
     
-    # Téléchargement Fiche A4
     if 'last_created_pdf' in st.session_state:
         st.markdown("---")
         st.download_button(
@@ -664,7 +657,6 @@ elif menu == "🌱 Cartographie & Parcelles":
         )
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # 3. Liste & Suppression
     st.markdown("<div class='card-container'>", unsafe_allow_html=True)
     st.subheader("🗑️ Liste & Suppression des Parcelles")
     if not df_c.empty:
@@ -779,9 +771,8 @@ elif menu == "⏰ Pointage des Horaires":
                     st.rerun()
 
         st.markdown("---")
-        st.subheader("📜 Historique des pointages de la parcelle (avec suppression)")
+        st.subheader("📜 Historique des pointages de la parcelle")
         df_pts = load_table('pointage')
-        # Correction stricte : Filtrage rigoureux par champ_nom pour éviter d'afficher tous les pointages de la base
         df_pts_champ = df_pts[df_pts['champ_nom'].astype(str).str.strip().str.lower() == str(champ_selectionne).strip().lower()] if not df_pts.empty and 'champ_nom' in df_pts.columns else pd.DataFrame()
         
         if not df_pts_champ.empty:
@@ -1157,7 +1148,7 @@ elif menu == "💬 Espace Collaboration & Workspace":
                     st.warning("⚠️ Veuillez saisir un message ou joindre un fichier.")
 
     st.divider()
-    st.subheader("📜 Fil d'actualité, Médias, Rapports & Consignes de l'Exploitation (avec suppression)")
+    st.subheader("📜 Fil d'actualité, Médias, Rapports & Consignes de l'Exploitation")
     df_messages = load_table('messages_workspace')
     if not df_messages.empty:
         for _, msg in df_messages.iloc[::-1].iterrows():
@@ -1222,26 +1213,54 @@ elif menu == "💬 Espace Collaboration & Workspace":
 elif menu == "📜 Historique":
     st.title("📜 Historique des Modifications (Espace Administration)")
     df_h = load_table('historique_modifications')
-    # Correction stricte : Filtrage optionnel ou affichage complet propre et clair ordonné du plus récent au plus ancien
     st.dataframe(df_h.iloc[::-1].reset_index(drop=True) if not df_h.empty else df_h, use_container_width=True)
 
 elif menu == "🔐 Paramètres & Liste Blanche":
-    st.title("🔐 Paramètres & Liste Blanche (Espace Administration)")
+    st.title("🔐 Paramètres, Liste Blanche & Sauvegarde Base de Données (Administration)")
+    
+    # Section Sauvegarde et Restauration XXL (Anti-perte Cloud)
+    st.markdown("<div class='card-container'>", unsafe_allow_html=True)
+    st.subheader("💾 Sauvegarde & Restauration de la Base de Données")
+    st.write("Téléchargez une copie de sauvegarde de votre base de données SQLite pour éviter toute perte de données en cas de redémarrage ou de réinitialisation du cloud.")
+    
+    col_bk1, col_bk2 = st.columns(2)
+    with col_bk1:
+        if os.path.exists(DB_FILE):
+            with open(DB_FILE, "rb") as f_db:
+                st.download_button(
+                    label="📥 Télécharger la Sauvegarde (.db)",
+                    data=f_db,
+                    file_name=f"agrigestion_backup_{datetime.now().strftime('%Y%m%d_%H%M')}.db",
+                    mime="application/octet-stream",
+                    use_container_width=True,
+                    type="primary"
+                )
+    with col_bk2:
+        uploaded_backup = st.file_uploader("Restaurer une sauvegarde (.db)", type=["db"])
+        if uploaded_backup is not None:
+            if st.button("🔄 Appliquer la Restauration", use_container_width=True):
+                with open(DB_FILE, "wb") as f_rest:
+                    f_rest.write(uploaded_backup.getbuffer())
+                st.success("✅ Base de données restaurée avec succès ! Veuillez actualiser la page.")
+                st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
+    
+    st.markdown("<br>", unsafe_allow_html=True)
     with st.form("form_add_user"):
-        st.subheader("Ajouter un nouvel utilisateur / rôle")
+        st.subheader("Ajouter un nouvel utilisateur / rôle (Propriétaire, Gestionnaire, etc.)")
         mail_new = st.text_input("E-mail professionnel")
         pwd_new = st.text_input("Mot de passe", type="password")
         prenom_new = st.text_input("Prénom")
         nom_new = st.text_input("Nom")
-        role_new = st.selectbox("Rôle attribué", ["Administration", "Gestionnaire", "Technicien"])
+        role_new = st.selectbox("Rôle attribué", ["Administration", "Gestionnaire", "Propriétaire", "Technicien"])
         if st.form_submit_button("Enregistrer l'utilisateur", use_container_width=True):
             if mail_new.strip():
                 execute_query("INSERT INTO whitelist_users (email, password, prenom, nom, role, modules_autorises) VALUES (?, ?, ?, ?, ?, 'TOUS')", (mail_new.strip().lower(), pwd_new, prenom_new, nom_new, role_new), action_desc=f"Ajout utilisateur {mail_new}", user_info=tech)
-                st.success("✅ Utilisateur ajouté avec succès !")
+                st.success("✅ Utilisateur ajouté avec succès ! Il peut désormais se connecter.")
                 st.rerun()
                 
     st.markdown("---")
-    st.subheader("Utilisateurs autorisés (avec suppression)")
+    st.subheader("Utilisateurs autorisés")
     df_wl = load_table('whitelist_users')
     if not df_wl.empty:
         for _, usr in df_wl.iterrows():
