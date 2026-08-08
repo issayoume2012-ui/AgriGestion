@@ -26,7 +26,7 @@ st.set_page_config(
     page_title="AgriGestion YAM",
     page_icon="🌾",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
 # Création du dossier pour stocker les fichiers médias et rapports partagés
@@ -274,7 +274,7 @@ def export_parcelle_pdf(champ_nom, date_rapport):
     return buffer.getvalue()
 
 # ==========================================
-# 5. NAVIGATION & HEADER CLASSIFIÉ PAR RÔLE
+# 5. NAVIGATION STRUCTURÉE DANS LA SIDEBAR
 # ==========================================
 tech = st.session_state.get('registered_tech', {})
 prenom_tech = tech.get('prenom', 'Utilisateur')
@@ -331,11 +331,13 @@ else:
 if "selected_menu" not in st.session_state:
     st.session_state.selected_menu = tous_les_menus[0]
 
-col_nav1, col_nav2 = st.columns([3, 1])
-with col_nav1:
-    menu = st.selectbox("📌 Navigation Principale (Classée par Rôle)", tous_les_menus, index=tous_les_menus.index(st.session_state.selected_menu) if st.session_state.selected_menu in tous_les_menus else 0)
+# Organisation ergonomique de la navigation via la barre latérale (sidebar)
+with st.sidebar:
+    st.markdown("### 🧭 Menu Principal")
+    menu = st.radio("Navigation par Rôle", tous_les_menus, index=tous_les_menus.index(st.session_state.selected_menu) if st.session_state.selected_menu in tous_les_menus else 0)
     st.session_state.selected_menu = menu
-with col_nav2:
+    
+    st.markdown("---")
     if st.button("🚪 Déconnexion", use_container_width=True):
         st.session_state.authenticated = False
         st.rerun()
@@ -1064,7 +1066,7 @@ elif menu == "💬 Espace Collaboration & Workspace":
             else:
                 destinataire_email = st.text_input("Saisir l'E-mail du destinataire :", placeholder="destinataire@exemple.com")
         
-        noms_champs_list = db_champs['nom'].values.tolist() if not db_champs.empty and 'nom' in db_champs.columns else []
+        noms_champs_list = db_champs['nom'].values.tolist() if not df_champs.empty and 'nom' in df_champs.columns else []
         champ_concerne = st.selectbox("Parcelle liée (Optionnel) :", ["Aucune"] + noms_champs_list)
         texte_message = st.text_area("Légende / Message descriptif ou lien Google Meet collé :", placeholder="Ex: Rapport d'inspection ou collez le lien de la réunion ici...")
         
