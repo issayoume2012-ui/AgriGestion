@@ -9,3 +9,11 @@ streamlit
 streamlit-folium
 folium
 geopy
+streamlit
+supabase
+pandas
+folium
+streamlit-folium
+reportlab
+geopy
+streamlit-js-eval
