@@ -37,106 +37,23 @@ if not os.path.exists(UPLOAD_DIR):
 
 st.markdown("""
     <style>
-        /* ===== DESIGN PREMIUM — lisibilité renforcée ===== */
-        :root {
-            --agri-green: #0b6b4f;
-            --agri-green-2: #0f8a68;
-            --agri-gold: #c59b4b;
-            --agri-ink: #17211d;
-            --agri-muted: #52615a;
-            --agri-bg: #f5f7f6;
-            --agri-card: #ffffff;
-            --agri-border: #d9e2dd;
-        }
-        .stApp {
-            background: linear-gradient(135deg, #f8faf9 0%, #eef5f1 52%, #f8f5ee 100%);
-            color: var(--agri-ink);
-        }
-        .main .block-container {
-            padding-top: 1.4rem;
-            padding-bottom: 3rem;
-            max-width: 1500px;
-        }
-        /* Tous les textes Streamlit : contraste fort et taille confortable */
-        .stApp, .stApp p, .stApp label, .stApp span, .stApp div, .stApp li,
-        .stApp textarea, .stApp input, .stApp button {
-            font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        }
-        .stMarkdown, .stMarkdown p, .stMarkdown li {
-            color: #1d2924 !important;
-            font-size: 1rem !important;
-            line-height: 1.62 !important;
-        }
-        .stCaption, small { color: #52615a !important; }
-        h1, h2, h3, h4 { color: #123d2f !important; letter-spacing: -0.02em; }
-        h1 { font-size: clamp(1.9rem, 3vw, 2.65rem) !important; font-weight: 800 !important; }
-        h2 { font-size: clamp(1.45rem, 2.2vw, 2rem) !important; font-weight: 750 !important; }
-        h3 { font-size: 1.25rem !important; font-weight: 700 !important; }
-
-        .main-header {
-            background: linear-gradient(120deg, #ffffff 0%, #f3faf6 65%, #fffaf1 100%);
-            padding: 18px 24px; border-radius: 20px;
-            border: 1px solid var(--agri-border);
-            box-shadow: 0 12px 35px rgba(17, 55, 42, .10);
-            margin-bottom: 22px;
-        }
-        .main-header b { color: #123d2f !important; font-size: 1.08rem; }
-        .card-container {
-            background: rgba(255,255,255,.96); padding: 24px; border-radius: 20px;
-            border: 1px solid #dce7e1; box-shadow: 0 10px 28px rgba(17,55,42,.08);
-            margin-bottom: 18px;
-        }
-        .badge-role {
-            background: #e7f4ee; color: #0b5c44 !important; padding: 5px 10px;
-            border-radius: 999px; font-size: 12px; font-weight: 800; border: 1px solid #cce5d9;
-        }
-        /* Sidebar */
-        [data-testid="stSidebar"] {
-            background: linear-gradient(180deg, #0d3328 0%, #0a4a38 48%, #0e3a2e 100%);
-            border-right: 1px solid rgba(255,255,255,.12);
-        }
-        [data-testid="stSidebar"] * { color: #f3fbf7 !important; }
-        [data-testid="stSidebar"] .stRadio label {
-            background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.10);
-            border-radius: 12px; padding: 8px 10px; margin-bottom: 5px;
-        }
-        [data-testid="stSidebar"] .stRadio label:hover { background: rgba(255,255,255,.15); }
-        /* Inputs */
-        div[data-baseweb="input"] > div, div[data-baseweb="textarea"] > div,
-        div[data-baseweb="select"] > div {
-            background: #ffffff !important; border: 1px solid #cbd8d2 !important;
-            border-radius: 12px !important; min-height: 44px;
-        }
-        input, textarea { color: #17211d !important; font-size: 16px !important; }
-        [data-baseweb="select"] * { color: #17211d !important; }
-        label { font-weight: 700 !important; color: #29443a !important; font-size: 0.96rem !important; }
-        /* Boutons */
-        div.stButton > button, .stDownloadButton > button, .stFormSubmitButton > button {
-            width: 100%; border-radius: 12px; font-weight: 750; padding: .72rem 1rem;
-            border: 1px solid #c8d9d1; background: #ffffff; color: #17382c !important;
-            box-shadow: 0 5px 15px rgba(16,65,48,.07); transition: all .18s ease;
-        }
-        div.stButton > button:hover, .stDownloadButton > button:hover, .stFormSubmitButton > button:hover {
-            transform: translateY(-1px); border-color: #0f8a68; box-shadow: 0 8px 20px rgba(16,65,48,.13);
-        }
-        /* Tables */
-        [data-testid="stDataFrame"] { border: 1px solid #d6e1db; border-radius: 14px; overflow: hidden; }
-        /* Metrics */
-        [data-testid="stMetric"] {
-            background: rgba(255,255,255,.92); border: 1px solid #dce7e1; border-radius: 16px;
-            padding: 15px; box-shadow: 0 7px 20px rgba(17,55,42,.07);
-        }
-        [data-testid="stMetricLabel"] { color: #52615a !important; font-weight: 700 !important; }
-        [data-testid="stMetricValue"] { color: #0b5c44 !important; font-weight: 850 !important; }
-        /* Expander / alert */
-        [data-testid="stExpander"] { border: 1px solid #d5e2dc; border-radius: 14px; background: #fff; }
-        [data-testid="stAlert"] { border-radius: 14px; }
-        hr { border-color: #d8e3de !important; }
-        @media(max-width: 768px) {
-            .stMetric { font-size: 14px !important; }
-            .card-container { padding: 17px; border-radius: 15px; }
-            .main .block-container { padding-left: 1rem; padding-right: 1rem; }
-        }
+        .stApp { background: linear-gradient(135deg,#f7faf8 0%,#eef5f0 100%); color:#17251d; }
+        [data-testid="stSidebar"] { background: linear-gradient(180deg,#10281d 0%,#173b29 100%); }
+        [data-testid="stSidebar"] * { color:#f5fbf7 !important; }
+        .main-header { background:linear-gradient(135deg,#ffffff,#eef7f0); padding:22px 28px; border:1px solid #d7e7dc; border-radius:22px; box-shadow:0 12px 35px rgba(20,70,40,.10); margin:8px 0 22px; display:flex; justify-content:space-between; align-items:center; gap:16px; }
+        .brand-title { font-size:30px; font-weight:900; color:#123b28; letter-spacing:-.5px; }
+        .brand-subtitle { font-size:13px; color:#5b6f63; margin-top:3px; }
+        .user-badge { background:#dff2e6; color:#17482d; border:1px solid #bddbc8; padding:9px 14px; border-radius:999px; font-weight:700; white-space:nowrap; }
+        .card-container { background:rgba(255,255,255,.96); padding:22px; border:1px solid #dce9df; border-radius:18px; box-shadow:0 10px 30px rgba(24,68,42,.08); margin-bottom:18px; }
+        div.stButton > button { border-radius:12px; font-weight:750; min-height:42px; border:1px solid #cfe0d4; background:#ffffff; color:#163b27; }
+        div.stButton > button:hover { border-color:#4e9c6b; color:#123b28; box-shadow:0 5px 18px rgba(37,110,65,.13); }
+        .stTabs [data-baseweb="tab-list"] { gap:8px; background:#ffffff; padding:8px; border:1px solid #dce9df; border-radius:16px; box-shadow:0 8px 25px rgba(20,70,40,.07); }
+        .stTabs [data-baseweb="tab"] { height:44px; border-radius:11px; font-weight:800; color:#315342; }
+        .stTabs [aria-selected="true"] { background:#dff2e6; color:#0e4a2a !important; }
+        .stTextInput input,.stNumberInput input,.stTextArea textarea { color:#17251d !important; background:#ffffff !important; }
+        label, .stMarkdown, .stCaption, .stSelectbox, .stTextInput, .stNumberInput, .stTextArea { color:#17251d !important; }
+        [data-testid="stMetricValue"] { color:#123b28; font-weight:900; }
+        @media(max-width:768px){ .main-header{flex-direction:column;align-items:flex-start}.user-badge{white-space:normal}.brand-title{font-size:24px} }
     </style>
 """, unsafe_allow_html=True)
 
@@ -367,7 +284,7 @@ def export_parcelle_pdf(champ_nom, date_rapport):
     return buffer.getvalue()
 
 # ==========================================
-# 5. NAVIGATION STRUCTURÉE DANS LA SIDEBAR
+# 5. NAVIGATION PREMIUM EN 5 GRANDS ONGLETS
 # ==========================================
 tech = st.session_state.get('registered_tech', {})
 prenom_tech = tech.get('prenom', 'Utilisateur')
@@ -375,76 +292,84 @@ nom_tech = tech.get('nom', '')
 role_tech = tech.get('role', 'Technicien')
 email_connecte = tech.get('gmail', '').lower()
 
-st.markdown(f"""
-    <div class="main-header">
-        <div><b>🌾 AgriGestion Pro (Supabase)</b> | <span style="color: #10b981; font-weight: 600;">{prenom_tech} {nom_tech}</span> — Rôle : <span class="badge-role">{role_tech}</span></div>
-    </div>
-""", unsafe_allow_html=True)
-
+# Menu stable : uniquement les composants natifs Streamlit sont utilisés.
+# Cela évite les conflits React/DOM du type "removeChild" provoqués par du JavaScript
+# ou des éléments HTML qui modifient l'arbre DOM de Streamlit.
 menu_administration = [
-    "🔐 Paramètres & Liste Blanche",
-    "📜 Historique"
+    "🔐 Paramètres & Liste Blanche", "📜 Historique"
 ]
-
 menu_gestionnaire = [
-    "📊 Tableau de Bord",
-    "👥 Groupes & Membres",
-    "💰 Finances & Marges",
-    "📦 Stocks d'Intrants",
-    "🚜 Maintenance Matériel",
-    "📈 Rentabilité & ROI"
+    "📊 Tableau de Bord", "👥 Groupes & Membres", "💰 Finances & Marges",
+    "📦 Stocks d'Intrants", "🚜 Maintenance Matériel", "📈 Rentabilité & ROI"
 ]
-
 menu_techniciens = [
-    "🌱 Cartographie & Parcelles",
-    "⏰ Pointage des Horaires",
-    "📅 Planning & Travaux",
-    "🌾 Récoltes & Rendements",
-    "🌧️ Pluviométrie",
-    "⚠️ Incidents",
-    "🏷️ Traçabilité & Lots",
-    "💧 Irrigation & Eau",
-    "🌤️ Risques & Météo",
+    "🌱 Cartographie & Parcelles", "⏰ Pointage des Horaires", "📅 Planning & Travaux",
+    "🌾 Récoltes & Rendements", "🌧️ Pluviométrie", "⚠️ Incidents",
+    "🏷️ Traçabilité & Lots", "💧 Irrigation & Eau", "🌤️ Risques & Météo",
     "📑 EXPORT RAPPORT PARCELLE"
 ]
-
-menu_commun = [
-    "💬 Espace Collaboration & Workspace"
-]
+menu_commun = ["💬 Espace Collaboration & Workspace"]
 
 if role_tech == "Administration" or email_connecte == "iy@2012":
-    tous_les_menus = menu_commun + menu_administration + menu_gestionnaire + menu_techniciens
-elif role_tech == "Gestionnaire":
-    tous_les_menus = menu_commun + menu_gestionnaire + menu_techniciens
-elif role_tech == "Propriétaire":
-    tous_les_menus = menu_commun + menu_gestionnaire + menu_techniciens
-else: 
-    tous_les_menus = menu_commun + menu_techniciens
+    accessibles = menu_commun + menu_administration + menu_gestionnaire + menu_techniciens
+elif role_tech in ("Gestionnaire", "Propriétaire"):
+    accessibles = menu_commun + menu_gestionnaire + menu_techniciens
+else:
+    accessibles = menu_commun + menu_techniciens
 
-if "selected_menu" not in st.session_state:
-    st.session_state.selected_menu = tous_les_menus[0] if tous_les_menus else "📊 Tableau de Bord"
+groupes = {
+    "🏠 ACCUEIL": [m for m in ["📊 Tableau de Bord"] if m in accessibles],
+    "🌱 EXPLOITATION": [m for m in ["🌱 Cartographie & Parcelles", "📅 Planning & Travaux", "🌾 Récoltes & Rendements", "🌧️ Pluviométrie", "💧 Irrigation & Eau", "🌤️ Risques & Météo"] if m in accessibles],
+    "👥 ÉQUIPE & OPÉRATIONS": [m for m in ["👥 Groupes & Membres", "⏰ Pointage des Horaires", "⚠️ Incidents", "🏷️ Traçabilité & Lots", "💬 Espace Collaboration & Workspace"] if m in accessibles],
+    "💰 GESTION & MATÉRIEL": [m for m in ["💰 Finances & Marges", "📦 Stocks d'Intrants", "🚜 Maintenance Matériel", "📈 Rentabilité & ROI"] if m in accessibles],
+    "⚙️ ADMINISTRATION": [m for m in ["🔐 Paramètres & Liste Blanche", "📜 Historique", "📑 EXPORT RAPPORT PARCELLE"] if m in accessibles],
+}
 
-# Valeur de secours AVANT toute utilisation de `menu`. Cela évite le NameError
-# lors d'un rerun Streamlit, d'un changement de rôle ou d'une liste de menus vide.
-menu = st.session_state.get("selected_menu", tous_les_menus[0] if tous_les_menus else "📊 Tableau de Bord")
+# Mémoriser la page courante sans jamais supposer qu'une variable `menu` existe.
+if "selected_menu" not in st.session_state or st.session_state.selected_menu not in accessibles:
+    st.session_state.selected_menu = accessibles[0] if accessibles else "📊 Tableau de Bord"
 
-# Organisation ergonomique de la navigation via la barre latérale (sidebar)
+st.markdown(f"""
+<div class="main-header">
+  <div>
+    <div class="brand-title">🌾 AgriGestion YAM</div>
+    <div class="brand-subtitle">Pilotage agricole intelligent · espace sécurisé</div>
+  </div>
+  <div class="user-badge">👤 {prenom_tech} {nom_tech} · {role_tech}</div>
+</div>
+""", unsafe_allow_html=True)
+
+tab_labels = list(groupes.keys())
+tabs = st.tabs(tab_labels)
+for tab, label in zip(tabs, tab_labels):
+    with tab:
+        items = groupes[label]
+        if items:
+            # Navigation secondaire native, horizontale, en haut de la page.
+            cols = st.columns(min(len(items), 5))
+            for i, item in enumerate(items):
+                with cols[i % len(cols)]:
+                    if st.button(item, key=f"topnav_{label}_{i}", use_container_width=True):
+                        st.session_state.selected_menu = item
+                        st.rerun()
+        else:
+            st.caption("Aucune fonctionnalité disponible pour votre rôle.")
+
+menu = st.session_state.get("selected_menu", accessibles[0] if accessibles else "📊 Tableau de Bord")
+
 with st.sidebar:
-    st.markdown("### 🧭 Menu Principal")
-    if tous_les_menus:
-        menu = st.radio(
-            "Navigation par Rôle",
-            tous_les_menus,
-            index=tous_les_menus.index(st.session_state.selected_menu) if st.session_state.selected_menu in tous_les_menus else 0,
-            key="navigation_principale"
-        )
-        st.session_state.selected_menu = menu
-    else:
-        menu = "📊 Tableau de Bord"
-        st.session_state.selected_menu = menu
-    
+    st.markdown("## 🌾 AgriGestion YAM")
+    st.caption(f"Connecté : {prenom_tech} {nom_tech}")
+    st.markdown("### 📍 Page active")
+    st.info(menu)
     st.markdown("---")
-    if st.button("🚪 Déconnexion", use_container_width=True, key="btn_deconnexion"):
+    st.markdown("### 🧭 Accès rapide")
+    for item in accessibles:
+        if st.button(item, key=f"side_{item}", use_container_width=True):
+            st.session_state.selected_menu = item
+            st.rerun()
+    st.markdown("---")
+    if st.button("🚪 Déconnexion", use_container_width=True):
         st.session_state.authenticated = False
         st.rerun()
 
@@ -452,39 +377,36 @@ db_champs = load_table('champs')
 champ_id_actif = None
 champ_selectionne = "Aucune parcelle"
 
-# Sécurité supplémentaire : `menu` est garanti défini avant cette condition.
+# Sélecteur de parcelle uniquement hors cartographie.
 if menu != "🌱 Cartographie & Parcelles":
     if not db_champs.empty and 'nom' in db_champs.columns and 'id' in db_champs.columns:
         liste_champs = {row['nom']: row['id'] for _, row in db_champs.iterrows()}
-        col_sel1, col_sel2 = st.columns([3, 1])
-        with col_sel1:
-            champ_selectionne = st.selectbox("📍 Parcelle Active en Cours :", list(liste_champs.keys()))
-            champ_id_actif = liste_champs[champ_selectionne]
-            
-            row_champ_actuel = db_champs[db_champs['id'] == champ_id_actif].iloc[0]
-            pin_enreg = row_champ_actuel.get('code_pin')
-            has_pin = pin_enreg is not None and str(pin_enreg).strip() != "" and str(pin_enreg).strip() != "None"
-            
-            if has_pin:
-                if f"pin_ok_{champ_id_actif}" not in st.session_state:
-                    st.session_state[f"pin_ok_{champ_id_actif}"] = False
-                if not st.session_state[f"pin_ok_{champ_id_actif}"]:
-                    st.warning(f"🔒 Cette parcelle (**{champ_selectionne}**) est protégée par code PIN.")
-                    saisie_pin = st.text_input("Entrez le code PIN :", type="password", key=f"input_pin_{champ_id_actif}")
-                    if st.button("🔓 Déverrouiller", key=f"btn_unlock_{champ_id_actif}"):
-                        if saisie_pin == str(pin_enreg):
-                            st.session_state[f"pin_ok_{champ_id_actif}"] = True
-                            st.success("✅ Accès autorisé !")
-                            st.rerun()
-                        else:
-                            st.error("❌ Code PIN incorrect.")
-
-        with col_sel2:
-            st.write("")
-            if st.button("➕ Créer une Parcelle"):
-                st.session_state.selected_menu = "🌱 Cartographie & Parcelles"
-                st.rerun()
-
+        if liste_champs:
+            col_sel1, col_sel2 = st.columns([3, 1])
+            with col_sel1:
+                champ_selectionne = st.selectbox("📍 Parcelle active", list(liste_champs.keys()))
+                champ_id_actif = liste_champs[champ_selectionne]
+                row_champ_actuel = db_champs[db_champs['id'] == champ_id_actif].iloc[0]
+                pin_enreg = row_champ_actuel.get('code_pin')
+                has_pin = pin_enreg is not None and str(pin_enreg).strip() not in ("", "None", "nan")
+                if has_pin:
+                    if f"pin_ok_{champ_id_actif}" not in st.session_state:
+                        st.session_state[f"pin_ok_{champ_id_actif}"] = False
+                    if not st.session_state[f"pin_ok_{champ_id_actif}"]:
+                        st.warning(f"🔒 Parcelle protégée : {champ_selectionne}")
+                        saisie_pin = st.text_input("Code PIN", type="password", key=f"input_pin_{champ_id_actif}")
+                        if st.button("🔓 Déverrouiller", key=f"btn_unlock_{champ_id_actif}"):
+                            if saisie_pin == str(pin_enreg):
+                                st.session_state[f"pin_ok_{champ_id_actif}"] = True
+                                st.success("✅ Accès autorisé")
+                                st.rerun()
+                            else:
+                                st.error("❌ Code PIN incorrect")
+            with col_sel2:
+                st.write("")
+                if st.button("➕ Nouvelle parcelle", use_container_width=True):
+                    st.session_state.selected_menu = "🌱 Cartographie & Parcelles"
+                    st.rerun()
     st.divider()
 
 # ==========================================
@@ -1173,7 +1095,7 @@ elif menu == "💬 Espace Collaboration & Workspace":
             else:
                 destinataire_email = st.text_input("Saisir l'E-mail du destinataire :", placeholder="destinataire@exemple.com")
         
-        noms_champs_list = db_champs['nom'].dropna().astype(str).tolist() if not db_champs.empty and 'nom' in db_champs.columns else []
+        noms_champs_list = db_champs['nom'].values.tolist() if not df_champs.empty and 'nom' in df_champs.columns else []
         champ_concerne = st.selectbox("Parcelle liée (Optionnel) :", ["Aucune"] + noms_champs_list)
         texte_message = st.text_area("Légende / Message descriptif ou lien Google Meet collé :", placeholder="Ex: Rapport d'inspection ou collez le lien de la réunion ici...")
         
