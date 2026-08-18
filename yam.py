@@ -1094,7 +1094,8 @@ elif menu == "💬 Espace Collaboration & Workspace":
             else:
                 destinataire_email = st.text_input("Saisir l'E-mail du destinataire :", placeholder="destinataire@exemple.com")
         
-        noms_champs_list = db_champs['nom'].values.tolist() if not df_champs.empty and 'nom' in df_champs.columns else []
+# S'assure de charger ou d'utiliser le bon DataFrame (df_champs)
+        noms_champs_list = df_champs['nom'].values.tolist() if 'df_champs' in locals() and not df_champs.empty and 'nom' in df_champs.columns else []
         champ_concerne = st.selectbox("Parcelle liée (Optionnel) :", ["Aucune"] + noms_champs_list)
         texte_message = st.text_area("Légende / Message descriptif ou lien Google Meet collé :", placeholder="Ex: Rapport d'inspection ou collez le lien de la réunion ici...")
         
