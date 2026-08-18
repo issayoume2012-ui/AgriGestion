@@ -1,6 +1,5 @@
 
 import streamlit as st
-import streamlit.components.v1 as components
 import pandas as pd
 from datetime import datetime, date
 import io
@@ -38,128 +37,105 @@ if not os.path.exists(UPLOAD_DIR):
 
 st.markdown("""
     <style>
+        /* ===== DESIGN PREMIUM — lisibilité renforcée ===== */
         :root {
-            --yam-green: #0f6b4f;
-            --yam-green-2: #16845f;
-            --yam-gold: #d6a84f;
-            --yam-cream: #fbf8ef;
-            --yam-ink: #17352c;
-            --yam-muted: #6b7d76;
-            --yam-border: rgba(15,107,79,.14);
+            --agri-green: #0b6b4f;
+            --agri-green-2: #0f8a68;
+            --agri-gold: #c59b4b;
+            --agri-ink: #17211d;
+            --agri-muted: #52615a;
+            --agri-bg: #f5f7f6;
+            --agri-card: #ffffff;
+            --agri-border: #d9e2dd;
         }
         .stApp {
-            background:
-                radial-gradient(circle at 10% 0%, rgba(214,168,79,.12), transparent 28%),
-                radial-gradient(circle at 90% 5%, rgba(15,107,79,.10), transparent 30%),
-                linear-gradient(135deg, #f8fbf8 0%, #fbf8ef 48%, #f3f8f5 100%);
+            background: linear-gradient(135deg, #f8faf9 0%, #eef5f1 52%, #f8f5ee 100%);
+            color: var(--agri-ink);
         }
-        [data-testid="stSidebar"] {
-            background:
-                linear-gradient(180deg, #103e31 0%, #0d5b45 45%, #083d31 100%);
-            border-right: 1px solid rgba(255,255,255,.08);
+        .main .block-container {
+            padding-top: 1.4rem;
+            padding-bottom: 3rem;
+            max-width: 1500px;
         }
-        [data-testid="stSidebar"] * { color: #f7fbf8; }
-        [data-testid="stSidebar"] .stRadio label,
-        [data-testid="stSidebar"] .stSelectbox label { color: #e9f5ef !important; }
-        [data-testid="stSidebar"] .stExpander {
-            border: 1px solid rgba(255,255,255,.12);
-            border-radius: 16px;
-            background: rgba(255,255,255,.055);
-            margin-bottom: 10px;
+        /* Tous les textes Streamlit : contraste fort et taille confortable */
+        .stApp, .stApp p, .stApp label, .stApp span, .stApp div, .stApp li,
+        .stApp textarea, .stApp input, .stApp button {
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         }
-        [data-testid="stSidebar"] .stExpander details {
-            border-radius: 16px;
+        .stMarkdown, .stMarkdown p, .stMarkdown li {
+            color: #1d2924 !important;
+            font-size: 1rem !important;
+            line-height: 1.62 !important;
         }
-        [data-testid="stSidebar"] .stButton > button {
-            border-radius: 12px;
-            border: 1px solid rgba(255,255,255,.16);
-            background: rgba(255,255,255,.09);
-            color: white;
-        }
-        div.stButton > button, .stDownloadButton > button {
-            width: 100%;
-            border-radius: 12px;
-            font-weight: 700;
-            min-height: 42px;
-            border: 1px solid rgba(15,107,79,.18);
-            transition: all .18s ease;
-            box-shadow: 0 6px 18px rgba(15,107,79,.08);
-        }
-        div.stButton > button:hover, .stDownloadButton > button:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 10px 24px rgba(15,107,79,.15);
-        }
+        .stCaption, small { color: #52615a !important; }
+        h1, h2, h3, h4 { color: #123d2f !important; letter-spacing: -0.02em; }
+        h1 { font-size: clamp(1.9rem, 3vw, 2.65rem) !important; font-weight: 800 !important; }
+        h2 { font-size: clamp(1.45rem, 2.2vw, 2rem) !important; font-weight: 750 !important; }
+        h3 { font-size: 1.25rem !important; font-weight: 700 !important; }
+
         .main-header {
-            background: linear-gradient(120deg, rgba(255,255,255,.98), rgba(251,248,239,.96));
-            padding: 18px 24px;
-            border-radius: 20px;
-            border: 1px solid var(--yam-border);
-            box-shadow: 0 12px 36px rgba(15,107,79,.09);
+            background: linear-gradient(120deg, #ffffff 0%, #f3faf6 65%, #fffaf1 100%);
+            padding: 18px 24px; border-radius: 20px;
+            border: 1px solid var(--agri-border);
+            box-shadow: 0 12px 35px rgba(17, 55, 42, .10);
             margin-bottom: 22px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
         }
-        .brand-mark {
-            font-size: 24px;
-            font-weight: 900;
-            letter-spacing: .2px;
-            color: var(--yam-green);
-        }
-        .brand-sub {
-            color: var(--yam-muted);
-            font-size: 12px;
-            margin-top: 2px;
-        }
-        .badge-role {
-            background: linear-gradient(135deg, #f0d995, #d6a84f);
-            padding: 5px 10px;
-            border-radius: 999px;
-            font-size: 11px;
-            font-weight: 800;
-            color: #3d2d0c;
-            box-shadow: 0 4px 12px rgba(214,168,79,.18);
-        }
+        .main-header b { color: #123d2f !important; font-size: 1.08rem; }
         .card-container {
-            background: rgba(255,255,255,.93);
-            padding: 22px;
-            border-radius: 20px;
-            border: 1px solid var(--yam-border);
-            box-shadow: 0 12px 34px rgba(15,107,79,.07);
+            background: rgba(255,255,255,.96); padding: 24px; border-radius: 20px;
+            border: 1px solid #dce7e1; box-shadow: 0 10px 28px rgba(17,55,42,.08);
             margin-bottom: 18px;
         }
-        .hero-yam {
-            background: linear-gradient(125deg, #0d5b45 0%, #16845f 55%, #c89b43 140%);
-            color: white;
-            padding: 28px;
-            border-radius: 24px;
-            box-shadow: 0 18px 45px rgba(13,91,69,.22);
-            margin-bottom: 20px;
+        .badge-role {
+            background: #e7f4ee; color: #0b5c44 !important; padding: 5px 10px;
+            border-radius: 999px; font-size: 12px; font-weight: 800; border: 1px solid #cce5d9;
         }
-        .hero-yam h1 { margin: 0; color: white; font-size: 30px; }
-        .hero-yam p { margin: 7px 0 0; color: rgba(255,255,255,.86); }
-        .section-kicker {
-            color: var(--yam-gold);
-            font-size: 11px;
-            font-weight: 900;
-            letter-spacing: 1.5px;
-            text-transform: uppercase;
+        /* Sidebar */
+        [data-testid="stSidebar"] {
+            background: linear-gradient(180deg, #0d3328 0%, #0a4a38 48%, #0e3a2e 100%);
+            border-right: 1px solid rgba(255,255,255,.12);
         }
-        div[data-testid="stMetric"] {
-            background: rgba(255,255,255,.82);
-            border: 1px solid var(--yam-border);
-            padding: 12px 15px;
-            border-radius: 16px;
-            box-shadow: 0 8px 24px rgba(15,107,79,.06);
+        [data-testid="stSidebar"] * { color: #f3fbf7 !important; }
+        [data-testid="stSidebar"] .stRadio label {
+            background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.10);
+            border-radius: 12px; padding: 8px 10px; margin-bottom: 5px;
         }
-        .stTextInput input, .stTextArea textarea, .stNumberInput input,
-        .stSelectbox [data-baseweb="select"] > div {
-            border-radius: 11px !important;
+        [data-testid="stSidebar"] .stRadio label:hover { background: rgba(255,255,255,.15); }
+        /* Inputs */
+        div[data-baseweb="input"] > div, div[data-baseweb="textarea"] > div,
+        div[data-baseweb="select"] > div {
+            background: #ffffff !important; border: 1px solid #cbd8d2 !important;
+            border-radius: 12px !important; min-height: 44px;
         }
+        input, textarea { color: #17211d !important; font-size: 16px !important; }
+        [data-baseweb="select"] * { color: #17211d !important; }
+        label { font-weight: 700 !important; color: #29443a !important; font-size: 0.96rem !important; }
+        /* Boutons */
+        div.stButton > button, .stDownloadButton > button, .stFormSubmitButton > button {
+            width: 100%; border-radius: 12px; font-weight: 750; padding: .72rem 1rem;
+            border: 1px solid #c8d9d1; background: #ffffff; color: #17382c !important;
+            box-shadow: 0 5px 15px rgba(16,65,48,.07); transition: all .18s ease;
+        }
+        div.stButton > button:hover, .stDownloadButton > button:hover, .stFormSubmitButton > button:hover {
+            transform: translateY(-1px); border-color: #0f8a68; box-shadow: 0 8px 20px rgba(16,65,48,.13);
+        }
+        /* Tables */
+        [data-testid="stDataFrame"] { border: 1px solid #d6e1db; border-radius: 14px; overflow: hidden; }
+        /* Metrics */
+        [data-testid="stMetric"] {
+            background: rgba(255,255,255,.92); border: 1px solid #dce7e1; border-radius: 16px;
+            padding: 15px; box-shadow: 0 7px 20px rgba(17,55,42,.07);
+        }
+        [data-testid="stMetricLabel"] { color: #52615a !important; font-weight: 700 !important; }
+        [data-testid="stMetricValue"] { color: #0b5c44 !important; font-weight: 850 !important; }
+        /* Expander / alert */
+        [data-testid="stExpander"] { border: 1px solid #d5e2dc; border-radius: 14px; background: #fff; }
+        [data-testid="stAlert"] { border-radius: 14px; }
+        hr { border-color: #d8e3de !important; }
         @media(max-width: 768px) {
             .stMetric { font-size: 14px !important; }
-            .main-header { padding: 14px; }
-            .hero-yam { padding: 22px; }
+            .card-container { padding: 17px; border-radius: 15px; }
+            .main .block-container { padding-left: 1rem; padding-right: 1rem; }
         }
     </style>
 """, unsafe_allow_html=True)
@@ -401,23 +377,8 @@ email_connecte = tech.get('gmail', '').lower()
 
 st.markdown(f"""
     <div class="main-header">
-        <div>
-            <div class="brand-mark">🌾 AgriGestion YAM</div>
-            <div class="brand-sub">Pilotage agricole • Données • Parcelles • Équipe • Performance</div>
-        </div>
-        <div style="text-align:right;">
-            <div style="font-weight:800;color:#17352c;">{prenom_tech} {nom_tech}</div>
-            <span class="badge-role">{role_tech}</span>
-        </div>
+        <div><b>🌾 AgriGestion Pro (Supabase)</b> | <span style="color: #10b981; font-weight: 600;">{prenom_tech} {nom_tech}</span> — Rôle : <span class="badge-role">{role_tech}</span></div>
     </div>
-""", unsafe_allow_html=True)
-
-st.markdown("""
-<div class="hero-yam">
-  <div class="section-kicker">AGRICULTURE • DONNÉES • TERRAIN</div>
-  <h1>Un cockpit élégant pour piloter toute votre exploitation.</h1>
-  <p>Parcelles, équipes, récoltes, finances, météo, irrigation et collaboration réunis dans une expérience simple.</p>
-</div>
 """, unsafe_allow_html=True)
 
 menu_administration = [
@@ -461,122 +422,29 @@ else:
     tous_les_menus = menu_commun + menu_techniciens
 
 if "selected_menu" not in st.session_state:
-    st.session_state.selected_menu = (
-        menu_gestionnaire[0] if role_tech in ("Administration", "Gestionnaire", "Propriétaire")
-        else menu_techniciens[0]
-    )
+    st.session_state.selected_menu = tous_les_menus[0] if tous_les_menus else "📊 Tableau de Bord"
 
-# Navigation premium : modules regroupés par objectif pour les nouveaux utilisateurs.
-def _pick_group(group_items, key):
-    current = st.session_state.get("selected_menu", "")
-    options = ["— Ouvrir un module —"] + group_items
-    index = options.index(current) if current in options else 0
-    picked = st.radio("", options, index=index, key=key, label_visibility="collapsed")
-    if picked != "— Ouvrir un module —":
-        st.session_state.selected_menu = picked
-    return st.session_state.get("selected_menu", group_items[0] if group_items else "")
+# Valeur de secours AVANT toute utilisation de `menu`. Cela évite le NameError
+# lors d'un rerun Streamlit, d'un changement de rôle ou d'une liste de menus vide.
+menu = st.session_state.get("selected_menu", tous_les_menus[0] if tous_les_menus else "📊 Tableau de Bord")
 
+# Organisation ergonomique de la navigation via la barre latérale (sidebar)
 with st.sidebar:
-    st.markdown("""
-        <div style="padding:8px 6px 16px;">
-            <div style="font-size:28px;font-weight:900;">🌾 YAM</div>
-            <div style="font-size:12px;opacity:.78;">Votre cockpit agricole</div>
-        </div>
-    """, unsafe_allow_html=True)
-
-    st.caption(f"Connecté : {prenom_tech} {nom_tech}")
-    st.caption(f"Profil : {role_tech}")
-
-    if role_tech == "Administration" or email_connecte == "iy@2012":
-        with st.expander("⚙️ ADMINISTRATION", expanded=False):
-            _pick_group(menu_administration, "nav_admin")
-    if role_tech in ("Administration", "Gestionnaire", "Propriétaire"):
-        with st.expander("📊 PILOTAGE & FINANCES", expanded=True):
-            _pick_group(menu_gestionnaire, "nav_gestion")
-    with st.expander("🌱 EXPLOITATION AGRICOLE", expanded=True):
-        _pick_group(menu_techniciens, "nav_terrain")
-    with st.expander("🤝 COLLABORATION", expanded=False):
-        _pick_group(menu_commun, "nav_commun")
-
-    st.markdown("""
-        <div style="margin:16px 2px;padding:12px;border:1px solid rgba(255,255,255,.12);
-        border-radius:14px;background:rgba(255,255,255,.055);font-size:11px;line-height:1.5;">
-            <b>💡 Nouveau ici ?</b><br>
-            Commencez par <b>Tableau de Bord</b>, puis choisissez une <b>parcelle active</b>.
-            Les modules sont organisés par métier pour vous guider sans jargon.
-        </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown("### 🗣️ Assistant vocal")
-    st.caption("Lecture des consignes en français ou en wolof")
-    voice_fr = {
-        "📊 Tableau de Bord": "Bienvenue dans le tableau de bord. Consultez les indicateurs de votre exploitation.",
-        "🌱 Cartographie & Parcelles": "Cartographie et parcelles. Dessinez, localisez et enregistrez vos parcelles.",
-        "👥 Groupes & Membres": "Groupes et membres. Gérez les équipes et les employés.",
-        "⏰ Pointage des Horaires": "Pointage des horaires. Enregistrez la présence et les heures travaillées.",
-        "📅 Planning & Travaux": "Planning et travaux. Planifiez les activités agricoles.",
-        "🌾 Récoltes & Rendements": "Récoltes et rendements. Enregistrez les quantités récoltées et les prix.",
-        "💰 Finances & Marges": "Finances et marges. Suivez les dépenses, les ventes et la rentabilité.",
-        "📦 Stocks d'Intrants": "Stocks d'intrants. Contrôlez les engrais, semences, pesticides et carburants.",
-        "🚜 Maintenance Matériel": "Maintenance matériel. Suivez les équipements et leurs révisions.",
-        "📈 Rentabilité & ROI": "Rentabilité et retour sur investissement. Analysez la performance de vos parcelles.",
-        "🌧️ Pluviométrie": "Pluviométrie. Enregistrez et consultez les relevés de pluie.",
-        "⚠️ Incidents": "Incidents. Déclarez les problèmes observés sur la parcelle.",
-        "🏷️ Traçabilité & Lots": "Traçabilité et lots. Suivez les productions de la parcelle jusqu'au client.",
-        "💧 Irrigation & Eau": "Irrigation et eau. Enregistrez les volumes, méthodes et durées d'irrigation.",
-        "🌤️ Risques & Météo": "Risques et météo. Enregistrez les alertes et recommandations.",
-        "📑 EXPORT RAPPORT PARCELLE": "Export rapport parcelle. Générez un rapport PDF officiel.",
-        "💬 Espace Collaboration & Workspace": "Espace collaboration. Partagez messages, rapports, photos, vidéos et documents.",
-        "📜 Historique": "Historique des modifications. Consultez les opérations réalisées.",
-        "🔐 Paramètres & Liste Blanche": "Paramètres et liste blanche. Gérez les utilisateurs et la connexion Supabase."
-    }
-    voice_wo = {
-        "📊 Tableau de Bord": "Dalal ak jàmm ci tablo bord bi. Seetal lim yi ak xaalis yi ci sa kër gu tool.",
-        "🌱 Cartographie & Parcelles": "Karti ak parcelles. Tëral sa parcelle, bind ko te aar ko.",
-        "👥 Groupes & Membres": "Groupe ak nit ñi. Saytu sa équipe ak say liggéeykat.",
-        "⏰ Pointage des Horaires": "Pointage waxtu. Bind ñi ñëw ak waxtu liggéey bi.",
-        "📅 Planning & Travaux": "Planning ak liggéey. Tànnal ak tëral liggéey yi.",
-        "🌾 Récoltes & Rendements": "Récoltes ak rendement. Bind li ñu jële ak njariñam.",
-        "💰 Finances & Marges": "Xaalis ak marge. Saytu dépense yi, ventes yi ak njariñ bi.",
-        "📦 Stocks d'Intrants": "Stock intrants. Saytu engrais, semence, pesticide ak carburant.",
-        "🚜 Maintenance Matériel": "Maintenance matériel. Saytu masin yi ak seeni révision.",
-        "📈 Rentabilité & ROI": "Rentabilité. Xool ndax sa parcelle di jur njariñ.",
-        "🌧️ Pluviométrie": "Pluviométrie. Bind ndox mi taw ak bés bi.",
-        "⚠️ Incidents": "Incidents. Yégal bu amee jafe-jafe ci parcelle bi.",
-        "🏷️ Traçabilité & Lots": "Traçabilité ak lots. Toppal produit bi dale ci parcelle ba ci jëndkat bi.",
-        "💧 Irrigation & Eau": "Irrigation ak ndox. Bind ndox mi ñu jëfandikoo ak méthode bi.",
-        "🌤️ Risques & Météo": "Risques ak météo. Bind xelal yi ak ndigal yi.",
-        "📑 EXPORT RAPPORT PARCELLE": "Export rapport parcelle. Defal rapport PDF bu officiel.",
-        "💬 Espace Collaboration & Workspace": "Espace collaboration. Séddoo messages, rapports, photos ak documents.",
-        "📜 Historique": "Historique. Xool li ñu def ci application bi.",
-        "🔐 Paramètres & Liste Blanche": "Paramètres ak liste blanche. Saytu utilisateurs ak connexion Supabase."
-    }
-    phrase_fr = voice_fr.get(st.session_state.get("selected_menu",""), "Bienvenue dans AgriGestion YAM.")
-    phrase_wo = voice_wo.get(st.session_state.get("selected_menu",""), "Dalal ak jàmm ci AgriGestion YAM.")
-    voice_html = f"""
-    <div style="display:flex;gap:6px;">
-      <button onclick="speak('{phrase_fr.replace("'", "\\'")}','fr-FR')" style="flex:1;border:0;border-radius:10px;padding:9px;background:#d6a84f;color:#2f250c;font-weight:800;cursor:pointer;">🇫🇷 Français</button>
-      <button onclick="speak('{phrase_wo.replace("'", "\\'")}','wo-SN')" style="flex:1;border:0;border-radius:10px;padding:9px;background:#16845f;color:white;font-weight:800;cursor:pointer;">🇸🇳 Wolof</button>
-    </div>
-    <script>
-      function speak(text, lang) {{
-        if (!('speechSynthesis' in window)) {{
-          alert("La synthèse vocale n'est pas disponible sur ce navigateur.");
-          return;
-        }}
-        window.speechSynthesis.cancel();
-        const u = new SpeechSynthesisUtterance(text);
-        u.lang = lang;
-        u.rate = 0.92;
-        u.pitch = 1.0;
-        window.speechSynthesis.speak(u);
-      }}
-    </script>
-    """
-    components.html(voice_html, height=58)
-
+    st.markdown("### 🧭 Menu Principal")
+    if tous_les_menus:
+        menu = st.radio(
+            "Navigation par Rôle",
+            tous_les_menus,
+            index=tous_les_menus.index(st.session_state.selected_menu) if st.session_state.selected_menu in tous_les_menus else 0,
+            key="navigation_principale"
+        )
+        st.session_state.selected_menu = menu
+    else:
+        menu = "📊 Tableau de Bord"
+        st.session_state.selected_menu = menu
+    
     st.markdown("---")
-    if st.button("🚪 Déconnexion", use_container_width=True):
+    if st.button("🚪 Déconnexion", use_container_width=True, key="btn_deconnexion"):
         st.session_state.authenticated = False
         st.rerun()
 
@@ -584,6 +452,7 @@ db_champs = load_table('champs')
 champ_id_actif = None
 champ_selectionne = "Aucune parcelle"
 
+# Sécurité supplémentaire : `menu` est garanti défini avant cette condition.
 if menu != "🌱 Cartographie & Parcelles":
     if not db_champs.empty and 'nom' in db_champs.columns and 'id' in db_champs.columns:
         liste_champs = {row['nom']: row['id'] for _, row in db_champs.iterrows()}
