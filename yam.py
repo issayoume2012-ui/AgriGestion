@@ -26,7 +26,7 @@ st.set_page_config(
     page_title="AgriGestion YAM",
     page_icon="🌾",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
 # Création du dossier pour stocker les fichiers médias et rapports partagés
@@ -101,6 +101,74 @@ def load_table(table_name):
         return pd.DataFrame()
     except Exception as e:
         return pd.DataFrame()
+
+# ==========================================
+# 3 BIS. ISOLEMENT STRICT DES PARCELLES PAR UTILISATEUR
+# ==========================================
+def current_user():
+    return st.session_state.get('registered_tech', {}) or {}
+
+def current_user_email():
+    return str(current_user().get('gmail', '')).strip().lower()
+
+def is_general_admin():
+    u = current_user()
+    return str(u.get('role', '')).strip().lower() == 'administration' or current_user_email() == 'iy@2012'
+
+def parse_modules(value):
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(x).strip() for x in value]
+    txt = str(value).strip()
+    if not txt or txt.upper() == 'TOUS':
+        return ['TOUS']
+    return [x.strip() for x in txt.replace(';', ',').split(',') if x.strip()]
+
+def module_allowed(label):
+    if is_general_admin():
+        return True
+    allowed = parse_modules(current_user().get('modules_autorises', 'TOUS'))
+    return 'TOUS' in [x.upper() for x in allowed] or label in allowed
+
+@st.cache_data(ttl=30)
+def load_accessible_champs():
+    """Ne récupère que les parcelles autorisées pour l'utilisateur connecté.
+    L'administrateur général est le seul rôle qui peut récupérer toutes les parcelles."""
+    try:
+        query = supabase.table('champs').select('*')
+        if not is_general_admin():
+            email = current_user_email()
+            if not email:
+                return pd.DataFrame()
+            query = query.eq('createur_email', email)
+        response = query.execute()
+        return pd.DataFrame(response.data or [])
+    except Exception as e:
+        # Si la colonne de sécurité n'existe pas encore, l'application refuse
+        # volontairement l'accès aux parcelles plutôt que d'exposer les données.
+        if not is_general_admin():
+            st.error("🔒 Sécurité parcellaire : la colonne 'createur_email' doit être ajoutée à la table 'champs'. Exécutez le script SQL de migration fourni avec cette version.")
+        return pd.DataFrame()
+
+def require_champ_access(champ_id):
+    if champ_id is None:
+        return False
+    if is_general_admin():
+        return True
+    df = load_accessible_champs()
+    if df.empty or 'id' not in df.columns:
+        return False
+    try:
+        return int(champ_id) in set(pd.to_numeric(df['id'], errors='coerce').dropna().astype(int).tolist())
+    except Exception:
+        return False
+
+def accessible_champ_ids():
+    df = load_accessible_champs()
+    if df.empty or 'id' not in df.columns:
+        return []
+    return pd.to_numeric(df['id'], errors='coerce').dropna().astype(int).tolist()
 
 def execute_query(query_type, table_name, data=None, match_col=None, match_val=None, action_desc="", user_info=None):
     try:
@@ -239,7 +307,7 @@ def export_parcelle_pdf(champ_nom, date_rapport):
     elements.append(Paragraph(header_info, normal_style))
     elements.append(Spacer(1, 10))
 
-    df_c = load_table('champs')
+    df_c = load_accessible_champs()
     champ_id = None
     if not df_c.empty and 'nom' in df_c.columns:
         champ_info = df_c[df_c['nom'] == champ_nom]
@@ -302,6 +370,7 @@ menu_gestionnaire = [
     "📦 Stocks d'Intrants", "🚜 Maintenance Matériel", "📈 Rentabilité & ROI"
 ]
 menu_techniciens = [
+    "🧪 Poste Technique",
     "🌱 Cartographie & Parcelles", "⏰ Pointage des Horaires", "📅 Planning & Travaux",
     "🌾 Récoltes & Rendements", "🌧️ Pluviométrie", "⚠️ Incidents",
     "🏷️ Traçabilité & Lots", "💧 Irrigation & Eau", "🌤️ Risques & Météo",
@@ -309,15 +378,19 @@ menu_techniciens = [
 ]
 menu_commun = ["💬 Espace Collaboration & Workspace"]
 
-if role_tech == "Administration" or email_connecte == "iy@2012":
+if is_general_admin():
     accessibles = menu_commun + menu_administration + menu_gestionnaire + menu_techniciens
 elif role_tech in ("Gestionnaire", "Propriétaire"):
     accessibles = menu_commun + menu_gestionnaire + menu_techniciens
 else:
+    # Technicien Supérieur / Technicien / Stagiaire : uniquement les fonctions de terrain.
     accessibles = menu_commun + menu_techniciens
 
+# Respect du champ modules_autorises en plus du rôle.
+accessibles = [m for m in accessibles if module_allowed(m)]
+
 groupes = {
-    "🏠 ACCUEIL": [m for m in ["📊 Tableau de Bord"] if m in accessibles],
+    "🏠 ACCUEIL": [m for m in ["📊 Tableau de Bord", "🧪 Poste Technique"] if m in accessibles],
     "🌱 EXPLOITATION": [m for m in ["🌱 Cartographie & Parcelles", "📅 Planning & Travaux", "🌾 Récoltes & Rendements", "🌧️ Pluviométrie", "💧 Irrigation & Eau", "🌤️ Risques & Météo"] if m in accessibles],
     "👥 ÉQUIPE & OPÉRATIONS": [m for m in ["👥 Groupes & Membres", "⏰ Pointage des Horaires", "⚠️ Incidents", "🏷️ Traçabilité & Lots", "💬 Espace Collaboration & Workspace"] if m in accessibles],
     "💰 GESTION & MATÉRIEL": [m for m in ["💰 Finances & Marges", "📦 Stocks d'Intrants", "🚜 Maintenance Matériel", "📈 Rentabilité & ROI"] if m in accessibles],
@@ -356,23 +429,17 @@ for tab, label in zip(tabs, tab_labels):
 
 menu = st.session_state.get("selected_menu", accessibles[0] if accessibles else "📊 Tableau de Bord")
 
-with st.sidebar:
-    st.markdown("## 🌾 AgriGestion YAM")
-    st.caption(f"Connecté : {prenom_tech} {nom_tech}")
-    st.markdown("### 📍 Page active")
-    st.info(menu)
-    st.markdown("---")
-    st.markdown("### 🧭 Accès rapide")
-    for item in accessibles:
-        if st.button(item, key=f"side_{item}", use_container_width=True):
-            st.session_state.selected_menu = item
-            st.rerun()
-    st.markdown("---")
+# La sidebar est volontairement supprimée : navigation uniquement par modules/onglets.
+col_head1, col_head2 = st.columns([5, 1])
+with col_head1:
+    st.caption(f"Module actif : **{menu}**")
+with col_head2:
     if st.button("🚪 Déconnexion", use_container_width=True):
         st.session_state.authenticated = False
+        st.session_state.registered_tech = {}
         st.rerun()
 
-db_champs = load_table('champs')
+db_champs = load_accessible_champs()
 champ_id_actif = None
 champ_selectionne = "Aucune parcelle"
 
@@ -415,7 +482,7 @@ if menu != "🌱 Cartographie & Parcelles":
 if menu == "📊 Tableau de Bord":
     st.title("📊 Tableau de Bord Global (Espace Gestionnaire)")
     m1, m2, m3, m4 = st.columns(4)
-    df_c = load_table('champs')
+    df_c = load_accessible_champs()
     df_e = load_table('employes')
     df_eq = load_table('equipes')
     df_r = load_table('recoltes')
@@ -436,6 +503,41 @@ if menu == "📊 Tableau de Bord":
         st.subheader("📍 Aperçu Global des Parcelles")
         colonnes_affichees = [col for col in ["nom", "superficie_ha", "culture_actuelle", "statut"] if col in df_c.columns]
         st.dataframe(df_c[colonnes_affichees], use_container_width=True)
+
+elif menu == "🧪 Poste Technique":
+    st.title("🧪 Poste Technique — Technicien Supérieur")
+    st.caption("Espace opérationnel de terrain : contrôle, suivi, mesures et rapports sur vos seules parcelles.")
+    df_tc = load_accessible_champs()
+    ids = accessible_champ_ids()
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Mes parcelles", len(df_tc))
+    c2.metric("Surface suivie", f"{pd.to_numeric(df_tc.get('superficie_ha', pd.Series(dtype=float)), errors='coerce').fillna(0).sum():.2f} Ha" if not df_tc.empty else "0.00 Ha")
+    df_inc_t = load_table('incidents')
+    if ids and not df_inc_t.empty and 'champ_id' in df_inc_t.columns:
+        df_inc_t = df_inc_t[df_inc_t['champ_id'].isin(ids)]
+    else:
+        df_inc_t = pd.DataFrame()
+    df_rec_t = load_table('recoltes')
+    if ids and not df_rec_t.empty and 'champ_id' in df_rec_t.columns:
+        df_rec_t = df_rec_t[df_rec_t['champ_id'].isin(ids)]
+    else:
+        df_rec_t = pd.DataFrame()
+    c3.metric("Incidents suivis", len(df_inc_t))
+    c4.metric("Enregistrements récolte", len(df_rec_t))
+    st.markdown("### 🔧 Actions techniques rapides")
+    qa1, qa2, qa3 = st.columns(3)
+    with qa1:
+        st.info("**SIG & Parcelles**\n\nCréer, localiser et documenter uniquement vos parcelles.")
+    with qa2:
+        st.info("**Suivi terrain**\n\nPointage, travaux, pluviométrie, irrigation et incidents.")
+    with qa3:
+        st.info("**Contrôle & rapport**\n\nTraçabilité, récoltes, risques et export A4 technique.")
+    if not df_tc.empty:
+        st.markdown("### 📍 Mes parcelles uniquement")
+        cols = [c for c in ["id", "nom", "superficie_ha", "culture_actuelle", "statut"] if c in df_tc.columns]
+        st.dataframe(df_tc[cols], use_container_width=True, hide_index=True)
+    else:
+        st.warning("Aucune parcelle créée par ce compte.")
 
 elif menu == "🌱 Cartographie & Parcelles":
     st.title("🌱 Cartographie & Éditeur de Parcelles (YAM Gestion)")
@@ -467,7 +569,7 @@ elif menu == "🌱 Cartographie & Parcelles":
         st.write(" ")
         st.caption("ℹ️ Utilisez la barre d'outils à gauche de la carte pour dessiner votre parcelle.")
 
-    df_c = load_table('champs')
+    df_c = load_accessible_champs()
     
     m = folium.Map(
         location=[float(st.session_state['lat_active']), float(st.session_state['lon_active'])], 
@@ -606,7 +708,9 @@ elif menu == "🌱 Cartographie & Parcelles":
                     "culture_actuelle": cult_p,
                     "statut": stat_p,
                     "icone_lieu": "leaf",
-                    "code_pin": pin_p.strip() if pin_p else ""
+                    "code_pin": pin_p.strip() if pin_p else "",
+                    # Identité immuable du créateur : elle sert de périmètre d'accès.
+                    "createur_email": email_connecte
                 }
                 success_ins = execute_query("INSERT", "champs", data=data_dict, action_desc=f"Création de la parcelle '{nom_p.strip()}'", user_info=tech)
                 if success_ins:
@@ -642,6 +746,9 @@ elif menu == "🌱 Cartographie & Parcelles":
                 st.write(f"📍 **{cp.get('nom','')}** — {cp.get('superficie_ha','')} Ha | GPS : ({cp.get('latitude','')}, {cp.get('longitude','')}) | Culture : {cp.get('culture_actuelle','')}")
             with col_cp2:
                 if st.button("🗑️ Supprimer", key=f"del_champ_{cp['id']}"):
+                    if not require_champ_access(cp['id']):
+                        st.error("🔒 Accès refusé : cette parcelle n'appartient pas à votre périmètre.")
+                        st.stop()
                     execute_query("DELETE", "champs", match_col="id", match_val=cp['id'], action_desc=f"Suppression parcelle '{cp.get('nom','')}'", user_info=tech)
                     st.success("Parcelle supprimée !")
                     st.rerun()
@@ -1226,7 +1333,7 @@ elif menu == "🔐 Paramètres & Liste Blanche":
         pwd_new = st.text_input("Mot de passe", type="password")
         prenom_new = st.text_input("Prénom")
         nom_new = st.text_input("Nom")
-        role_new = st.selectbox("Rôle attribué", ["Administration", "Gestionnaire", "Propriétaire", "Technicien"])
+        role_new = st.selectbox("Rôle attribué", ["Administration", "Gestionnaire", "Propriétaire", "Technicien Supérieur", "Technicien", "Stagiaire"])
         if st.form_submit_button("Enregistrer l'utilisateur", use_container_width=True):
             if mail_new.strip():
                 data_usr = {
@@ -1242,6 +1349,7 @@ elif menu == "🔐 Paramètres & Liste Blanche":
                 st.rerun()
                 
     st.markdown("---")
+    st.info("🔐 Isolation parcellaire active : Administration voit toutes les parcelles ; chaque autre compte ne voit que les parcelles dont son e-mail est le créateur. La colonne `champs.createur_email` est obligatoire.")
     st.subheader("Utilisateurs autorisés")
     df_wl = load_table('whitelist_users')
     if not df_wl.empty and 'id' in df_wl.columns:
@@ -1261,7 +1369,7 @@ elif menu == "🔐 Paramètres & Liste Blanche":
 elif menu == "📑 EXPORT RAPPORT PARCELLE":
     st.title(f"📑 Export Rapport A4 — {champ_selectionne} (Espace Technicien)")
     date_exp = st.date_input("Date officielle du rapport", value=date.today())
-    if champ_selectionne and champ_selectionne != "Aucune parcelle":
+    if champ_selectionne and champ_selectionne != "Aucune parcelle" and require_champ_access(champ_id_actif):
         pdf_bytes = export_parcelle_pdf(champ_selectionne, date_exp)
         col_dl1, col_dl2 = st.columns(2)
         with col_dl1:
