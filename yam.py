@@ -15,7 +15,8 @@ from supabase import create_client, Client
 
 # Imports pour les exports PDF
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, KeepTogether
+from reportlab.lib.utils import ImageReader
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
@@ -196,6 +197,177 @@ def execute_query(query_type, table_name, data=None, match_col=None, match_val=N
         st.error(f"Erreur Supabase ({action_desc}) : {e}")
         return False
 
+
+# ==========================================
+# 3. OUTILS PIÈCES JUSTIFICATIVES & RAPPORT XXL
+# ==========================================
+def save_uploaded_evidence(uploaded_file, prefix="piece"):
+    """Enregistre une pièce jointe dans l'espace de travail local et retourne son chemin."""
+    if uploaded_file is None:
+        return "", ""
+    try:
+        safe_name = os.path.basename(uploaded_file.name).replace(" ", "_")
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        file_name = f"{prefix}_{stamp}_{safe_name}"
+        file_path = os.path.join(UPLOAD_DIR, file_name)
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        return file_path, file_name
+    except Exception as e:
+        st.error(f"Erreur lors de l'enregistrement de la pièce justificative : {e}")
+        return "", ""
+
+def optional_insert(table_name, data, optional_keys=None, action_desc="", user_info=None):
+    """
+    Tente l'insertion complète. Si Supabase signale une colonne facultative
+    absente, réessaie sans ces colonnes afin de préserver la compatibilité
+    avec les anciennes bases. Le fichier reste disponible dans uploads_workspace.
+    """
+    optional_keys = optional_keys or []
+    ok = execute_query(
+        "INSERT", table_name, data=data,
+        action_desc=action_desc, user_info=user_info
+    )
+    if ok:
+        return True
+
+    # execute_query gère les erreurs Supabase et retourne False : on retente
+    # donc sans les colonnes facultatives si l'ancienne structure est utilisée.
+    reduced = dict(data)
+    changed = False
+    for key in optional_keys:
+        if key in reduced:
+            reduced.pop(key, None)
+            changed = True
+    if changed:
+        return execute_query(
+            "INSERT", table_name, data=reduced,
+            action_desc=action_desc + " (compatibilité ancienne structure)",
+            user_info=user_info
+        )
+    return False
+
+def _safe_report_text(value):
+    """Nettoyage minimal pour Paragraph ReportLab."""
+    if value is None:
+        return ""
+    txt = str(value)
+    txt = txt.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return txt.replace("\n", "<br/>")
+
+def _df_for_champ(df, champ_id, champ_nom=None, table_name=""):
+    """Filtre les tables liées à une parcelle sans perdre les colonnes."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    if "champ_id" in df.columns and champ_id is not None:
+        try:
+            return df[pd.to_numeric(df["champ_id"], errors="coerce") == int(champ_id)].copy()
+        except Exception:
+            return df[df["champ_id"].astype(str) == str(champ_id)].copy()
+    if table_name == "pointage" and champ_nom and "champ_nom" in df.columns:
+        return df[df["champ_nom"].astype(str).str.strip().str.lower() ==
+                  str(champ_nom).strip().lower()].copy()
+    # Tables globales : elles restent visibles dans le rapport afin de ne perdre
+    # aucune donnée renseignée dans l'application.
+    return df.copy()
+
+def _add_dataframe_full(elements, title, df, styles, max_rows=None):
+    """Ajoute TOUTES les colonnes d'un DataFrame, sous forme lisible et multi-page."""
+    subtitle_style = styles["subtitle"]
+    normal_style = styles["normal"]
+    elements.append(Paragraph(_safe_report_text(title), subtitle_style))
+    if df is None or df.empty:
+        elements.append(Paragraph("<i>Aucune donnée enregistrée.</i>", normal_style))
+        elements.append(Spacer(1, 8))
+        return
+
+    work = df.copy()
+    if max_rows is not None and len(work) > max_rows:
+        work = work.head(max_rows)
+
+    for idx, row in work.iterrows():
+        record_title = f"Enregistrement {idx + 1}"
+        fields = []
+        for col in work.columns:
+            val = row.get(col, "")
+            if pd.isna(val):
+                val = ""
+            fields.append([
+                Paragraph(_safe_report_text(col), styles["field"]),
+                Paragraph(_safe_report_text(val), normal_style)
+            ])
+        if fields:
+            t = Table(fields, colWidths=[145, 355], repeatRows=0, hAlign="LEFT")
+            t.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#eef6f0")),
+                ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#d7e7dc")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]))
+            elements.append(Paragraph(f"<b>{record_title}</b>", styles["record"]))
+            elements.append(t)
+            elements.append(Spacer(1, 7))
+
+def _find_evidence_files(champ_id=None, champ_nom=None):
+    """Recherche les photos/documents sauvegardés dans l'espace workspace."""
+    if not os.path.isdir(UPLOAD_DIR):
+        return []
+    candidates = []
+    champ_tokens = []
+    if champ_id is not None:
+        champ_tokens.append(str(champ_id))
+    if champ_nom:
+        champ_tokens.append(str(champ_nom).strip().replace(" ", "_"))
+    for name in os.listdir(UPLOAD_DIR):
+        path = os.path.join(UPLOAD_DIR, name)
+        if not os.path.isfile(path):
+            continue
+        low = name.lower()
+        if not any(tok and tok.lower() in low for tok in champ_tokens):
+            continue
+        if low.endswith((".png", ".jpg", ".jpeg", ".webp", ".pdf")):
+            candidates.append(path)
+    return sorted(candidates)
+
+def _add_evidence_section(elements, champ_id, champ_nom, styles):
+    files = _find_evidence_files(champ_id, champ_nom)
+    elements.append(Paragraph("PIÈCES JUSTIFICATIVES & ÉVIDENCES PHOTOGRAPHIQUES", styles["subtitle"]))
+    if not files:
+        elements.append(Paragraph(
+            "<i>Aucune pièce justificative locale associée à cette parcelle dans l'espace de travail.</i>",
+            styles["normal"]
+        ))
+        return
+
+    for path in files:
+        name = os.path.basename(path)
+        if path.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+            try:
+                img = ImageReader(path)
+                iw, ih = img.getSize()
+                max_w, max_h = 480, 300
+                scale = min(max_w / float(iw), max_h / float(ih), 1.0)
+                elements.append(Paragraph(
+                    f"<b>Photo / preuve :</b> {_safe_report_text(name)}", styles["record"]
+                ))
+                elements.append(__import__("reportlab.platypus", fromlist=["Image"]).Image(
+                    path, width=iw * scale, height=ih * scale
+                ))
+                elements.append(Spacer(1, 8))
+            except Exception:
+                elements.append(Paragraph(
+                    f"<b>Pièce :</b> {_safe_report_text(name)}", styles["normal"]
+                ))
+        else:
+            elements.append(Paragraph(
+                f"📎 <b>Document justificatif :</b> {_safe_report_text(name)}", styles["normal"]
+            ))
+
+
 # ==========================================
 # 3. AUTHENTIFICATION DYNAMIQUE & TRANSAPOLITE
 # ==========================================
@@ -292,63 +464,172 @@ def export_fiche_parcelle_a4(nom_p, surf_p, cult_p, lat_p, lon_p, stat_p):
     return buffer.getvalue()
 
 def export_parcelle_pdf(champ_nom, date_rapport):
+    """
+    Rapport A4 XXL : reprend toutes les colonnes et tous les enregistrements
+    pertinents disponibles dans Supabase, et ajoute les pièces justificatives
+    locales. Les données ne sont plus limitées à trois tableaux.
+    """
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=25, leftMargin=25, topMargin=25, bottomMargin=25)
+    doc = SimpleDocTemplate(
+        buffer, pagesize=A4,
+        rightMargin=25, leftMargin=25, topMargin=30, bottomMargin=30
+    )
+    tech = st.session_state.get("registered_tech", {})
+    base_styles = getSampleStyleSheet()
+
+    styles = {
+        "title": ParagraphStyle(
+            "YAMReportTitle", parent=base_styles["Heading1"],
+            fontName="Helvetica-Bold", fontSize=16, leading=20,
+            alignment=1, textColor=colors.HexColor("#123b28"),
+            spaceAfter=10
+        ),
+        "subtitle": ParagraphStyle(
+            "YAMReportSubtitle", parent=base_styles["Heading2"],
+            fontName="Helvetica-Bold", fontSize=11, leading=14,
+            textColor=colors.HexColor("#0e6b3b"),
+            spaceBefore=12, spaceAfter=7
+        ),
+        "normal": ParagraphStyle(
+            "YAMReportNormal", parent=base_styles["Normal"],
+            fontName="Helvetica", fontSize=8.5, leading=11,
+            textColor=colors.HexColor("#222222")
+        ),
+        "field": ParagraphStyle(
+            "YAMReportField", parent=base_styles["Normal"],
+            fontName="Helvetica-Bold", fontSize=7.5, leading=9,
+            textColor=colors.HexColor("#123b28")
+        ),
+        "record": ParagraphStyle(
+            "YAMReportRecord", parent=base_styles["Normal"],
+            fontName="Helvetica-Bold", fontSize=8.5, leading=10,
+            textColor=colors.HexColor("#1e3d59"),
+            spaceBefore=4, spaceAfter=3
+        ),
+        "small": ParagraphStyle(
+            "YAMReportSmall", parent=base_styles["Normal"],
+            fontName="Helvetica", fontSize=7, leading=8.5,
+            textColor=colors.HexColor("#555555")
+        ),
+    }
+
     elements = []
-    tech = st.session_state.get('registered_tech', {})
-    styles = getSampleStyleSheet()
-    
-    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontName='Helvetica-Bold', fontSize=15, alignment=1, textColor=colors.HexColor('#1e3d59'), spaceAfter=10)
-    subtitle_style = ParagraphStyle('SubTitleStyle', parent=styles['Heading2'], fontName='Helvetica-Bold', fontSize=11, textColor=colors.HexColor('#10b981'), spaceBefore=12, spaceAfter=6)
-    normal_style = styles['Normal']
-    
-    elements.append(Paragraph(f"RAPPORT EXHAUSTIF : {champ_nom.upper()}", title_style))
-    header_info = f"<b>Date :</b> {date_rapport.strftime('%d/%m/%Y')} | <b>Établi par :</b> {tech.get('prenom', '')} {tech.get('nom', '')} ({tech.get('role', '')})"
-    elements.append(Paragraph(header_info, normal_style))
-    elements.append(Spacer(1, 10))
+    elements.append(Paragraph(
+        f"AGRIGESTION YAM — RAPPORT PARCELLAIRE EXHAUSTIF<br/>{_safe_report_text(champ_nom).upper()}",
+        styles["title"]
+    ))
+    elements.append(Paragraph(
+        f"<b>Date officielle :</b> {date_rapport.strftime('%d/%m/%Y')} &nbsp; | &nbsp; "
+        f"<b>Établi par :</b> {_safe_report_text(tech.get('prenom', ''))} "
+        f"{_safe_report_text(tech.get('nom', ''))} "
+        f"({_safe_report_text(tech.get('role', ''))})",
+        styles["normal"]
+    ))
+    elements.append(Spacer(1, 8))
 
     df_c = load_accessible_champs()
     champ_id = None
-    if not df_c.empty and 'nom' in df_c.columns:
-        champ_info = df_c[df_c['nom'] == champ_nom]
-        if not champ_info.empty:
-            champ_id = int(champ_info['id'].values[0])
+    champ_info = pd.DataFrame()
+    if not df_c.empty and "nom" in df_c.columns:
+        champ_info = df_c[df_c["nom"].astype(str).str.strip().str.lower() ==
+                          str(champ_nom).strip().lower()].copy()
+        if not champ_info.empty and "id" in champ_info.columns:
+            try:
+                champ_id = int(champ_info["id"].iloc[0])
+            except Exception:
+                champ_id = champ_info["id"].iloc[0]
 
-    tables_to_export = {}
-    if champ_id:
-        df_pt = load_table('pointage')
-        if not df_pt.empty and 'champ_nom' in df_pt.columns:
-            df_pt_filtered = df_pt[df_pt['champ_nom'].astype(str).str.strip().str.lower() == str(champ_nom).strip().lower()]
-            tables_to_export["1. Pointages & Présences (Membres & Groupes)"] = df_pt_filtered[['date', 'employe_nom', 'groupe_nom', 'tache_effectuee', 'heures_travaillees']] if not df_pt_filtered.empty else pd.DataFrame()
-        else:
-            tables_to_export["1. Pointages & Présences (Membres & Groupes)"] = pd.DataFrame()
-        
-        df_rec = load_table('recoltes')
-        tables_to_export["2. Récoltes de la Parcelle"] = df_rec[df_rec['champ_id'] == champ_id][['culture', 'date_recolte', 'quantite_kg', 'prix_unitaire']] if not df_rec.empty and 'champ_id' in df_rec.columns else pd.DataFrame()
-        
-        df_dep = load_table('depenses')
-        tables_to_export["3. Dépenses & Intrants"] = df_dep[df_dep['champ_id'] == champ_id][['type', 'montant', 'date']] if not df_dep.empty and 'champ_id' in df_dep.columns else pd.DataFrame()
+    # Fiche identité : toutes les colonnes de la parcelle, sans exception.
+    _add_dataframe_full(
+        elements, "1. IDENTITÉ ET CARACTÉRISTIQUES COMPLÈTES DE LA PARCELLE",
+        champ_info, styles
+    )
 
-    for section_title, df_sec in tables_to_export.items():
-        elements.append(Paragraph(section_title, subtitle_style))
-        if not df_sec.empty:
-            data = [df_sec.columns.tolist()] + df_sec.astype(str).values.tolist()
-            t = Table(data, hAlign='LEFT')
-            t.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#10b981')),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, -1), 8),
-                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-            ]))
-            elements.append(t)
-        else:
-            elements.append(Paragraph("<i>Aucune donnée enregistrée spécifiquement pour cette parcelle.</i>", normal_style))
-        elements.append(Spacer(1, 6))
+    # Toutes les tables utilisées par l'application. Pour les tables liées à une
+    # parcelle, filtrage par champ_id/champ_nom ; pour les tables globales,
+    # toutes les données renseignées sont conservées dans le rapport.
+    tables = [
+        ("pointage", "2. POINTAGES, PRÉSENCES, MEMBRES ET HEURES"),
+        ("taches", "3. PLANNING ET TRAVAUX"),
+        ("recoltes", "4. RÉCOLTES ET RENDEMENTS"),
+        ("depenses", "5. FINANCES, DÉPENSES ET JUSTIFICATIFS"),
+        ("intrants", "6. STOCKS D'INTRANTS ET ACHATS"),
+        ("materiel", "7. MATÉRIEL ET MAINTENANCE"),
+        ("pluviometrie", "8. PLUVIOMÉTRIE"),
+        ("incidents", "9. INCIDENTS ET ÉVÉNEMENTS"),
+        ("tracabilite", "10. TRAÇABILITÉ ET LOTS"),
+        ("irrigation", "11. IRRIGATION ET CONSOMMATION D'EAU"),
+        ("alertes_meteo", "12. RISQUES, MÉTÉO ET RECOMMANDATIONS"),
+        ("equipes", "13. GROUPES ET ORGANISATION"),
+        ("employes", "14. MEMBRES / EMPLOYÉS"),
+        ("historique_modifications", "15. HISTORIQUE DES MODIFICATIONS"),
+    ]
+
+    for table_name, section_title in tables:
+        df = load_table(table_name)
+        if df.empty:
+            _add_dataframe_full(elements, section_title, df, styles)
+            continue
+        df_sec = _df_for_champ(
+            df, champ_id, champ_nom=champ_nom, table_name=table_name
+        )
+        _add_dataframe_full(elements, section_title, df_sec, styles)
+
+    # Calculs de synthèse en plus des données brutes.
+    elements.append(PageBreak())
+    elements.append(Paragraph("16. SYNTHÈSE TECHNICO-ÉCONOMIQUE", styles["subtitle"]))
+
+    try:
+        df_d = _df_for_champ(load_table("depenses"), champ_id, champ_nom, "depenses")
+        df_r = _df_for_champ(load_table("recoltes"), champ_id, champ_nom, "recoltes")
+        total_dep = pd.to_numeric(df_d.get("montant", pd.Series(dtype=float)),
+                                  errors="coerce").fillna(0).sum()
+        qte_rec = pd.to_numeric(df_r.get("quantite_kg", pd.Series(dtype=float)),
+                                errors="coerce").fillna(0).sum()
+        prix_rec = pd.to_numeric(df_r.get("prix_unitaire", pd.Series(dtype=float)),
+                                 errors="coerce").fillna(0)
+        total_rec = (pd.to_numeric(df_r.get("quantite_kg", pd.Series(dtype=float)),
+                                   errors="coerce").fillna(0) * prix_rec).sum()
+        marge = total_rec - total_dep
+        synth = [
+            ["Indicateur", "Valeur"],
+            ["Dépenses cumulées", f"{total_dep:,.0f} FCFA"],
+            ["Quantité récoltée", f"{qte_rec:,.2f} Kg"],
+            ["Valeur estimée des récoltes", f"{total_rec:,.0f} FCFA"],
+            ["Marge nette estimée", f"{marge:,.0f} FCFA"],
+        ]
+        stbl = Table(synth, colWidths=[250, 250])
+        stbl.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#123b28")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#d7e7dc")),
+            ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+            ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        elements.append(stbl)
+    except Exception as e:
+        elements.append(Paragraph(
+            f"Impossible de calculer la synthèse automatiquement : {_safe_report_text(e)}",
+            styles["normal"]
+        ))
+
+    _add_evidence_section(elements, champ_id, champ_nom, styles)
+
+    elements.append(Spacer(1, 12))
+    elements.append(Paragraph(
+        "Rapport généré automatiquement par AgriGestion YAM. "
+        "Les informations présentées correspondent aux données disponibles "
+        "dans la base Supabase au moment de la génération.",
+        styles["small"]
+    ))
 
     doc.build(elements)
     return buffer.getvalue()
+
 
 # ==========================================
 # 5. NAVIGATION PREMIUM EN 5 GRANDS ONGLETS
@@ -938,20 +1219,63 @@ elif menu == "💰 Finances & Marges":
         with st.form("form_fin"):
             motif = st.text_input("Motif de la dépense (ex: Achat Engrais)")
             mnt = st.number_input("Montant (FCFA)", min_value=0.0)
+            piece_fin = st.file_uploader(
+                "📷 Photo / facture / reçu justificatif",
+                type=["png", "jpg", "jpeg", "webp", "pdf"],
+                key="piece_finance"
+            )
+            st.caption("Ajoutez une photo ou un scan pour justifier l'achat ou la dépense.")
             if st.form_submit_button("Enregistrer Dépense", use_container_width=True):
-                execute_query("INSERT", "depenses", data={"champ_id": champ_id_actif, "type": motif, "montant": mnt, "date": str(date.today()), "facture_nom": "Aucune"}, action_desc=f"Dépense '{motif}' ({mnt} FCFA)", user_info=tech)
-                st.success("✅ Dépense enregistrée !")
-                st.rerun()
-        
+                if motif.strip():
+                    fichier_path, nom_fichier = save_uploaded_evidence(
+                        piece_fin, f"depense_champ_{champ_id_actif}"
+                    )
+                    data_dep = {
+                        "champ_id": champ_id_actif,
+                        "type": motif.strip(),
+                        "montant": mnt,
+                        "date": str(date.today()),
+                        "facture_nom": nom_fichier or "Aucune",
+                        # Compatibilité si ces colonnes ont déjà été ajoutées à Supabase.
+                        "piece_jointe_path": fichier_path,
+                        "photo_justificative": nom_fichier or "",
+                    }
+                    optional_insert(
+                        "depenses", data_dep,
+                        optional_keys=["piece_jointe_path", "photo_justificative"],
+                        action_desc=f"Dépense '{motif}' ({mnt} FCFA)",
+                        user_info=tech
+                    )
+                    st.success("✅ Dépense enregistrée avec justificatif si fourni !")
+                    st.rerun()
+                else:
+                    st.warning("⚠️ Indiquez le motif de la dépense.")
+
         df_d = load_table('depenses')
         df_d_champ = df_d[df_d['champ_id'] == champ_id_actif] if not df_d.empty and 'champ_id' in df_d.columns else pd.DataFrame()
         st.markdown("---")
-        st.subheader("Liste des dépenses")
+        st.subheader("Liste des dépenses et justificatifs")
         if not df_d_champ.empty and 'id' in df_d_champ.columns:
             for _, dp in df_d_champ.iterrows():
                 cd1, cd2 = st.columns([4, 1])
-                cd1.write(f"💸 **{dp.get('type','')}** : {dp.get('montant','')} FCFA ({dp.get('date','')})")
-                if cd2.button("🗑️", key=f"del_dp_{dp['id']}"):
+                justificatif = dp.get("piece_jointe_path", "")
+                if not justificatif:
+                    justificatif = dp.get("facture_nom", "")
+                cd1.write(
+                    f"💸 **{dp.get('type','')}** : {dp.get('montant','')} FCFA "
+                    f"({dp.get('date','')}) — Justificatif : {dp.get('facture_nom','Aucun')}"
+                )
+                if justificatif and isinstance(justificatif, str) and os.path.exists(justificatif):
+                    if justificatif.lower().endswith((".png",".jpg",".jpeg",".webp")):
+                        cd1.image(justificatif, width=220)
+                    else:
+                        with open(justificatif, "rb") as f:
+                            cd1.download_button(
+                                "📎 Télécharger le justificatif", f,
+                                file_name=os.path.basename(justificatif),
+                                key=f"dl_dep_piece_{dp['id']}"
+                            )
+                if cd2.button("🗑️ Supprimer", key=f"del_dp_{dp['id']}"):
                     execute_query("DELETE", "depenses", match_col="id", match_val=dp['id'], action_desc=f"Suppression dépense '{dp.get('type','')}'", user_info=tech)
                     st.success("Dépense supprimée !")
                     st.rerun()
@@ -963,20 +1287,77 @@ elif menu == "📦 Stocks d'Intrants":
     with st.form("form_int"):
         nom_i = st.text_input("Nom de l'intrant")
         cat_i = st.selectbox("Catégorie", ["Engrais", "Semence", "Pesticide", "Carburant"])
+        qte_achat_i = st.number_input("🛒 Quantité achetée", min_value=0.0, value=0.0)
         stk = st.number_input("Stock actuel", min_value=0.0)
         unite = st.text_input("Unité (Sacs, Litres, Kg)")
-        if st.form_submit_button("Ajouter l'intrant", use_container_width=True):
-            execute_query("INSERT", "intrants", data={"nom": nom_i, "categorie": cat_i, "stock_actuel": stk, "unite": unite, "seuil_alerte": 2.0, "facture_nom": "Aucune"}, action_desc=f"Ajout intrant '{nom_i}'", user_info=tech)
-            st.success("✅ Ajouté !")
-            st.rerun()
-            
+        prix_achat_i = st.number_input("Prix d'achat unitaire (FCFA)", min_value=0.0, value=0.0)
+        fournisseur_i = st.text_input("Fournisseur")
+        piece_i = st.file_uploader(
+            "📷 Photo / facture / reçu de l'achat",
+            type=["png", "jpg", "jpeg", "webp", "pdf"],
+            key="piece_intrant"
+        )
+        st.caption("La quantité achetée est conservée séparément du stock actuel.")
+        if st.form_submit_button("Ajouter l'intrant / achat", use_container_width=True):
+            if nom_i.strip():
+                fichier_path, nom_fichier = save_uploaded_evidence(
+                    piece_i, f"intrant_achat_{nom_i.strip().replace(' ','_')}"
+                )
+                data_int = {
+                    "nom": nom_i.strip(),
+                    "categorie": cat_i,
+                    "stock_actuel": stk,
+                    "unite": unite.strip(),
+                    "seuil_alerte": 2.0,
+                    "facture_nom": nom_fichier or "Aucune",
+                    "quantite_achetee": qte_achat_i,
+                    "prix_achat_unitaire": prix_achat_i,
+                    "fournisseur": fournisseur_i.strip(),
+                    "piece_jointe_path": fichier_path,
+                    "photo_justificative": nom_fichier or "",
+                    "date_achat": str(date.today()),
+                }
+                optional_insert(
+                    "intrants", data_int,
+                    optional_keys=[
+                        "quantite_achetee", "prix_achat_unitaire", "fournisseur",
+                        "piece_jointe_path", "photo_justificative", "date_achat"
+                    ],
+                    action_desc=f"Ajout intrant '{nom_i}' — quantité achetée {qte_achat_i}",
+                    user_info=tech
+                )
+                st.success("✅ Achat/intrant enregistré avec quantité et justificatif si fourni !")
+                st.rerun()
+            else:
+                st.warning("⚠️ Indiquez le nom de l'intrant.")
+
     df_i = load_table('intrants')
     st.markdown("---")
-    st.subheader("Liste des stocks")
+    st.subheader("Liste des stocks et achats")
     if not df_i.empty and 'id' in df_i.columns:
         for _, in_t in df_i.iterrows():
             ci1, ci2 = st.columns([4, 1])
-            ci1.write(f"📦 **{in_t.get('nom','')}** ({in_t.get('categorie','')}) — Stock : {in_t.get('stock_actuel','')} {in_t.get('unite','')}")
+            ci1.write(
+                f"📦 **{in_t.get('nom','')}** ({in_t.get('categorie','')}) — "
+                f"Stock : {in_t.get('stock_actuel','')} {in_t.get('unite','')} — "
+                f"Quantité achetée : {in_t.get('quantite_achetee','Non renseignée')} "
+                f"{in_t.get('unite','')}"
+            )
+            if in_t.get("fournisseur"):
+                ci1.caption(f"Fournisseur : {in_t.get('fournisseur')} | Prix achat unitaire : {in_t.get('prix_achat_unitaire','')}")
+            piece = in_t.get("piece_jointe_path", "")
+            if not piece:
+                piece = in_t.get("facture_nom", "")
+            if piece and isinstance(piece, str) and os.path.exists(piece):
+                if piece.lower().endswith((".png",".jpg",".jpeg",".webp")):
+                    ci1.image(piece, width=220)
+                else:
+                    with open(piece, "rb") as f:
+                        ci1.download_button(
+                            "📎 Télécharger le justificatif", f,
+                            file_name=os.path.basename(piece),
+                            key=f"dl_int_piece_{in_t['id']}"
+                        )
             if ci2.button("🗑️", key=f"del_in_{in_t['id']}"):
                 execute_query("DELETE", "intrants", match_col="id", match_val=in_t['id'], action_desc=f"Suppression intrant '{in_t.get('nom','')}'", user_info=tech)
                 st.success("Intrant supprimé !")
@@ -1015,11 +1396,37 @@ elif menu == "⚠️ Incidents":
         with st.form("form_inc"):
             desc = st.text_area("Description de l'incident")
             grav = st.selectbox("Gravité", ["Faible", "Modéré", "Critique"])
+            action_inc = st.text_area("Action / recommandation technique immédiate")
+            photo_inc = st.file_uploader(
+                "📷 Photo obligatoire si l'incident doit être visuellement justifié",
+                type=["png", "jpg", "jpeg", "webp"],
+                key="photo_incident"
+            )
             if st.form_submit_button("Déclarer l'incident", use_container_width=True):
-                execute_query("INSERT", "incidents", data={"champ_id": champ_id_actif, "date": str(date.today()), "description": desc, "gravite": grav, "action": "En attente"}, action_desc=f"Incident ({grav})", user_info=tech)
-                st.success("✅ Déclaré !")
-                st.rerun()
-                
+                if desc.strip():
+                    fichier_path, nom_fichier = save_uploaded_evidence(
+                        photo_inc, f"incident_champ_{champ_id_actif}"
+                    )
+                    data_inc = {
+                        "champ_id": champ_id_actif,
+                        "date": str(date.today()),
+                        "description": desc.strip(),
+                        "gravite": grav,
+                        "action": action_inc.strip() or "En attente",
+                        "photo_path": fichier_path,
+                        "photo_nom": nom_fichier or "",
+                    }
+                    optional_insert(
+                        "incidents", data_inc,
+                        optional_keys=["photo_path", "photo_nom"],
+                        action_desc=f"Incident ({grav})",
+                        user_info=tech
+                    )
+                    st.success("✅ Incident déclaré avec preuve photo si fournie !")
+                    st.rerun()
+                else:
+                    st.warning("⚠️ Décrivez l'incident avant de valider.")
+
         df_inc = load_table('incidents')
         df_inc_champ = df_inc[df_inc['champ_id'] == champ_id_actif] if not df_inc.empty and 'champ_id' in df_inc.columns else pd.DataFrame()
         st.markdown("---")
@@ -1027,7 +1434,13 @@ elif menu == "⚠️ Incidents":
         if not df_inc_champ.empty and 'id' in df_inc_champ.columns:
             for _, inc in df_inc_champ.iterrows():
                 cin1, cin2 = st.columns([4, 1])
-                cin1.write(f"⚠️ [{inc.get('gravite','')}] {inc.get('date','')} : {inc.get('description','')}")
+                cin1.write(
+                    f"⚠️ [{inc.get('gravite','')}] {inc.get('date','')} : "
+                    f"{inc.get('description','')} — Action : {inc.get('action','')}"
+                )
+                photo = inc.get("photo_path", "")
+                if photo and isinstance(photo, str) and os.path.exists(photo):
+                    cin1.image(photo, caption=inc.get("photo_nom", "Preuve photo"), width=320)
                 if cin2.button("🗑️", key=f"del_inc_{inc['id']}"):
                     execute_query("DELETE", "incidents", match_col="id", match_val=inc['id'], action_desc="Suppression incident", user_info=tech)
                     st.success("Incident supprimé !")
@@ -1043,18 +1456,57 @@ elif menu == "🚜 Maintenance Matériel":
         stat_m = st.selectbox("Statut", ["Opérationnel", "En panne", "En révision"])
         d_rev = st.date_input("Dernière révision", value=date.today())
         p_rev = st.date_input("Prochaine révision", value=date.today())
+        photo_mat = st.file_uploader(
+            "📷 Photo de l'équipement / justificatif de maintenance",
+            type=["png", "jpg", "jpeg", "webp", "pdf"],
+            key="piece_materiel"
+        )
         if st.form_submit_button("Ajouter le Matériel", use_container_width=True):
-            execute_query("INSERT", "materiel", data={"nom_equipement": nom_eq, "categorie": cat_eq, "statut_marche": stat_m, "date_derniere_revision": str(d_rev), "prochaine_revision": str(p_rev)}, action_desc=f"Ajout matériel '{nom_eq}'", user_info=tech)
-            st.success("✅ Ajouté !")
-            st.rerun()
-            
+            if nom_eq.strip():
+                fichier_path, nom_fichier = save_uploaded_evidence(
+                    photo_mat, f"materiel_{nom_eq.strip().replace(' ','_')}"
+                )
+                data_mat = {
+                    "nom_equipement": nom_eq.strip(),
+                    "categorie": cat_eq,
+                    "statut_marche": stat_m,
+                    "date_derniere_revision": str(d_rev),
+                    "prochaine_revision": str(p_rev),
+                    "photo_path": fichier_path,
+                    "photo_nom": nom_fichier or "",
+                }
+                optional_insert(
+                    "materiel", data_mat,
+                    optional_keys=["photo_path", "photo_nom"],
+                    action_desc=f"Ajout matériel '{nom_eq}'",
+                    user_info=tech
+                )
+                st.success("✅ Matériel ajouté avec justificatif si fourni !")
+                st.rerun()
+            else:
+                st.warning("⚠️ Indiquez le nom de l'équipement.")
+
     df_mat = load_table('materiel')
     st.markdown("---")
     st.subheader("Parc matériel")
     if not df_mat.empty and 'id' in df_mat.columns:
         for _, mat in df_mat.iterrows():
             cmat1, cmat2 = st.columns([4, 1])
-            cmat1.write(f"🚜 **{mat.get('nom_equipement','')}** ({mat.get('categorie','')}) — Statut : {mat.get('statut_marche','')}")
+            cmat1.write(
+                f"🚜 **{mat.get('nom_equipement','')}** ({mat.get('categorie','')}) — "
+                f"Statut : {mat.get('statut_marche','')}"
+            )
+            photo = mat.get("photo_path", "")
+            if photo and isinstance(photo, str) and os.path.exists(photo):
+                if photo.lower().endswith((".png",".jpg",".jpeg",".webp")):
+                    cmat1.image(photo, width=260)
+                else:
+                    with open(photo, "rb") as f:
+                        cmat1.download_button(
+                            "📎 Télécharger le justificatif", f,
+                            file_name=os.path.basename(photo),
+                            key=f"dl_mat_piece_{mat['id']}"
+                        )
             if cmat2.button("🗑️", key=f"del_mat_{mat['id']}"):
                 execute_query("DELETE", "materiel", match_col="id", match_val=mat['id'], action_desc=f"Suppression matériel '{mat.get('nom_equipement','')}'", user_info=tech)
                 st.success("Matériel supprimé !")
@@ -1070,12 +1522,49 @@ elif menu == "🏷️ Traçabilité & Lots":
             cult_tr = st.text_input("Culture associée")
             norme = st.text_input("Norme de certification (ex: GlobalGAP)")
             acheteur = st.text_input("Acheteur / Destination")
+            qte_lot = st.number_input("🛒 Quantité achetée / entrée dans le lot", min_value=0.0, value=0.0)
+            unite_lot = st.text_input("Unité de quantité (Kg, sacs, caisses, L...)")
+            prix_lot = st.number_input("Prix d'achat unitaire (FCFA)", min_value=0.0, value=0.0)
+            fournisseur_lot = st.text_input("Fournisseur / origine")
+            preuve_lot = st.file_uploader(
+                "📷 Photo / document justificatif du lot",
+                type=["png", "jpg", "jpeg", "webp", "pdf"],
+                key="piece_lot"
+            )
+            st.caption("La quantité achetée/entrée est enregistrée dans le lot et reprise dans le rapport PDF.")
             if st.form_submit_button("Enregistrer le Lot", use_container_width=True):
                 if lot.strip():
-                    execute_query("INSERT", "tracabilite", data={"champ_id": champ_id_actif, "lot_code": lot.strip(), "culture": cult_tr, "date_recolte": str(date.today()), "norme_certification": norme, "acheteur": acheteur}, action_desc=f"Lot '{lot}'", user_info=tech)
-                    st.success("✅ Lot enregistré !")
+                    fichier_path, nom_fichier = save_uploaded_evidence(
+                        preuve_lot, f"lot_champ_{champ_id_actif}_{lot.strip().replace(' ','_')}"
+                    )
+                    data_lot = {
+                        "champ_id": champ_id_actif,
+                        "lot_code": lot.strip(),
+                        "culture": cult_tr,
+                        "date_recolte": str(date.today()),
+                        "norme_certification": norme,
+                        "acheteur": acheteur,
+                        "quantite_achetee": qte_lot,
+                        "unite_quantite": unite_lot.strip(),
+                        "prix_achat_unitaire": prix_lot,
+                        "fournisseur": fournisseur_lot.strip(),
+                        "piece_jointe_path": fichier_path,
+                        "piece_jointe_nom": nom_fichier or "",
+                    }
+                    optional_insert(
+                        "tracabilite", data_lot,
+                        optional_keys=[
+                            "quantite_achetee", "unite_quantite", "prix_achat_unitaire",
+                            "fournisseur", "piece_jointe_path", "piece_jointe_nom"
+                        ],
+                        action_desc=f"Lot '{lot}' — quantité {qte_lot} {unite_lot}",
+                        user_info=tech
+                    )
+                    st.success("✅ Lot enregistré avec quantité achetée et justificatif si fourni !")
                     st.rerun()
-                    
+                else:
+                    st.warning("⚠️ Indiquez le code du lot.")
+
         df_trac = load_table('tracabilite')
         df_trac_champ = df_trac[df_trac['champ_id'] == champ_id_actif] if not df_trac.empty and 'champ_id' in df_trac.columns else pd.DataFrame()
         st.markdown("---")
@@ -1083,7 +1572,23 @@ elif menu == "🏷️ Traçabilité & Lots":
         if not df_trac_champ.empty and 'id' in df_trac_champ.columns:
             for _, tr in df_trac_champ.iterrows():
                 ctr1, ctr2 = st.columns([4, 1])
-                ctr1.write(f"🏷️ **{tr.get('lot_code','')}** ({tr.get('culture','')}) — Acheteur : {tr.get('acheteur','')}")
+                ctr1.write(
+                    f"🏷️ **{tr.get('lot_code','')}** ({tr.get('culture','')}) — "
+                    f"Acheteur : {tr.get('acheteur','')} — "
+                    f"Quantité achetée : {tr.get('quantite_achetee','Non renseignée')} "
+                    f"{tr.get('unite_quantite','')}"
+                )
+                piece = tr.get("piece_jointe_path", "")
+                if piece and isinstance(piece, str) and os.path.exists(piece):
+                    if piece.lower().endswith((".png",".jpg",".jpeg",".webp")):
+                        ctr1.image(piece, width=280)
+                    else:
+                        with open(piece, "rb") as f:
+                            ctr1.download_button(
+                                "📎 Télécharger le justificatif du lot", f,
+                                file_name=os.path.basename(piece),
+                                key=f"dl_lot_piece_{tr['id']}"
+                            )
                 if ctr2.button("🗑️", key=f"del_tr_{tr['id']}"):
                     execute_query("DELETE", "tracabilite", match_col="id", match_val=tr['id'], action_desc=f"Suppression lot '{tr.get('lot_code','')}'", user_info=tech)
                     st.success("Lot supprimé !")
@@ -1202,7 +1707,7 @@ elif menu == "💬 Espace Collaboration & Workspace":
                 destinataire_email = st.text_input("Saisir l'E-mail du destinataire :", placeholder="destinataire@exemple.com")
         
 # S'assure de charger ou d'utiliser le bon DataFrame (df_champs)
-        noms_champs_list = df_champs['nom'].values.tolist() if 'df_champs' in locals() and not df_champs.empty and 'nom' in df_champs.columns else []
+        noms_champs_list = db_champs['nom'].values.tolist() if 'db_champs' in locals() and not db_champs.empty and 'nom' in db_champs.columns else []
         champ_concerne = st.selectbox("Parcelle liée (Optionnel) :", ["Aucune"] + noms_champs_list)
         texte_message = st.text_area("Légende / Message descriptif ou lien Google Meet collé :", placeholder="Ex: Rapport d'inspection ou collez le lien de la réunion ici...")
         
