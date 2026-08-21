@@ -24,11 +24,18 @@ from reportlab.lib import colors
 # 1. CONFIGURATION DE LA PAGE & DESIGN ÉPURÉ
 # ==========================================
 st.set_page_config(
-    page_title="AgriGestion YAM",
+    page_title="YouAgronoMe (YAM)",
     page_icon="🌾",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
+
+# Barre d'outils Streamlit : mode minimal + masquage visuel des commandes
+# Share / Star / Edit / GitHub / More afin que l'interface reste centrée sur YAM.
+try:
+    st.set_option("client.toolbarMode", "minimal")
+except Exception:
+    pass
 
 # Création du dossier pour stocker les fichiers médias et rapports partagés
 UPLOAD_DIR = "uploads_workspace"
@@ -37,6 +44,9 @@ if not os.path.exists(UPLOAD_DIR):
 
 st.markdown("""
     <style>
+        /* Interface YAM : suppression des commandes de plateforme (Share, Star, Edit, GitHub, More). */
+        [data-testid="stToolbar"], [data-testid="stDecoration"], #MainMenu { display:none !important; }
+        header[data-testid="stHeader"] { visibility:hidden !important; height:0 !important; }
         .stApp { background: linear-gradient(135deg,#f7faf8 0%,#eef5f0 100%); color:#17251d; }
         [data-testid="stSidebar"] { background: linear-gradient(180deg,#10281d 0%,#173b29 100%); }
         [data-testid="stSidebar"] * { color:#f5fbf7 !important; }
@@ -97,7 +107,7 @@ def init_db_supabase():
 
 init_db_supabase()
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=8)
 def load_table(table_name):
     try:
         response = supabase.table(table_name).select("*").execute()
@@ -137,7 +147,7 @@ def module_allowed(label):
     allowed = parse_modules(current_user().get('modules_autorises', 'TOUS'))
     return 'TOUS' in [x.upper() for x in allowed] or label in allowed
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=8)
 def load_accessible_champs():
     """Ne récupère que les parcelles autorisées pour l'utilisateur connecté.
     L'administrateur général est le seul rôle qui peut récupérer toutes les parcelles."""
@@ -185,12 +195,40 @@ def execute_query(query_type, table_name, data=None, match_col=None, match_val=N
         elif query_type == "UPDATE":
             supabase.table(table_name).update(data).eq(match_col, match_val).execute()
             
-        # L'historique des modifications n'est plus exposé ni alimenté par l'application.
-        # Les informations de traçabilité restent disponibles via les données opérationnelles.
+        # Journalisation réservée à l'administration générale.
+        # L'échec du journal ne doit jamais annuler une opération métier réussie.
+        if action_desc and user_info and table_name != "historique_modifications":
+            try:
+                date_act = datetime.now().strftime("%d/%m/%Y à %H:%M")
+                supabase.table("historique_modifications").insert({
+                    "date_heure": date_act,
+                    "utilisateur": f"{user_info.get('prenom', '')} {user_info.get('nom', '')}".strip(),
+                    "email": user_info.get('gmail', ''),
+                    "role": user_info.get('role', ''),
+                    "action": action_desc,
+                    "details": "Succès"
+                }).execute()
+            except Exception:
+                pass
+
+        # Synchronisation immédiate de tous les caches après chaque écriture.
         load_table.clear()
+        load_accessible_champs.clear()
+        st.session_state["last_sync"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
         return True
     except Exception as e:
         st.error(f"Erreur Supabase ({action_desc}) : {e}")
+        return False
+
+
+def synchroniser_donnees():
+    """Force la relecture Supabase de tous les modules dans la session courante."""
+    try:
+        load_table.clear()
+        load_accessible_champs.clear()
+        st.session_state["last_sync"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        return True
+    except Exception:
         return False
 
 
@@ -279,7 +317,7 @@ def _clean_report_columns(df):
     """Exclut du rapport les identifiants, secrets, emails et champs de sécurité."""
     if df is None or df.empty:
         return pd.DataFrame() if df is None else df.copy()
-    forbidden = {"id","uuid","user_id","utilisateur_id","champ_id","createur_email","email","auteur_email","user_email","technicien_email","responsable_email","employe_email","password","mot_de_passe","password_hash","admin_password_hash","token","secret","access_token","refresh_token","modules_autorises","role","permissions","session","ip","ip_address","security","securite","fichier_path"}
+    forbidden = {"id","uuid","user_id","utilisateur_id","champ_id","createur_email","email","auteur_email","user_email","technicien_email","responsable_email","employe_email","password","mot_de_passe","password_hash","admin_password_hash","token","secret","access_token","refresh_token","modules_autorises","role","permissions","session","ip","ip_address","security","securite","fichier_path","prenom","nom","utilisateur","employe_nom","responsable","technicien","auteur","chef_groupe"}
     return df[[c for c in df.columns if str(c).strip().lower() not in forbidden]].copy()
 
 def _add_dataframe_full(elements, title, df, styles, max_rows=None):
@@ -363,8 +401,8 @@ def auth_system():
         with col_auth2:
             st.markdown("""
                 <div style="background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.08);">
-                    <h2 style="text-align: center; color: #10b981; margin-bottom: 5px;">🌾 AgriGestion Pro</h2>
-                    <p style="text-align: center; color: #6b7280; font-size: 14px; margin-bottom: 25px;">Plateforme Intégrée de Gestion Agricole (Supabase)</p>
+                    <h2 style="text-align: center; color: #10b981; margin-bottom: 5px;">🌾 YouAgronoMe (YAM)</h2>
+                    <p style="text-align: center; color: #6b7280; font-size: 14px; margin-bottom: 25px;">Plateforme intégrée YouAgronoMe — gestion, suivi et traçabilité agricoles</p>
             """, unsafe_allow_html=True)
 
             with st.form("form_login_admin"):
@@ -441,83 +479,251 @@ def export_fiche_parcelle_a4(nom_p, surf_p, cult_p, lat_p, lon_p, stat_p):
     elements.append(t)
     elements.append(Spacer(1, 15))
     elements.append(Paragraph("2. Note d'Exploitation & Suivi", subtitle_style))
-    elements.append(Paragraph("Cette fiche certifie l'enregistrement de la parcelle dans le système de gestion agricole intégré AgriGestion Pro (Supabase).", normal_style))
+    elements.append(Paragraph("Cette fiche certifie l'enregistrement de la parcelle dans le système de gestion agricole intégré YouAgronoMe (YAM) (Supabase).", normal_style))
     doc.build(elements)
     return buffer.getvalue()
 
 def export_parcelle_pdf(champ_nom, date_rapport):
-    """Rapport officiel : une seule parcelle + une seule personne, sans données sensibles."""
-    buffer=io.BytesIO()
-    def _yam_footer(canvas, doc):
+    """Rapport YAM premium : une parcelle, périmètre opérationnel, sans identifiants ni sécurité."""
+    buffer = io.BytesIO()
+    tech = st.session_state.get("registered_tech", {}) or {}
+    ss = getSampleStyleSheet()
+
+    styles = {
+        "title": ParagraphStyle("rt", parent=ss["Heading1"], fontName="Helvetica-Bold", fontSize=17, leading=21, alignment=1, textColor=colors.HexColor("#123b28"), spaceAfter=8),
+        "subtitle": ParagraphStyle("rs", parent=ss["Heading2"], fontName="Helvetica-Bold", fontSize=11, leading=14, textColor=colors.HexColor("#0e6b3b"), spaceBefore=12, spaceAfter=7),
+        "normal": ParagraphStyle("rn", parent=ss["Normal"], fontName="Helvetica", fontSize=8.5, leading=11, textColor=colors.HexColor("#26382d")),
+        "field": ParagraphStyle("rf", parent=ss["Normal"], fontName="Helvetica-Bold", fontSize=7.5, leading=9, textColor=colors.HexColor("#123b28")),
+        "record": ParagraphStyle("rr", parent=ss["Normal"], fontName="Helvetica-Bold", fontSize=8.5, leading=10, textColor=colors.HexColor("#1e3d59")),
+        "small": ParagraphStyle("rsmall", parent=ss["Normal"], fontName="Helvetica", fontSize=7, leading=8.5, textColor=colors.HexColor("#555555")),
+        "cover_big": ParagraphStyle("coverbig", parent=ss["Title"], fontName="Helvetica-Bold", fontSize=27, leading=31, alignment=1, textColor=colors.HexColor("#0e6b3b"), spaceAfter=7),
+        "cover_sub": ParagraphStyle("coversub", parent=ss["Normal"], fontName="Helvetica-Bold", fontSize=11, leading=14, alignment=1, textColor=colors.HexColor("#365844"), spaceAfter=7),
+        "cover_text": ParagraphStyle("covertext", parent=ss["Normal"], fontName="Helvetica", fontSize=8.8, leading=12, alignment=1, textColor=colors.HexColor("#33443a")),
+        "toc": ParagraphStyle("toc", parent=ss["Normal"], fontName="Helvetica", fontSize=8.5, leading=11, textColor=colors.HexColor("#26382d")),
+    }
+
+    def footer(canvas, doc):
         canvas.saveState()
         canvas.setStrokeColor(colors.HexColor("#d7e7dc"))
-        canvas.line(28, 24, A4[0]-28, 24)
+        canvas.line(28, 25, A4[0] - 28, 25)
         canvas.setFont("Helvetica-Bold", 7.5)
         canvas.setFillColor(colors.HexColor("#0e6b3b"))
-        canvas.drawString(28, 13, "YouAgronoMe YAM • Solution de suivi et de gestion agricole")
+        canvas.drawString(28, 13, "YouAgronoMe (YAM) • Suivi • Traçabilité • Décision agricole")
         canvas.setFont("Helvetica", 7)
         canvas.setFillColor(colors.HexColor("#6b7280"))
-        canvas.drawRightString(A4[0]-28, 13, f"Page {doc.page}")
+        canvas.drawRightString(A4[0] - 28, 13, f"Page {doc.page}")
         canvas.restoreState()
-    doc=SimpleDocTemplate(buffer,pagesize=A4,rightMargin=28,leftMargin=28,topMargin=30,bottomMargin=35)
-    tech=st.session_state.get("registered_tech",{}) or {}
-    ss=getSampleStyleSheet()
-    styles={
-        "title":ParagraphStyle("rt",parent=ss["Heading1"],fontName="Helvetica-Bold",fontSize=16,leading=20,alignment=1,textColor=colors.HexColor("#123b28"),spaceAfter=8),
-        "subtitle":ParagraphStyle("rs",parent=ss["Heading2"],fontName="Helvetica-Bold",fontSize=11,leading=14,textColor=colors.HexColor("#0e6b3b"),spaceBefore=12,spaceAfter=7),
-        "normal":ParagraphStyle("rn",parent=ss["Normal"],fontName="Helvetica",fontSize=8.5,leading=11),
-        "field":ParagraphStyle("rf",parent=ss["Normal"],fontName="Helvetica-Bold",fontSize=7.5,leading=9,textColor=colors.HexColor("#123b28")),
-        "record":ParagraphStyle("rr",parent=ss["Normal"],fontName="Helvetica-Bold",fontSize=8.5,leading=10,textColor=colors.HexColor("#1e3d59")),
-        "small":ParagraphStyle("rsmall",parent=ss["Normal"],fontName="Helvetica",fontSize=7,leading=8.5,textColor=colors.HexColor("#555555"))
-    }
-    el=[]
-    el.append(Paragraph("YOUGRONOME YAM", ParagraphStyle("brand", parent=styles["title"], fontSize=24, leading=28, textColor=colors.HexColor("#0e6b3b"), spaceAfter=4)))
-    el.append(Paragraph("RAPPORT TECHNIQUE AGRICOLE • SUIVI DE PARCELLE", ParagraphStyle("cover", parent=styles["title"], fontSize=14, leading=18, textColor=colors.HexColor("#123b28"), spaceAfter=8)))
-    el.append(Paragraph(f"<b>{_safe_report_text(champ_nom).upper()}</b>", ParagraphStyle("parcelcover", parent=styles["title"], fontSize=19, leading=23, textColor=colors.HexColor("#10a052"), spaceAfter=10)))
-    el.append(Paragraph(f"<b>Date du rapport :</b> {date_rapport.strftime('%d/%m/%Y')}",styles["normal"]))
-    el.append(Paragraph("Document professionnel destiné au suivi, au contrôle, à la décision et à la valorisation de l'exploitation.",styles["normal"]))
-    el.append(Spacer(1,18))
-    el.append(Paragraph("PÉRIMÈTRE DU DOCUMENT", styles["subtitle"]))
-    el.append(Paragraph("Ce rapport présente uniquement les informations opérationnelles rattachées à la parcelle sélectionnée. Les identifiants techniques, données de sécurité, mots de passe, e-mails, permissions et informations internes de la base sont exclus.", styles["normal"]))
+
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=28, leftMargin=28, topMargin=30, bottomMargin=35)
+
+    # Parcelle accessible : aucune autre parcelle ne doit entrer dans le rapport.
+    df_c = load_accessible_champs()
+    champ_id = None
+    champ_info = pd.DataFrame()
+    if not df_c.empty and "nom" in df_c.columns:
+        x = df_c[df_c["nom"].astype(str).str.strip().str.lower() == str(champ_nom).strip().lower()].copy()
+        if not x.empty:
+            champ_info = x.iloc[[0]].copy()
+            if "id" in x.columns:
+                champ_id = x["id"].iloc[0]
+
+    tables = [
+        ("pointage", "2. POINTAGE ET ACTIVITÉS HUMAINES"),
+        ("taches", "3. TRAVAUX ET PLANNING"),
+        ("recoltes", "4. RÉCOLTES ET RENDEMENTS"),
+        ("depenses", "5. DÉPENSES ET ACHATS"),
+        ("intrants", "6. INTRANTS ET STOCKS"),
+        ("materiel", "7. MATÉRIEL ET MAINTENANCE"),
+        ("pluviometrie", "8. PLUVIOMÉTRIE"),
+        ("incidents", "9. INCIDENTS"),
+        ("tracabilite", "10. TRAÇABILITÉ ET LOTS"),
+        ("irrigation", "11. IRRIGATION ET EAU"),
+        ("alertes_meteo", "12. RISQUES, MÉTÉO ET RECOMMANDATIONS"),
+    ]
+    collected = {}
+    for tn, title in tables:
+        df = _df_for_champ(load_table(tn), champ_id, champ_nom, tn, tech)
+        collected[tn] = _clean_report_columns(df)
+
+    # Calculs utiles pour la page d'accueil.
+    total_dep = pd.to_numeric(collected["depenses"].get("montant", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
+    qte_rec = pd.to_numeric(collected["recoltes"].get("quantite_kg", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
+    prix = pd.to_numeric(collected["recoltes"].get("prix_unitaire", pd.Series(dtype=float)), errors="coerce").fillna(0)
+    qser = pd.to_numeric(collected["recoltes"].get("quantite_kg", pd.Series(dtype=float)), errors="coerce").fillna(0)
+    ventes = (qser * prix).sum()
+    marge = ventes - total_dep
+    total_actions = sum(len(v) for v in collected.values())
+
+    el = []
+
+    # ================= PAGE 1 : ACCUEIL YAM + LITTÉRATURE + PLAN =================
+    el.append(Spacer(1, 8))
+    el.append(Paragraph("YouAgronoMe (YAM)", styles["cover_big"]))
+    el.append(Paragraph("RAPPORT PROFESSIONNEL DE SUIVI AGRICOLE", styles["cover_sub"]))
+    el.append(Paragraph(f"PARCELLE : <b>{_safe_report_text(champ_nom).upper()}</b>", styles["cover_sub"]))
+    el.append(Spacer(1, 5))
+
+    banner = Table([[Paragraph("🌱 PILOTER • SUIVRE • TRAÇER • DÉCIDER", styles["cover_sub"])]], colWidths=[500])
+    banner.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#dff2e6")),
+        ("BOX", (0, 0), (-1, -1), 1, colors.HexColor("#79b991")),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    el.append(banner)
+    el.append(Spacer(1, 10))
+
+    el.append(Paragraph("À propos de YouAgronoMe (YAM)", styles["subtitle"]))
+    el.append(Paragraph(
+        "YouAgronoMe, abrégé <b>YAM</b>, est la plateforme numérique de suivi et de gestion agricole mise en avant dans ce rapport. "
+        "Elle vise à réunir dans un même environnement les informations de terrain, la gestion des parcelles, le suivi des travaux, "
+        "les pointages, les récoltes, les dépenses, les intrants, l'irrigation, la pluviométrie, les incidents, la traçabilité et les risques. "
+        "L'objectif est de transformer les données saisies sur le terrain en informations lisibles, traçables et utiles à la décision.",
+        styles["cover_text"]
+    ))
+    el.append(Spacer(1, 6))
+    el.append(Paragraph(
+        "YAM met l'accent sur la centralisation des données, la continuité du suivi entre les espaces de travail, la justification des opérations "
+        "par pièces ou photographies et la production de rapports professionnels pouvant servir au pilotage, au contrôle, à la supervision, "
+        "à la formation des stagiaires et à la valorisation des activités agricoles.",
+        styles["cover_text"]
+    ))
+
+    el.append(Paragraph("Lecture rapide de cette parcelle", styles["subtitle"]))
+    quick = Table([
+        ["Actions suivies", "Récolte", "Dépenses", "Valeur récoltes", "Marge estimative"],
+        [str(total_actions), f"{qte_rec:,.2f} kg", f"{total_dep:,.0f} FCFA", f"{ventes:,.0f} FCFA", f"{marge:,.0f} FCFA"],
+    ], colWidths=[100, 100, 100, 100, 100])
+    quick.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#123b28")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#f3faf5")),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("GRID", (0, 0), (-1, -1), .5, colors.HexColor("#cbded0")),
+        ("FONTSIZE", (0, 0), (-1, -1), 7.8),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    el.append(quick)
+
+    el.append(Paragraph("PLAN DU RAPPORT", styles["subtitle"]))
+    plan_items = [
+        "1. Accueil YAM, présentation et lecture rapide de la parcelle",
+        "2. Identification opérationnelle de la parcelle",
+        "3. Pointage et activités humaines",
+        "4. Travaux et planning",
+        "5. Récoltes et rendements",
+        "6. Dépenses et achats",
+        "7. Intrants et stocks",
+        "8. Matériel et maintenance",
+        "9. Pluviométrie",
+        "10. Incidents",
+        "11. Traçabilité et lots",
+        "12. Irrigation et eau",
+        "13. Risques, météo et recommandations",
+        "14. Résumé synthétique et indicateurs",
+        "15. Pièces justificatives et photographies",
+        "16. Observations, recommandations et signatures",
+    ]
+    plan_table = Table([[Paragraph("<b>•</b> " + _safe_report_text(x), styles["toc"])] for x in plan_items], colWidths=[500])
+    plan_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f8fbf9")),
+        ("BOX", (0, 0), (-1, -1), .5, colors.HexColor("#d7e7dc")),
+        ("INNERGRID", (0, 0), (-1, -1), .25, colors.HexColor("#e8f0ea")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    el.append(plan_table)
+    el.append(Spacer(1, 6))
+    el.append(Paragraph(f"Rapport édité le {date_rapport.strftime('%d/%m/%Y')} • Données arrêtées selon les informations disponibles dans YAM au moment de l'édition.", styles["small"]))
     el.append(PageBreak())
 
-    df_c=load_accessible_champs(); champ_id=None; champ_info=pd.DataFrame()
-    if not df_c.empty and "nom" in df_c.columns:
-        x=df_c[df_c["nom"].astype(str).str.strip().str.lower()==str(champ_nom).strip().lower()].copy()
-        if not x.empty:
-            champ_info=x.iloc[[0]].copy()
-            if "id" in x.columns: champ_id=x["id"].iloc[0]
-    el.append(Paragraph("1. IDENTIFICATION DE LA PARCELLE",styles["subtitle"]))
-    _add_dataframe_full(el,"",champ_info,styles)
+    # ================= DONNÉES OPÉRATIONNELLES =================
+    el.append(Paragraph("1. IDENTIFICATION OPÉRATIONNELLE DE LA PARCELLE", styles["subtitle"]))
+    _add_dataframe_full(el, "", champ_info, styles)
 
-    tables=[("pointage","2. POINTAGE ET ACTIVITÉS HUMAINES"),("taches","3. TRAVAUX ET PLANNING"),("recoltes","4. RÉCOLTES ET RENDEMENTS"),("depenses","5. DÉPENSES ET ACHATS"),("intrants","6. INTRANTS ET STOCKS"),("materiel","7. MATÉRIEL ET MAINTENANCE"),("pluviometrie","8. PLUVIOMÉTRIE"),("incidents","9. INCIDENTS"),("tracabilite","10. TRAÇABILITÉ ET LOTS"),("irrigation","11. IRRIGATION ET EAU"),("alertes_meteo","12. RISQUES, MÉTÉO ET RECOMMANDATIONS")]
-    collected={}
-    for tn,title in tables:
-        df=_df_for_champ(load_table(tn),champ_id,champ_nom,tn,tech)
-        df=_clean_report_columns(df); collected[tn]=df
-        if not df.empty: _add_dataframe_full(el,title,df,styles)
+    section_number = 2
+    for tn, title in tables:
+        df = collected[tn]
+        if not df.empty:
+            el.append(Paragraph(title, styles["subtitle"]))
+            _add_dataframe_full(el, "", df, styles)
+        section_number += 1
 
-    # Synthèse automatique des actions réellement présentes dans le périmètre.
-    el.append(PageBreak()); el.append(Paragraph("13. RÉSUMÉ SYNTHÉTIQUE DU SUIVI",styles["subtitle"]))
-    counts=[("Pointages",len(collected["pointage"])),("Travaux",len(collected["taches"])),("Récoltes",len(collected["recoltes"])),("Dépenses",len(collected["depenses"])),("Intrants",len(collected["intrants"])),("Maintenance",len(collected["materiel"])),("Pluviométrie",len(collected["pluviometrie"])),("Incidents",len(collected["incidents"])),("Lots",len(collected["tracabilite"])),("Irrigations",len(collected["irrigation"])),("Alertes / risques",len(collected["alertes_meteo"]))]
-    total_dep=pd.to_numeric(collected["depenses"].get("montant",pd.Series(dtype=float)),errors="coerce").fillna(0).sum()
-    qte_rec=pd.to_numeric(collected["recoltes"].get("quantite_kg",pd.Series(dtype=float)),errors="coerce").fillna(0).sum()
-    prix=pd.to_numeric(collected["recoltes"].get("prix_unitaire",pd.Series(dtype=float)),errors="coerce").fillna(0)
-    qser=pd.to_numeric(collected["recoltes"].get("quantite_kg",pd.Series(dtype=float)),errors="coerce").fillna(0)
-    ventes=(qser*prix).sum(); marge=ventes-total_dep
-    synth=[["Indicateur","Résultat"],["Actions enregistrées",str(sum(v for _,v in counts))],["Dépenses enregistrées",f"{total_dep:,.0f} FCFA"],["Quantité récoltée",f"{qte_rec:,.2f} kg"],["Valeur estimée des récoltes",f"{ventes:,.0f} FCFA"],["Marge estimative",f"{marge:,.0f} FCFA"],["Incidents signalés",str(len(collected["incidents"]))],["Alertes / risques",str(len(collected["alertes_meteo"]))]]
-    t=Table(synth,colWidths=[280,220]); t.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor("#123b28")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("GRID",(0,0),(-1,-1),.5,colors.HexColor("#d7e7dc")),("FONTSIZE",(0,0),(-1,-1),8.5),("TOPPADDING",(0,0),(-1,-1),6),("BOTTOMPADDING",(0,0),(-1,-1),6)])); el.append(t)
-    el.append(Spacer(1,10)); el.append(Paragraph("<b>Lecture synthétique :</b> le présent rapport rassemble uniquement les opérations rattachées à la parcelle sélectionnée et, lorsque la base le permet, à l'utilisateur responsable. Les identifiants techniques, mots de passe, e-mails, rôles, permissions et autres données de sécurité sont volontairement exclus du document.",styles["normal"]))
+    # Synthèse complète.
+    el.append(PageBreak())
+    el.append(Paragraph("14. RÉSUMÉ SYNTHÉTIQUE ET INDICATEURS", styles["subtitle"]))
+    counts = [
+        ("Pointages", len(collected["pointage"])),
+        ("Travaux", len(collected["taches"])),
+        ("Récoltes", len(collected["recoltes"])),
+        ("Dépenses", len(collected["depenses"])),
+        ("Intrants", len(collected["intrants"])),
+        ("Maintenance", len(collected["materiel"])),
+        ("Pluviométrie", len(collected["pluviometrie"])),
+        ("Incidents", len(collected["incidents"])),
+        ("Lots", len(collected["tracabilite"])),
+        ("Irrigations", len(collected["irrigation"])),
+        ("Alertes / risques", len(collected["alertes_meteo"])),
+    ]
+    synth = [["Indicateur", "Résultat"]] + [[a, str(b)] for a, b in counts] + [
+        ["Actions totales enregistrées", str(total_actions)],
+        ["Dépenses totales", f"{total_dep:,.0f} FCFA"],
+        ["Quantité récoltée", f"{qte_rec:,.2f} kg"],
+        ["Valeur estimée des récoltes", f"{ventes:,.0f} FCFA"],
+        ["Marge estimative", f"{marge:,.0f} FCFA"],
+    ]
+    t = Table(synth, colWidths=[300, 200], repeatRows=1)
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#123b28")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("GRID", (0, 0), (-1, -1), .5, colors.HexColor("#d7e7dc")),
+        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    el.append(t)
+    el.append(Spacer(1, 10))
+    el.append(Paragraph(
+        "<b>Synthèse :</b> ce document rassemble les informations opérationnelles disponibles pour la seule parcelle sélectionnée. "
+        "Les informations d'identification technique, identifiants internes, données de sécurité, mots de passe, permissions, e-mails et autres champs sensibles ne sont pas publiés.",
+        styles["normal"]
+    ))
 
-    _add_evidence_section(el,champ_id,champ_nom,styles,tech)
+    el.append(Paragraph("15. PIÈCES JUSTIFICATIVES ET PHOTOGRAPHIES", styles["subtitle"]))
+    _add_evidence_section(el, champ_id, champ_nom, styles, tech)
 
-    el.append(Spacer(1,15)); el.append(Paragraph("14. OBSERVATIONS ET CONCLUSION",styles["subtitle"]))
-    el.append(Paragraph("Observations / recommandations complémentaires :",styles["normal"]))
-    obs=Table([["\n\n\n\n"]],colWidths=[500],rowHeights=[75]); obs.setStyle(TableStyle([("BOX",(0,0),(-1,-1),.7,colors.HexColor("#9ca3af"))])); el.append(obs)
-    el.append(Spacer(1,18)); el.append(Paragraph("15. VALIDATION ET SIGNATURES",styles["subtitle"]))
-    sig=Table([["Responsable du suivi","Validation / supervision"],["\n\nNom : __________________________\nSignature : _____________________\nDate : ____ / ____ / ______","\n\nNom : __________________________\nSignature : _____________________\nDate : ____ / ____ / ______"]],colWidths=[250,250],rowHeights=[22,85]); sig.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor("#eef6f0")),("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("GRID",(0,0),(-1,-1),.6,colors.HexColor("#9ca3af")),("VALIGN",(0,0),(-1,-1),"TOP"),("FONTSIZE",(0,0),(-1,-1),8.5),("TOPPADDING",(0,1),(-1,-1),8)])); el.append(sig)
-    el.append(Spacer(1,10)); el.append(Paragraph("Document généré automatiquement par YAM. Les informations sont présentées selon les données saisies dans l'application au moment de l'édition.",styles["small"]))
-    doc.build(el, onFirstPage=_yam_footer, onLaterPages=_yam_footer); return buffer.getvalue()
+    el.append(Spacer(1, 15))
+    el.append(Paragraph("16. OBSERVATIONS, RECOMMANDATIONS ET VALIDATION", styles["subtitle"]))
+    el.append(Paragraph("Observations / recommandations complémentaires :", styles["normal"]))
+    obs = Table([["\n\n\n\n\n"]], colWidths=[500], rowHeights=[90])
+    obs.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), .7, colors.HexColor("#9ca3af")), ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fbfdfb"))]))
+    el.append(obs)
+    el.append(Spacer(1, 18))
+
+    sig = Table([
+        ["RESPONSABLE DU SUIVI", "VALIDATION / SUPERVISION"],
+        ["\nNom : __________________________\nSignature : _____________________\nDate : ____ / ____ / ______", "\nNom : __________________________\nSignature : _____________________\nDate : ____ / ____ / ______"],
+    ], colWidths=[250, 250], rowHeights=[22, 85])
+    sig.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#dff2e6")),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("GRID", (0, 0), (-1, -1), .6, colors.HexColor("#9ca3af")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("TOPPADDING", (0, 1), (-1, -1), 8),
+    ]))
+    el.append(sig)
+    el.append(Spacer(1, 10))
+    el.append(Paragraph("YouAgronoMe (YAM) — rapport généré à partir des données saisies et synchronisées dans la plateforme au moment de l'édition.", styles["small"]))
+
+    doc.build(el, onFirstPage=footer, onLaterPages=footer)
+    return buffer.getvalue()
 
 
 # ==========================================
@@ -533,7 +739,8 @@ email_connecte = tech.get('gmail', '').lower()
 # Cela évite les conflits React/DOM du type "removeChild" provoqués par du JavaScript
 # ou des éléments HTML qui modifient l'arbre DOM de Streamlit.
 menu_administration = [
-    "🔐 Paramètres & Liste Blanche"
+    "🔐 Paramètres & Liste Blanche",
+    "📜 Historique des Modifications"
 ]
 menu_gestionnaire = [
     "📊 Tableau de Bord", "👥 Groupes & Membres", "💰 Finances & Marges",
@@ -567,7 +774,7 @@ groupes = {
     "🌱 EXPLOITATION": [m for m in ["🌱 Cartographie & Parcelles", "📅 Planning & Travaux", "🌾 Récoltes & Rendements", "🌧️ Pluviométrie", "💧 Irrigation & Eau", "🌤️ Risques & Météo"] if m in accessibles],
     "👥 ÉQUIPE & OPÉRATIONS": [m for m in ["👥 Groupes & Membres", "⏰ Pointage des Horaires", "⚠️ Incidents", "🏷️ Traçabilité & Lots", "💬 Espace Collaboration & Workspace"] if m in accessibles],
     "💰 GESTION & MATÉRIEL": [m for m in ["💰 Finances & Marges", "📦 Stocks d'Intrants", "🚜 Maintenance Matériel", "📈 Rentabilité & ROI"] if m in accessibles],
-    "⚙️ ADMINISTRATION": [m for m in ["🔐 Paramètres & Liste Blanche", "📑 EXPORT RAPPORT PARCELLE"] if m in accessibles],
+    "⚙️ ADMINISTRATION": [m for m in ["🔐 Paramètres & Liste Blanche", "📜 Historique des Modifications", "📑 EXPORT RAPPORT PARCELLE"] if m in accessibles],
 }
 
 # Mémoriser la page courante sans jamais supposer qu'une variable `menu` existe.
@@ -577,7 +784,7 @@ if "selected_menu" not in st.session_state or st.session_state.selected_menu not
 st.markdown(f"""
 <div class="main-header">
   <div>
-    <div class="brand-title">🌾 AgriGestion YAM</div>
+    <div class="brand-title">🌾 YouAgronoMe (YAM)</div>
     <div class="brand-subtitle">Pilotage agricole intelligent · espace sécurisé</div>
   </div>
   <div class="user-badge">👤 {prenom_tech} {nom_tech} · {role_tech}</div>
@@ -603,10 +810,15 @@ for tab, label in zip(tabs, tab_labels):
 menu = st.session_state.get("selected_menu", accessibles[0] if accessibles else "📊 Tableau de Bord")
 
 # La sidebar est volontairement supprimée : navigation uniquement par modules/onglets.
-col_head1, col_head2 = st.columns([5, 1])
+col_head1, col_head2, col_head3 = st.columns([4, 1, 1])
 with col_head1:
-    st.caption(f"Module actif : **{menu}**")
+    derniere_sync = st.session_state.get("last_sync", "À l'ouverture")
+    st.caption(f"Module actif : **{menu}** · Dernière synchronisation : **{derniere_sync}**")
 with col_head2:
+    if st.button("🔄 Synchroniser", use_container_width=True, help="Relire immédiatement les données Supabase pour tous les modules"):
+        synchroniser_donnees()
+        st.rerun()
+with col_head3:
     if st.button("🚪 Déconnexion", use_container_width=True):
         st.session_state.authenticated = False
         st.session_state.registered_tech = {}
@@ -1710,12 +1922,34 @@ elif menu == "💬 Espace Collaboration & Workspace":
     else:
         st.info("Aucun contenu dans l'espace de travail.")
 
+elif menu == "📜 Historique des Modifications":
+    if not is_general_admin():
+        st.error("🔒 Accès réservé à l'administrateur général.")
+        st.session_state.selected_menu = accessibles[0] if accessibles else "📊 Tableau de Bord"
+        st.rerun()
+    st.title("📜 Historique des Modifications — Administration Générale")
+    st.caption("Cet espace est strictement réservé à l'administrateur général. Il n'est jamais inclus dans les rapports PDF YAM.")
+    if st.button("🔄 Actualiser l'historique", use_container_width=True):
+        synchroniser_donnees()
+        st.rerun()
+    df_h = load_table('historique_modifications')
+    if not df_h.empty:
+        # Les identifiants techniques restent éventuellement visibles ici car cet espace est interne à l'administration générale.
+        st.dataframe(df_h.iloc[::-1].reset_index(drop=True), use_container_width=True, hide_index=True)
+    else:
+        st.info("Aucune modification enregistrée ou table d'historique non encore alimentée.")
+
 elif menu == "🔐 Paramètres & Liste Blanche":
     st.title("🔐 Paramètres, Liste Blanche & Synchronisation Supabase (Administration)")
     
     st.markdown("<div class='card-container'>", unsafe_allow_html=True)
     st.subheader("☁️ Statut de la Connexion Supabase")
-    st.write("Votre application est désormais connectée à distance à votre base de données relationnelle PostgreSQL hébergée sur Supabase.")
+    st.write("Votre application est connectée à votre base PostgreSQL Supabase. Les caches des modules sont invalidés après chaque écriture et une synchronisation manuelle est disponible.")
+    if st.button("🔄 SYNCHRONISER TOUS LES MODULES", use_container_width=True, type="primary"):
+        synchroniser_donnees()
+        st.success("✅ Données rechargées depuis Supabase pour tous les espaces.")
+        st.rerun()
+    st.caption(f"Dernière synchronisation : {st.session_state.get('last_sync', 'À l’ouverture')}")
     st.markdown("</div>", unsafe_allow_html=True)
     
     st.markdown("<br>", unsafe_allow_html=True)
