@@ -1708,18 +1708,18 @@ elif menu == "⏰ Temps & Pointage":
 elif menu == "👥 Membres & Équipes":
     if not require_module(menu):
         st.stop()
-    st.title("👥 Membres & Équipes — membres, groupes et affectations")
-    st.caption("Ajoutez les membres, créez des groupes de travail et affectez les membres à chaque travail.")
+    st.title("👥 Membres & Équipes — membres, groupes, tarifs et affectations")
+    st.caption("Ajoutez les membres, définissez leurs tarifs journaliers, créez des groupes de travail et affectez les membres.")
 
     employees = load_table("employes")
     groups_df = load_table("groupes_travail")
     memberships = load_table("groupe_membres")
 
-    tab1, tab2, tab3 = st.tabs(["👤 Membres", "👥 Groupes", "🔗 Affectations"])
+    tab1, tab2, tab3 = st.tabs(["👤 Membres & Tarifs", "👥 Groupes", "🔗 Affectations"])
 
     with tab1:
         with st.form("member_form", clear_on_submit=True):
-            c1,c2,c3 = st.columns(3)
+            c1, c2, c3 = st.columns(3)
             with c1:
                 first = st.text_input("Prénom *")
                 last = st.text_input("Nom *")
@@ -1728,19 +1728,31 @@ elif menu == "👥 Membres & Équipes":
                 phone = st.text_input("Téléphone")
             with c3:
                 job = st.text_input("Fonction / travail")
+                daily_rate = st.number_input("Tarif journalier", min_value=0.0, step=10.0, format="%.2f")
+            
+            sc1, sc2 = st.columns(2)
+            with sc1:
                 status = st.selectbox("Statut", ["Actif","Inactif"])
             note = st.text_area("Observation")
+            
             if st.form_submit_button("➕ Ajouter le membre", type="primary", use_container_width=True):
                 if first.strip() and last.strip():
                     db_insert("employes", {
-                        "prenom": first.strip(), "nom": last.strip(), "email": email.strip().lower(),
-                        "telephone": phone.strip(), "fonction": job.strip(), "statut": status,
-                        "observation": note.strip(), "createur_email": user_email()
+                        "prenom": first.strip(), 
+                        "nom": last.strip(), 
+                        "email": email.strip().lower(),
+                        "telephone": phone.strip(), 
+                        "fonction": job.strip(), 
+                        "tarif_journalier": daily_rate,
+                        "statut": status,
+                        "observation": note.strip(), 
+                        "createur_email": user_email()
                     }, f"Ajout membre {first.strip()} {last.strip()}")
-                    st.success("Membre ajouté dans Supabase.")
+                    st.success("Membre et tarif ajoutés dans Supabase.")
                     st.rerun()
                 else:
                     st.warning("Le prénom et le nom sont obligatoires.")
+                    
         if not employees.empty:
             st.dataframe(employees, use_container_width=True, hide_index=True)
             member_to_delete = st.selectbox(
@@ -1794,7 +1806,6 @@ elif menu == "👥 Membres & Équipes":
                 gid = st.selectbox("Groupe", list(grp_options), format_func=lambda x: grp_options[x])
                 mids = st.multiselect("Membres du groupe", list(emp_options), format_func=lambda x: emp_options[x])
                 if st.form_submit_button("💾 Enregistrer les membres du groupe", type="primary", use_container_width=True):
-                    # Synchronisation exacte : on remplace les membres du groupe sélectionné.
                     existing = memberships[memberships["groupe_id"].astype(str) == str(gid)] if not memberships.empty and "groupe_id" in memberships.columns else pd.DataFrame()
                     if not existing.empty and "id" in existing.columns:
                         for rid in existing["id"].tolist():
@@ -1807,7 +1818,6 @@ elif menu == "👥 Membres & Équipes":
             memberships = load_table("groupe_membres")
             if not memberships.empty:
                 st.dataframe(memberships, use_container_width=True, hide_index=True)
-
 
 # ============================================================
 # 17. PLANNING & TRAVAUX
