@@ -5,7 +5,7 @@
 #
 # Dépendances :
 #   pip install streamlit pandas supabase reportlab folium
-#               streamlit-folium openai pillow
+#               streamlit-folium  pillow
 #
 # Secrets Streamlit (.streamlit/secrets.toml) :
 #   SUPABASE_URL = "https://....supabase.co"
@@ -54,12 +54,6 @@ try:
     from PIL import Image
 except Exception:
     Image = None
-
-try:
-    from openai import OpenAI
-except Exception:
-    OpenAI = None
-
 
 # ============================================================
 # 1. CONFIGURATION
@@ -117,8 +111,8 @@ MODULES = {
     "💰 Finances & Coûts": "finances",
     "📈 Rentabilité & ROI": "roi",
     "🌤️ Risques & Météo": "risques",
-    "🤖 IA Agricole": "ia",
     "💬 Collaboration & Workspace": "workspace",
+    "👥 Membres & Équipes": "membres",
     "📑 Rapports Professionnels": "rapports",
     "🔐 Liste Blanche & Administration": "admin",
     "📜 Journal d'Audit": "audit",
@@ -132,9 +126,9 @@ DEFAULT_ROLE_MODULES = {
         "🌾 Récoltes & Rendements", "📦 Intrants & Stocks",
         "🚜 Matériel & Maintenance", "💰 Finances & Coûts",
         "📈 Rentabilité & ROI", "🌤️ Risques & Météo",
-        "🤖 IA Agricole", "💬 Collaboration & Workspace",
+        "💬 Collaboration & Workspace",
         "📑 Rapports Professionnels",
-    ],
+        "👥 Membres & Équipes"    ],
     "Gestionnaire": [
         "📊 Tableau de Bord", "🧭 Centre Opérations",
         "🌱 Cartographie & Parcelles", "⏰ Temps & Pointage",
@@ -143,9 +137,9 @@ DEFAULT_ROLE_MODULES = {
         "⚠️ Incidents & Observations", "🏷️ Traçabilité & Lots",
         "📦 Intrants & Stocks", "🚜 Matériel & Maintenance",
         "💰 Finances & Coûts", "📈 Rentabilité & ROI",
-        "🌤️ Risques & Météo", "🤖 IA Agricole",
+        "🌤️ Risques & Météo",
         "💬 Collaboration & Workspace", "📑 Rapports Professionnels",
-    ],
+        "👥 Membres & Équipes"    ],
     "Technicien Supérieur": [
         "📊 Tableau de Bord", "🧭 Centre Opérations",
         "🌱 Cartographie & Parcelles", "⏰ Temps & Pointage",
@@ -153,7 +147,7 @@ DEFAULT_ROLE_MODULES = {
         "🌧️ Pluviométrie", "💧 Irrigation & Eau",
         "⚠️ Incidents & Observations", "🏷️ Traçabilité & Lots",
         "📦 Intrants & Stocks", "🚜 Matériel & Maintenance",
-        "🌤️ Risques & Météo", "🤖 IA Agricole",
+        "🌤️ Risques & Météo",
         "💬 Collaboration & Workspace", "📑 Rapports Professionnels",
     ],
     "Technicien": [
@@ -162,14 +156,14 @@ DEFAULT_ROLE_MODULES = {
         "🌾 Récoltes & Rendements", "🌧️ Pluviométrie",
         "💧 Irrigation & Eau", "⚠️ Incidents & Observations",
         "🏷️ Traçabilité & Lots", "📦 Intrants & Stocks",
-        "🌤️ Risques & Météo", "🤖 IA Agricole",
+        "🌤️ Risques & Météo",
         "💬 Collaboration & Workspace", "📑 Rapports Professionnels",
     ],
     "Stagiaire": [
         "🧭 Centre Opérations", "🌱 Cartographie & Parcelles",
         "⏰ Temps & Pointage", "📅 Planning & Travaux",
         "⚠️ Incidents & Observations", "🌧️ Pluviométrie",
-        "🤖 IA Agricole", "💬 Collaboration & Workspace",
+        "💬 Collaboration & Workspace",
     ],
 }
 
@@ -235,13 +229,6 @@ st.markdown(
     padding:16px;
     box-shadow:0 6px 20px rgba(24,68,42,.06);
 }
-.ai-box {
-    background:linear-gradient(135deg,#eef8f1,#ffffff);
-    border:1px solid #b9dcc5;
-    border-left:5px solid #0e6b3b;
-    border-radius:16px;
-    padding:18px;
-}
 .warning-box {
     background:#fffaf0;
     border:1px solid #efd7a2;
@@ -299,18 +286,9 @@ def db_error_message(exc: Exception) -> str:
     return str(exc).replace("\n", " ")[:600]
 
 
-@st.cache_data(ttl=15)
-def load_table(table_name: str) -> pd.DataFrame:
-    try:
-        res = supabase.table(table_name).select("*").execute()
-        return pd.DataFrame(res.data or [])
-    except Exception:
-        return pd.DataFrame()
-
-
 def clear_caches():
     try:
-        load_table.clear()
+        sync_table.clear()
     except Exception:
         pass
     try:
@@ -772,167 +750,39 @@ def safe_num(df: pd.DataFrame, col: str) -> float:
 
 
 # ============================================================
-# 9. IA AGRICOLE — ANALYSE MULTISOURCE + VISION
+# 9. DONNÉES — SYNCHRONISATION COMPLÈTE
 # ============================================================
 
-AGRI_SYSTEM_PROMPT = """
-Tu es YAM AGRI-EXPERT, un copilote agricole professionnel destiné à des
-propriétaires, gestionnaires, techniciens supérieurs, techniciens, stagiaires
-et administrateurs d'exploitation.
+# Toutes les tables utilisées par l'application doivent exister dans Supabase.
+# La liste est également utilisée par le bouton Synchroniser pour recharger
+# toutes les données de la session.
+SUPABASE_TABLES = [
+    "whitelist_users", "historique_modifications", "champs", "employes",
+    "groupes_travail", "groupe_membres", "taches", "tache_membres",
+    "time_entries", "recoltes", "pluviometrie", "irrigation", "incidents",
+    "tracabilite", "intrants", "materiel", "depenses", "alertes_meteo",
+    "messages_workspace",
+]
 
-Ta mission est d'analyser les données de l'exploitation avec une logique
-agronomique, opérationnelle, économique et de traçabilité.
-
-Tu dois :
-1. distinguer clairement les faits saisis des hypothèses;
-2. détecter incohérences, données manquantes importantes et anomalies;
-3. interpréter les tendances (travaux, eau, pluie, incidents, récoltes, coûts,
-   intrants, temps de travail, matériel);
-4. proposer des actions concrètes, hiérarchisées par urgence;
-5. expliquer les risques et les contrôles à effectuer;
-6. tenir compte de la parcelle, de la culture, de la date et des mesures;
-7. pour une photo, décrire uniquement ce qui est réellement visible et signaler
-   les limites de l'analyse visuelle;
-8. ne jamais inventer une mesure, une maladie ou un diagnostic certain;
-9. pour les traitements phytosanitaires, recommander de confirmer le diagnostic,
-   l'étiquette homologuée, la dose autorisée et la réglementation locale;
-10. adapter le niveau de langage au rôle de l'utilisateur.
-
-Format recommandé :
-- Synthèse exécutive
-- Constats factuels
-- Anomalies / points de vigilance
-- Analyse agronomique
-- Priorités 24–48 h
-- Actions 7 jours
-- Suivi à documenter
-- Avis YAM AGRI-EXPERT
-- Niveau de confiance
-"""
-
-@st.cache_resource
-def init_openai():
-    key = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY", ""))
-    if not key or OpenAI is None:
-        return None
-    return OpenAI(api_key=key)
-
-
-def ai_model() -> str:
-    return st.secrets.get(
-        "OPENAI_MODEL", os.getenv("OPENAI_MODEL", "gpt-5.6-sol")
-    )
-
-
-def ai_available() -> bool:
-    return init_openai() is not None
-
-
-def build_ai_context(champ_id: Any, champ_name: str) -> Dict[str, Any]:
-    tables = [
-        "pointage", "taches", "recoltes", "depenses", "intrants",
-        "materiel", "pluviometrie", "incidents", "tracabilite",
-        "irrigation", "alertes_meteo",
-    ]
-    context = {
-        "application": APP_NAME,
-        "date_analyse": datetime.now().isoformat(timespec="seconds"),
-        "utilisateur_role": user_role(),
-        "parcelle": {},
-        "donnees": {},
-    }
-
-    champs = load_accessible_champs()
-    if not champs.empty and "id" in champs.columns:
-        r = champs[pd.to_numeric(champs["id"], errors="coerce") == int(champ_id)]
-        if not r.empty:
-            context["parcelle"] = clean_report_df(r).iloc[0].to_dict()
-
-    for table in tables:
-        df = filter_by_champ(load_table(table), champ_id)
-        context["donnees"][table] = df_records(clean_report_df(df), 80)
-
-    # KPI utiles, calculés à partir des données existantes.
-    dep = filter_by_champ(load_table("depenses"), champ_id)
-    rec = filter_by_champ(load_table("recoltes"), champ_id)
-    plu = filter_by_champ(load_table("pluviometrie"), champ_id)
-    irr = filter_by_champ(load_table("irrigation"), champ_id)
-    context["indicateurs"] = {
-        "depenses_fcfa": safe_num(dep, "montant"),
-        "recolte_kg": safe_num(rec, "quantite_kg"),
-        "valeur_recoltes_fcfa": (
-            float(
-                (
-                    pd.to_numeric(rec.get("quantite_kg", pd.Series(dtype=float)), errors="coerce").fillna(0)
-                    * pd.to_numeric(rec.get("prix_unitaire", pd.Series(dtype=float)), errors="coerce").fillna(0)
-                ).sum()
-            )
-            if not rec.empty else 0.0
-        ),
-        "pluie_mm": safe_num(plu, "pluie_mm"),
-        "eau_m3": safe_num(irr, "volume_eau_m3"),
-    }
-    return context
-
-
-def ai_analyse_agricole(
-    champ_id: Any,
-    champ_name: str,
-    question: str = "",
-    image_rows: Optional[List[pd.Series]] = None,
-) -> str:
-    client = init_openai()
-    if client is None:
-        return (
-            "IA non activée : configurez OPENAI_API_KEY dans les secrets "
-            "Streamlit. Les données restent utilisables sans l'IA."
-        )
-
-    context = build_ai_context(champ_id, champ_name)
-    question = question.strip() or (
-        "Fais un diagnostic global de cette parcelle et donne les priorités "
-        "opérationnelles immédiates, les risques, les incohérences et les "
-        "actions de suivi."
-    )
-
-    content = [
-        {
-            "type": "input_text",
-            "text": (
-                f"Rôle utilisateur : {user_role()}\n"
-                f"Parcelle : {champ_name}\n"
-                f"Question : {question}\n\n"
-                "DONNÉES YAM (JSON) :\n"
-                + json.dumps(context, ensure_ascii=False, default=str)
-            ),
-        }
-    ]
-
-    # Vision : jusqu'à 4 images pertinentes, téléchargées depuis Storage.
-    for row in (image_rows or [])[:4]:
-        raw = local_or_storage_bytes(row)
-        if not raw:
-            continue
-        mime = str(row.get("mime_type", "image/jpeg"))
-        if not mime.startswith("image/"):
-            continue
-        import base64
-        encoded = base64.b64encode(raw).decode("utf-8")
-        content.append({
-            "type": "input_image",
-            "image_url": f"data:{mime};base64,{encoded}",
-        })
-
+@st.cache_data(ttl=5)
+def sync_table(table_name: str) -> pd.DataFrame:
     try:
-        response = client.responses.create(
-            model=ai_model(),
-            instructions=AGRI_SYSTEM_PROMPT,
-            input=[{"role": "user", "content": content}],
-        )
-        return getattr(response, "output_text", "") or str(response)
-    except Exception as exc:
-        return f"Erreur IA : {db_error_message(exc)}"
+        res = supabase.table(table_name).select("*").execute()
+        return pd.DataFrame(res.data or [])
+    except Exception:
+        return pd.DataFrame()
 
+def load_table(table_name: str) -> pd.DataFrame:
+    # Lecture centralisée : toutes les parties de l'application passent par
+    # la même couche Supabase.
+    return sync_table(table_name).copy()
+
+def sync_all_tables() -> Dict[str, pd.DataFrame]:
+    data = {}
+    for table in SUPABASE_TABLES:
+        data[table] = load_table(table)
+    st.session_state.last_sync = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    return data
 
 # ============================================================
 # 10. RAPPORT PDF PROFESSIONNEL
@@ -962,10 +812,6 @@ def pdf_styles():
         "field": ParagraphStyle(
             "YField", parent=ss["Normal"], fontName="Helvetica-Bold",
             fontSize=7.4, leading=9, textColor=colors.HexColor("#123b28")
-        ),
-        "ai": ParagraphStyle(
-            "YAI", parent=ss["Normal"], fontName="Helvetica",
-            fontSize=8.2, leading=11, textColor=colors.HexColor("#244d34")
         ),
     }
 
@@ -1061,7 +907,6 @@ def generate_pdf_report(
     champ_id: Any,
     champ_name: str,
     report_date: date,
-    ai_text: str = "",
 ) -> bytes:
     buffer = io.BytesIO()
     styles = pdf_styles()
@@ -1081,7 +926,7 @@ def generate_pdf_report(
             champ_info = tmp.iloc[[0]]
 
     table_titles = [
-        ("pointage", "TEMPS & ACTIVITÉS HUMAINES"),
+        ("time_entries", "TEMPS & ACTIVITÉS HUMAINES"),
         ("taches", "TRAVAUX & PLANNING"),
         ("recoltes", "RÉCOLTES & RENDEMENTS"),
         ("depenses", "DÉPENSES & ACHATS"),
@@ -1188,15 +1033,6 @@ def generate_pdf_report(
     for table, title in table_titles:
         add_clean_df(el, title, collected[table], styles)
 
-    # IA : uniquement si elle a effectivement produit un avis.
-    if ai_text.strip():
-        el.append(PageBreak())
-        el.append(Paragraph("AVIS YAM AGRI-EXPERT", styles["subtitle"]))
-        for block in ai_text.split("\n"):
-            if block.strip():
-                el.append(Paragraph(esc(block), styles["ai"]))
-                el.append(Spacer(1, 3))
-
     add_storage_images(el, evidence_rows, styles)
 
     # Validation/signatures.
@@ -1260,8 +1096,8 @@ if st.session_state.selected_menu not in accessible:
 # Navigation en groupes.
 groups = {
     "🏠 PILOTAGE": [
-        "📊 Tableau de Bord", "🧭 Centre Opérations", "🤖 IA Agricole",
-        "📑 Rapports Professionnels"
+        "📊 Tableau de Bord", "🧭 Centre Opérations", "📑 Rapports Professionnels",
+        "👥 Membres & Équipes"
     ],
     "🌱 EXPLOITATION": [
         "🌱 Cartographie & Parcelles", "📅 Planning & Travaux",
@@ -1275,7 +1111,7 @@ groups = {
     ],
     "💼 GESTION": [
         "💰 Finances & Coûts", "📈 Rentabilité & ROI",
-        "💬 Collaboration & Workspace"
+        "💬 Collaboration & Workspace", "👥 Membres & Équipes"
     ],
     "🔐 ADMIN": [
         "🔐 Liste Blanche & Administration", "📜 Journal d'Audit"
@@ -1305,9 +1141,9 @@ with c1:
         f"Dernière synchronisation : **{st.session_state.get('last_sync','À l’ouverture')}**"
     )
 with c2:
-    if st.button("🔄 Synchroniser", use_container_width=True):
+    if st.button("🔄 Synchroniser tout", use_container_width=True):
         clear_caches()
-        st.session_state.last_sync = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        sync_all_tables()
         st.rerun()
 with c3:
     if st.button("🚪 Déconnexion", use_container_width=True):
@@ -1379,8 +1215,7 @@ if menu == "📊 Tableau de Bord":
     if incidents_ouverts:
         st.markdown(
             f'<div class="danger-box"><b>{incidents_ouverts} incident(s)</b> '
-            "sont enregistrés dans votre périmètre. Consultez le module Incidents "
-            "et demandez une analyse IA si nécessaire.</div>",
+            "sont enregistrés dans votre périmètre. Consultez le module Incidents et traitez les actions prioritaires.</div>",
             unsafe_allow_html=True,
         )
     else:
@@ -1654,6 +1489,114 @@ elif menu == "⏰ Temps & Pointage":
 
 
 # ============================================================
+# 17. MEMBRES & ÉQUIPES
+# ============================================================
+
+elif menu == "👥 Membres & Équipes":
+    if not require_module(menu):
+        st.stop()
+    st.title("👥 Membres & Équipes — membres, groupes et affectations")
+    st.caption("Ajoutez les membres, créez des groupes de travail et affectez les membres à chaque travail.")
+
+    employees = load_table("employes")
+    groups_df = load_table("groupes_travail")
+    memberships = load_table("groupe_membres")
+
+    tab1, tab2, tab3 = st.tabs(["👤 Membres", "👥 Groupes", "🔗 Affectations"])
+
+    with tab1:
+        with st.form("member_form", clear_on_submit=True):
+            c1,c2,c3 = st.columns(3)
+            with c1:
+                first = st.text_input("Prénom *")
+                last = st.text_input("Nom *")
+            with c2:
+                email = st.text_input("E-mail")
+                phone = st.text_input("Téléphone")
+            with c3:
+                job = st.text_input("Fonction / travail")
+                status = st.selectbox("Statut", ["Actif","Inactif"])
+            note = st.text_area("Observation")
+            if st.form_submit_button("➕ Ajouter le membre", type="primary", use_container_width=True):
+                if first.strip() and last.strip():
+                    db_insert("employes", {
+                        "prenom": first.strip(), "nom": last.strip(), "email": email.strip().lower(),
+                        "telephone": phone.strip(), "fonction": job.strip(), "statut": status,
+                        "observation": note.strip(), "createur_email": user_email()
+                    }, f"Ajout membre {first.strip()} {last.strip()}")
+                    st.success("Membre ajouté dans Supabase.")
+                    st.rerun()
+                else:
+                    st.warning("Le prénom et le nom sont obligatoires.")
+        if not employees.empty:
+            st.dataframe(employees, use_container_width=True, hide_index=True)
+            member_to_delete = st.selectbox(
+                "Membre à supprimer",
+                [None] + [int(r["id"]) for _, r in employees.iterrows() if nonempty(r.get("id"))],
+                format_func=lambda x: "— Aucun —" if x is None else next((f'{r.get("prenom","")} {r.get("nom","")}'.strip() for _,r in employees.iterrows() if str(r.get("id")) == str(x)), str(x)),
+                key="member_delete_select",
+            )
+            if member_to_delete is not None and st.button("🗑️ Supprimer le membre", key="delete_member_btn"):
+                db_delete("employes", "id", member_to_delete, f"Suppression membre {member_to_delete}")
+                st.success("Membre supprimé et affectations liées nettoyées.")
+                st.rerun()
+
+    with tab2:
+        with st.form("group_form", clear_on_submit=True):
+            group_name = st.text_input("Nom du groupe *")
+            group_work = st.text_input("Travail principal / spécialité")
+            group_desc = st.text_area("Description")
+            if st.form_submit_button("➕ Créer le groupe", type="primary", use_container_width=True):
+                if group_name.strip():
+                    db_insert("groupes_travail", {
+                        "nom": group_name.strip(), "travail_principal": group_work.strip(),
+                        "description": group_desc.strip(), "responsable_email": user_email(), "actif": True
+                    }, f"Création groupe {group_name.strip()}")
+                    st.success("Groupe créé.")
+                    st.rerun()
+                else:
+                    st.warning("Le nom du groupe est obligatoire.")
+        if not groups_df.empty:
+            st.dataframe(groups_df, use_container_width=True, hide_index=True)
+            group_to_delete = st.selectbox(
+                "Groupe à supprimer",
+                [None] + [int(r["id"]) for _, r in groups_df.iterrows() if nonempty(r.get("id"))],
+                format_func=lambda x: "— Aucun —" if x is None else next((str(r.get("nom","")) for _,r in groups_df.iterrows() if str(r.get("id")) == str(x)), str(x)),
+                key="group_delete_select",
+            )
+            if group_to_delete is not None and st.button("🗑️ Supprimer le groupe", key="delete_group_btn"):
+                db_delete("groupes_travail", "id", group_to_delete, f"Suppression groupe {group_to_delete}")
+                st.success("Groupe supprimé et affectations liées nettoyées.")
+                st.rerun()
+
+    with tab3:
+        if employees.empty:
+            st.info("Ajoutez d'abord des membres.")
+        elif groups_df.empty:
+            st.info("Créez d'abord un groupe de travail.")
+        else:
+            emp_options = {int(r["id"]): f'{r.get("prenom","")} {r.get("nom","")}'.strip() for _,r in employees.iterrows() if nonempty(r.get("id"))}
+            grp_options = {int(r["id"]): str(r.get("nom","")) for _,r in groups_df.iterrows() if nonempty(r.get("id"))}
+            with st.form("group_members_form", clear_on_submit=True):
+                gid = st.selectbox("Groupe", list(grp_options), format_func=lambda x: grp_options[x])
+                mids = st.multiselect("Membres du groupe", list(emp_options), format_func=lambda x: emp_options[x])
+                if st.form_submit_button("💾 Enregistrer les membres du groupe", type="primary", use_container_width=True):
+                    # Synchronisation exacte : on remplace les membres du groupe sélectionné.
+                    existing = memberships[memberships["groupe_id"].astype(str) == str(gid)] if not memberships.empty and "groupe_id" in memberships.columns else pd.DataFrame()
+                    if not existing.empty and "id" in existing.columns:
+                        for rid in existing["id"].tolist():
+                            db_delete("groupe_membres", "id", rid, f"Retrait membre groupe {gid}")
+                    for mid in mids:
+                        db_insert("groupe_membres", {"groupe_id": gid, "employe_id": mid}, f"Affectation membre {mid} au groupe {gid}")
+                    st.success("Composition du groupe synchronisée.")
+                    st.rerun()
+            st.subheader("Composition actuelle")
+            memberships = load_table("groupe_membres")
+            if not memberships.empty:
+                st.dataframe(memberships, use_container_width=True, hide_index=True)
+
+
+# ============================================================
 # 17. PLANNING & TRAVAUX
 # ============================================================
 
@@ -1679,9 +1622,19 @@ elif menu == "📅 Planning & Travaux":
             with c3:
                 status = st.selectbox("Statut", ["Planifié","En cours","Terminé","Reporté","Annulé"])
                 responsible = st.text_input("Responsable / équipe")
+            group_df = load_table("groupes_travail")
+            group_options = {None: "Aucun groupe"}
+            if not group_df.empty and "id" in group_df.columns:
+                group_options.update({int(r["id"]): str(r.get("nom","")) for _, r in group_df.iterrows()})
+            selected_group = st.selectbox("Groupe de travail", list(group_options), format_func=lambda x: group_options[x])
+            member_df = load_table("employes")
+            member_options = {}
+            if not member_df.empty and "id" in member_df.columns:
+                member_options = {int(r["id"]): f'{r.get("prenom","")} {r.get("nom","")}'.strip() for _,r in member_df.iterrows()}
+            selected_members = st.multiselect("Membres affectés à ce travail", list(member_options), format_func=lambda x: member_options[x])
             note = st.text_area("Consignes techniques")
             if st.form_submit_button("💾 Planifier", type="primary", use_container_width=True):
-                db_insert(
+                task_rec = db_insert(
                     "taches",
                     {
                         "champ_id": champ_id,
@@ -1691,16 +1644,42 @@ elif menu == "📅 Planning & Travaux":
                         "statut": status,
                         "priorite": priority,
                         "responsable": responsible.strip(),
+                        "groupe_id": selected_group,
                         "consigne": note.strip(),
                     },
                     f"Planification {task_type} sur {champ_name}",
                 )
-                st.success("Travail planifié.")
+                if task_rec and task_rec.get("id"):
+                    for mid in selected_members:
+                        db_insert("tache_membres", {"tache_id": task_rec["id"], "employe_id": mid}, f"Affectation membre {mid} au travail {task_rec['id']}")
+                st.success("Travail planifié et membres synchronisés.")
                 st.rerun()
 
         df = filter_by_champ(load_table("taches"), champ_id)
         if not df.empty:
             st.dataframe(df, use_container_width=True, hide_index=True)
+            assigned = load_table("tache_membres")
+            members_now = load_table("employes")
+            groups_now = load_table("groupes_travail")
+            if not assigned.empty and "tache_id" in assigned.columns:
+                name_map = {str(r.get("id")): f'{r.get("prenom","")} {r.get("nom","")}'.strip() for _,r in members_now.iterrows()}
+                group_map = {str(r.get("id")): str(r.get("nom","")) for _,r in groups_now.iterrows()}
+                rows = []
+                for tid, task_rows in assigned.groupby("tache_id"):
+                    task_match = df[df["id"].astype(str) == str(tid)] if "id" in df.columns else pd.DataFrame()
+                    if task_match.empty:
+                        continue
+                    tr = task_match.iloc[0]
+                    mids = [name_map.get(str(x), str(x)) for x in task_rows.get("employe_id", []).tolist()]
+                    rows.append({
+                        "Travail": tr.get("type_travail", ""),
+                        "Date": tr.get("date_tache", ""),
+                        "Groupe": group_map.get(str(tr.get("groupe_id", "")), ""),
+                        "Membres": ", ".join(mids),
+                    })
+                if rows:
+                    st.subheader("👥 Membres affectés aux travaux")
+                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
 # ============================================================
@@ -2151,7 +2130,7 @@ elif menu == "📈 Rentabilité & ROI":
         elif roi < 0:
             st.error("Marge négative : analysez les postes de coût et le rendement.")
         elif roi < 20:
-            st.warning("Rentabilité faible : demandez une analyse IA ciblée.")
+            st.warning("Rentabilité faible : vérifiez les postes de coût, le rendement et les travaux réalisés.")
         else:
             st.success("Rentabilité positive sur les données enregistrées.")
 
@@ -2198,74 +2177,7 @@ elif menu == "🌤️ Risques & Météo":
 
 
 # ============================================================
-# 28. IA AGRICOLE
-# ============================================================
-
-elif menu == "🤖 IA Agricole":
-    st.title(f"🤖 YAM AGRI-EXPERT — analyse intelligente de {champ_name}")
-    if champ_id is None:
-        st.warning("Sélectionnez une parcelle.")
-    else:
-        if not ai_available():
-            st.warning(
-                "IA non activée. Ajoutez OPENAI_API_KEY dans Streamlit secrets. "
-                "Le reste de l'application fonctionne sans l'IA."
-            )
-
-        st.markdown(
-            """
-<div class="ai-box">
-<b>🧠 Ce que l'IA analyse :</b>
-parcelle, culture, travaux, temps de travail, pluie, eau, incidents,
-intrants, coûts, récoltes, matériel, risques et, si vous les sélectionnez,
-les photos stockées dans Supabase Storage.
-</div>
-""",
-            unsafe_allow_html=True,
-        )
-
-        question = st.text_area(
-            "Question / mission de l'expert",
-            value=(
-                "Analyse l'état de la parcelle, détecte les problèmes prioritaires "
-                "et propose un plan d'action concret à 48 h et 7 jours."
-            ),
-        )
-
-        # Sélection d'images depuis les incidents.
-        incident_df = filter_by_champ(load_table("incidents"), champ_id)
-        image_rows = []
-        if not incident_df.empty:
-            image_candidates = []
-            for idx, row in incident_df.iterrows():
-                if local_or_storage_bytes(row):
-                    label = (
-                        f"{row.get('date','')} — {row.get('categorie','')} — "
-                        f"{row.get('description','')[:70]}"
-                    )
-                    image_candidates.append((idx, label))
-            selected_indices = st.multiselect(
-                "📷 Photos à analyser par vision",
-                [x[0] for x in image_candidates],
-                format_func=lambda x: dict(image_candidates).get(x, str(x)),
-            )
-            image_rows = [incident_df.loc[i] for i in selected_indices]
-
-        if st.button("🧠 Lancer l'analyse agricole", type="primary", use_container_width=True):
-            with st.spinner("YAM AGRI-EXPERT analyse les données et les évidences..."):
-                analysis = ai_analyse_agricole(
-                    champ_id, champ_name, question, image_rows=image_rows
-                )
-            st.session_state.ai_last = analysis
-
-        if st.session_state.get("ai_last"):
-            st.markdown("### 📝 Avis de l'expert")
-            st.markdown(st.session_state.ai_last)
-            st.caption(f"Modèle : {ai_model()} · Analyse fondée sur les données disponibles.")
-
-
-# ============================================================
-# 29. RAPPORTS PROFESSIONNELS
+# 28. RAPPORTS PROFESSIONNELS
 # ============================================================
 
 elif menu == "📑 Rapports Professionnels":
@@ -2275,24 +2187,10 @@ elif menu == "📑 Rapports Professionnels":
     else:
         report_date = st.date_input("Date officielle du rapport", value=date.today())
 
-        include_ai = st.checkbox(
-            "🤖 Inclure l'avis YAM AGRI-EXPERT dans le rapport",
-            value=True,
-        )
-        ai_text = ""
-        if include_ai:
-            if st.session_state.get("ai_last"):
-                ai_text = st.session_state.ai_last
-            else:
-                st.info(
-                    "Aucun avis IA déjà calculé. Vous pouvez générer le rapport "
-                    "sans IA ou lancer une analyse dans le module IA."
-                )
-
         if st.button("📄 Générer le rapport A4 professionnel", type="primary", use_container_width=True):
             with st.spinner("Génération du rapport..."):
                 pdf = generate_pdf_report(
-                    champ_id, champ_name, report_date, ai_text=ai_text
+                    champ_id, champ_name, report_date
                 )
             st.session_state.report_pdf = pdf
             st.session_state.report_name = (
@@ -2342,7 +2240,7 @@ elif menu == "📑 Rapports Professionnels":
 
 
 # ============================================================
-# 30. COLLABORATION & WORKSPACE
+# 29. COLLABORATION & WORKSPACE
 # ============================================================
 
 elif menu == "💬 Collaboration & Workspace":
@@ -2423,7 +2321,7 @@ elif menu == "💬 Collaboration & Workspace":
 
 
 # ============================================================
-# 31. LISTE BLANCHE & ADMINISTRATION
+# 30. LISTE BLANCHE & ADMINISTRATION
 # ============================================================
 
 elif menu == "🔐 Liste Blanche & Administration":
@@ -2496,7 +2394,7 @@ elif menu == "🔐 Liste Blanche & Administration":
 
 
 # ============================================================
-# 32. JOURNAL D'AUDIT
+# 31. JOURNAL D'AUDIT
 # ============================================================
 
 elif menu == "📜 Journal d'Audit":
@@ -2517,7 +2415,7 @@ elif menu == "📜 Journal d'Audit":
 
 
 # ============================================================
-# 33. FIN
+# 32. FIN
 # ============================================================
 
 st.markdown("---")
