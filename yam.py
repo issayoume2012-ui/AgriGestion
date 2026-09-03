@@ -11,8 +11,6 @@
 #   SUPABASE_URL = "https://....supabase.co"
 #   SUPABASE_KEY = "..."
 #   SUPABASE_BUCKET = "yam-media"
-#   OPENAI_API_KEY = "sk-..."
-#   OPENAI_MODEL = "gpt-5.6-sol"
 #
 # IMPORTANT :
 #   - Les mots de passe existants de l'ancien projet sont conservés
@@ -66,6 +64,8 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# Interface applicative sans les contrôles de partage/édition de Streamlit.
+# Ces éléments appartiennent à l'enveloppe Streamlit/Cloud et non à YAM.
 try:
     st.set_option("client.toolbarMode", "minimal")
 except Exception:
@@ -73,8 +73,6 @@ except Exception:
 
 APP_NAME = "YouAgronoMe"
 APP_SHORT = "YAM"
-UPLOAD_DIR = Path("uploads_workspace")
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 ROLES = [
     "Administration",
@@ -188,6 +186,16 @@ MODULE_ALIASES = {
 st.markdown(
     """
 <style>
+/* Ne pas exposer l'enveloppe Streamlit aux utilisateurs de YAM. */
+[data-testid="stHeader"],
+[data-testid="stToolbar"],
+[data-testid="stDecoration"],
+[data-testid="stStatusWidget"],
+[data-testid="stAppDeployButton"] {
+    display: none !important;
+    visibility: hidden !important;
+}
+footer {display:none !important;}
 .stApp {
     background: linear-gradient(135deg,#f6faf7 0%,#edf5ef 100%);
     color:#17251d;
@@ -297,12 +305,33 @@ def clear_caches():
         pass
 
 
+def json_safe(value: Any) -> Any:
+    """Convertit les scalaires NumPy/Pandas en types JSON natifs avant Supabase."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [json_safe(v) for v in value]
+    # numpy.int64, numpy.float64, pandas scalars, etc.
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return json_safe(item())
+        except Exception:
+            pass
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    return value
+
+
 def db_insert(table: str, data: Dict[str, Any], action: str = "") -> Optional[Dict]:
     try:
-        res = supabase.table(table).insert(data).execute()
+        safe_data = json_safe(data)
+        res = supabase.table(table).insert(safe_data).execute()
         clear_caches()
         if action:
-            audit_log(action, table, "INSERT", data)
+            audit_log(action, table, "INSERT", safe_data)
         return (res.data or [None])[0]
     except Exception as exc:
         st.error(f"Erreur Supabase — {table}: {db_error_message(exc)}")
@@ -314,10 +343,12 @@ def db_update(
     data: Dict[str, Any], action: str = ""
 ) -> bool:
     try:
-        supabase.table(table).update(data).eq(match_col, match_val).execute()
+        safe_data = json_safe(data)
+        safe_match = json_safe(match_val)
+        supabase.table(table).update(safe_data).eq(match_col, safe_match).execute()
         clear_caches()
         if action:
-            audit_log(action, table, "UPDATE", data)
+            audit_log(action, table, "UPDATE", safe_data)
         return True
     except Exception as exc:
         st.error(f"Erreur Supabase — {table}: {db_error_message(exc)}")
@@ -355,7 +386,7 @@ def user_role() -> str:
 
 
 def is_admin() -> bool:
-    return user_role() == "Administration" or user_email() == "iy@2012"
+    return user_role() == "Administration"
 
 
 def parse_modules(value: Any) -> List[str]:
@@ -408,28 +439,6 @@ def require_module(module: str) -> bool:
     return False
 
 
-def init_admin_if_needed():
-    # Compatibilité avec la structure de l'ancien projet.
-    try:
-        found = (
-            supabase.table("whitelist_users")
-            .select("*")
-            .eq("email", "iy@2012")
-            .execute()
-        )
-        if not found.data:
-            supabase.table("whitelist_users").insert({
-                "email": "iy@2012",
-                "password": "issayoume2026",
-                "prenom": "Issa",
-                "nom": "Youme",
-                "role": "Administration",
-                "modules_autorises": "TOUS",
-            }).execute()
-    except Exception:
-        pass
-
-
 def authenticate() -> bool:
     if st.session_state.get("authenticated"):
         return True
@@ -463,7 +472,7 @@ Plateforme professionnelle de centralisation et de pilotage agricole
                         .execute()
                     )
                     record = (res.data or [None])[0]
-                    if record and password == str(record.get("password", "")):
+                    if record and bool(record.get("actif", True)) and password == str(record.get("password", "")):
                         st.session_state.authenticated = True
                         st.session_state.yam_user = {
                             "id": record.get("id"),
@@ -481,7 +490,6 @@ Plateforme professionnelle de centralisation et de pilotage agricole
     return False
 
 
-init_admin_if_needed()
 if not authenticate():
     st.stop()
 
@@ -515,16 +523,50 @@ def audit_log(action: str, table: str = "", operation: str = "", details: Any = 
 
 @st.cache_data(ttl=15)
 def load_accessible_champs() -> pd.DataFrame:
+    """
+    Périmètre réel de l'utilisateur.
+    Administration = toutes les parcelles.
+    Autres comptes = uniquement les parcelles explicitement affectées dans user_champs.
+    Fallback temporaire : createur_email, pour ne pas casser les anciennes données.
+    """
     try:
-        q = supabase.table("champs").select("*")
-        if not is_admin():
-            email = user_email()
-            if not email:
-                return pd.DataFrame()
-            # Compatibilité : createur_email reste le propriétaire technique
-            # de la parcelle dans le modèle actuel.
-            q = q.eq("createur_email", email)
-        return pd.DataFrame(q.execute().data or [])
+        if is_admin():
+            return pd.DataFrame(
+                supabase.table("champs").select("*").execute().data or []
+            )
+
+        email = user_email()
+        if not email:
+            return pd.DataFrame()
+
+        try:
+            links = (
+                supabase.table("user_champs")
+                .select("champ_id")
+                .eq("user_email", email)
+                .eq("actif", True)
+                .execute()
+                .data or []
+            )
+            ids = [int(x["champ_id"]) for x in links if x.get("champ_id") is not None]
+        except Exception:
+            ids = []
+
+        if ids:
+            return pd.DataFrame(
+                supabase.table("champs")
+                .select("*")
+                .in_("id", ids)
+                .execute().data or []
+            )
+
+        # Compatibilité avec les anciennes parcelles non encore affectées.
+        return pd.DataFrame(
+            supabase.table("champs")
+            .select("*")
+            .eq("createur_email", email)
+            .execute().data or []
+        )
     except Exception:
         return pd.DataFrame()
 
@@ -549,14 +591,45 @@ def champ_access(champ_id: Any) -> bool:
 
 
 def selected_champ() -> Tuple[Optional[int], str, pd.Series]:
-    df = load_accessible_champs()
+    """
+    Sélection de parcelle basée sur l'ID réel.
+    Ne jamais utiliser le nom comme clé : deux parcelles peuvent avoir le même nom,
+    et Streamlit peut conserver l'ancien état du selectbox après un rerun.
+    """
+    df = load_accessible_champs().copy()
     if df.empty or "id" not in df.columns or "nom" not in df.columns:
         return None, "Aucune parcelle", pd.Series(dtype=object)
 
-    names = df["nom"].astype(str).tolist()
-    name = st.selectbox("📍 Parcelle active", names, key="active_champ")
-    row = df[df["nom"].astype(str) == name].iloc[0]
-    return row.get("id"), name, row
+    df["id"] = pd.to_numeric(df["id"], errors="coerce")
+    df = df.dropna(subset=["id"]).copy()
+    df["id"] = df["id"].astype(int)
+    if df.empty:
+        return None, "Aucune parcelle", pd.Series(dtype=object)
+
+    # L'ID est la valeur réelle du widget ; le nom n'est qu'un affichage.
+    ids = df["id"].tolist()
+    labels = {
+        int(row["id"]): f'{row["nom"]} — ID {int(row["id"])}'
+        for _, row in df.iterrows()
+    }
+
+    previous = st.session_state.get("active_champ_id")
+    default_index = ids.index(int(previous)) if previous is not None and int(previous) in ids else 0
+
+    selected_id = st.selectbox(
+        "📍 Parcelle active",
+        ids,
+        index=default_index,
+        format_func=lambda x: labels.get(int(x), str(x)),
+        key="active_champ_id",
+    )
+
+    row_df = df[df["id"] == int(selected_id)]
+    if row_df.empty:
+        return None, "Aucune parcelle", pd.Series(dtype=object)
+
+    row = row_df.iloc[0]
+    return int(selected_id), str(row.get("nom", f"Parcelle {selected_id}")), row
 
 
 # ============================================================
@@ -629,6 +702,81 @@ def storage_signed_url(bucket: str, path: str, expires: int = 3600) -> str:
         return ""
     except Exception:
         return ""
+
+
+def save_media_record(
+    meta: Dict[str, str],
+    table_name: str,
+    record_id: Any,
+    champ_id: Any = None,
+    category: str = "general",
+) -> Optional[Dict[str, Any]]:
+    """Enregistre le fichier dans media_files après l'upload Storage."""
+    if not meta or not meta.get("storage_path"):
+        return None
+    payload = {
+        "storage_bucket": meta.get("storage_bucket", SUPABASE_BUCKET),
+        "storage_path": meta["storage_path"],
+        "original_name": meta.get("original_name", ""),
+        "mime_type": meta.get("mime_type", "application/octet-stream"),
+        "size_bytes": int(meta.get("size_bytes", 0) or 0),
+        "entity_table": table_name,
+        "entity_id": str(record_id) if record_id is not None else None,
+        "champ_id": champ_id,
+        "category": category,
+        "uploaded_by": user_email(),
+        "uploaded_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    return db_insert("media_files", payload, f"Fichier {meta.get('original_name','')} attaché")
+
+
+def storage_save(
+    uploaded_file,
+    category: str,
+    table_name: str,
+    record_id: Any,
+    champ_id: Any = None,
+) -> Dict[str, str]:
+    """Upload Storage + index durable dans media_files."""
+    meta = storage_upload(uploaded_file, category, record_id)
+    if meta:
+        save_media_record(meta, table_name, record_id, champ_id, category)
+    return meta
+
+
+def media_for_record(
+    table_name: str,
+    record_id: Any,
+    champ_id: Any = None,
+) -> pd.DataFrame:
+    try:
+        q = supabase.table("media_files").select("*").eq(
+            "entity_table", table_name
+        ).eq("entity_id", str(record_id))
+        if champ_id is not None:
+            q = q.eq("champ_id", champ_id)
+        return pd.DataFrame(q.execute().data or [])
+    except Exception:
+        return pd.DataFrame()
+
+
+def render_media_files(table_name: str, record_id: Any, champ_id: Any = None):
+    df = media_for_record(table_name, record_id, champ_id)
+    if df.empty:
+        return
+    for _, row in df.iterrows():
+        render_attachment(row)
+
+
+def render_record_attachments(
+    table_name: str,
+    row: pd.Series,
+    champ_id: Any = None,
+):
+    """Affiche l'ancienne pièce jointe éventuelle + toutes les nouvelles media_files."""
+    render_attachment(row)
+    if nonempty(row.get("id")):
+        render_media_files(table_name, row.get("id"), champ_id)
 
 
 def render_attachment(
@@ -761,21 +909,65 @@ SUPABASE_TABLES = [
     "groupes_travail", "groupe_membres", "taches", "tache_membres",
     "time_entries", "recoltes", "pluviometrie", "irrigation", "incidents",
     "tracabilite", "intrants", "materiel", "depenses", "alertes_meteo",
-    "messages_workspace",
+    "messages_workspace", "media_files", "user_champs",
 ]
+
+# Tables métier rattachées directement à une parcelle.
+# Le filtrage est effectué AVANT de retourner les données à Streamlit.
+CHAMP_SCOPED_TABLES = {
+    "taches", "tache_membres", "time_entries", "recoltes", "pluviometrie",
+    "irrigation", "incidents", "tracabilite", "depenses", "alertes_meteo",
+    "messages_workspace", "media_files",
+}
+
+# Tables globales : on ne les expose pas indistinctement à tous les comptes.
+CREATOR_SCOPED_TABLES = {"employes", "groupes_travail"}
 
 @st.cache_data(ttl=5)
 def sync_table(table_name: str) -> pd.DataFrame:
     try:
-        res = supabase.table(table_name).select("*").execute()
-        return pd.DataFrame(res.data or [])
+        q = supabase.table(table_name).select("*")
+
+        if not is_admin():
+            if table_name in CHAMP_SCOPED_TABLES:
+                ids = accessible_champ_ids()
+                if table_name == "media_files":
+                    if ids:
+                        q = q.in_("champ_id", ids)
+                    else:
+                        return pd.DataFrame()
+                elif table_name == "messages_workspace":
+                    # Les messages sans parcelle restent privés à leur auteur.
+                    if ids:
+                        q = q.or_(
+                            f"champ_id.in.({','.join(map(str, ids))}),"
+                            f"email.eq.{user_email()}"
+                        )
+                    else:
+                        q = q.eq("auteur_email", user_email())
+                elif ids:
+                    q = q.in_("champ_id", ids)
+                else:
+                    return pd.DataFrame()
+
+            elif table_name in CREATOR_SCOPED_TABLES:
+                q = q.eq("createur_email", user_email())
+
+            elif table_name == "whitelist_users":
+                # Seule l'administration peut voir les comptes.
+                return pd.DataFrame()
+
+            elif table_name in {"historique_modifications", "user_champs"}:
+                return pd.DataFrame()
+
+        return pd.DataFrame(q.execute().data or [])
     except Exception:
         return pd.DataFrame()
 
+
 def load_table(table_name: str) -> pd.DataFrame:
-    # Lecture centralisée : toutes les parties de l'application passent par
-    # la même couche Supabase.
     return sync_table(table_name).copy()
+
 
 def sync_all_tables() -> Dict[str, pd.DataFrame]:
     data = {}
@@ -783,6 +975,7 @@ def sync_all_tables() -> Dict[str, pd.DataFrame]:
         data[table] = load_table(table)
     st.session_state.last_sync = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
     return data
+
 
 # ============================================================
 # 10. RAPPORT PDF PROFESSIONNEL
@@ -916,14 +1109,27 @@ def generate_pdf_report(
         rightMargin=28, leftMargin=28, topMargin=30, bottomMargin=35
     )
 
+    # Sécurité : le rapport ne peut être produit que pour une parcelle réellement
+    # accessible au compte courant. Le nom affiché dans l'interface n'est jamais
+    # utilisé pour retrouver la parcelle.
+    try:
+        champ_id = int(champ_id)
+    except Exception:
+        raise ValueError("Identifiant de parcelle invalide.")
+
+    if not champ_access(champ_id):
+        raise PermissionError("Cette parcelle n'est pas accessible à cet utilisateur.")
+
     champs = load_accessible_champs()
     champ_info = pd.DataFrame()
     if not champs.empty and "id" in champs.columns:
-        tmp = champs[
-            pd.to_numeric(champs["id"], errors="coerce") == int(champ_id)
-        ]
+        champs = champs.copy()
+        champs["id"] = pd.to_numeric(champs["id"], errors="coerce")
+        tmp = champs[champs["id"] == champ_id]
         if not tmp.empty:
             champ_info = tmp.iloc[[0]]
+            # Le nom canonique provient de Supabase, pas de l'ancien état du widget.
+            champ_name = str(champ_info.iloc[0].get("nom", champ_name))
 
     table_titles = [
         ("time_entries", "TEMPS & ACTIVITÉS HUMAINES"),
@@ -1133,6 +1339,13 @@ for tab, group_name in zip(tabs, groups):
                     st.rerun()
 
 menu = st.session_state.selected_menu
+
+# Défense en profondeur : même si un état Streamlit est manipulé,
+# un module non autorisé ne peut pas être exécuté.
+if menu not in allowed_modules():
+    st.error("🔒 Accès refusé : ce module n'est pas autorisé pour ce compte.")
+    st.session_state.selected_menu = allowed_modules()[0]
+    st.stop()
 
 c1, c2, c3 = st.columns([5,1,1])
 with c1:
@@ -1851,7 +2064,7 @@ elif menu == "⚠️ Incidents & Observations":
                         f"Incident {category} — {severity} — {champ_name}",
                     )
                     if rec and photo is not None:
-                        meta = storage_upload(photo, "incidents", rec.get("id", "new"))
+                        meta = storage_save(photo, "incidents", "incidents", rec.get("id", "new"), champ_id)
                         if meta:
                             db_update(
                                 "incidents",
@@ -1873,7 +2086,7 @@ elif menu == "⚠️ Incidents & Observations":
                     st.write(row.get("description",""))
                     if nonempty(row.get("action","")):
                         st.caption(f"Action : {row.get('action')}")
-                    render_attachment(row)
+                    render_record_attachments("incidents", row, champ_id)
 
 
 # ============================================================
@@ -1918,7 +2131,7 @@ elif menu == "🏷️ Traçabilité & Lots":
                         f"Lot {lot.strip()} — {champ_name}",
                     )
                     if rec and proof is not None:
-                        meta = storage_upload(proof, "tracabilite", rec.get("id","new"))
+                        meta = storage_save(proof, "tracabilite", "tracabilite", rec.get("id","new"), champ_id)
                         if meta:
                             db_update("tracabilite","id",rec.get("id"),meta,"Preuve lot ajoutée")
                     st.success("Lot enregistré.")
@@ -1930,7 +2143,7 @@ elif menu == "🏷️ Traçabilité & Lots":
         if not df.empty:
             st.dataframe(df, use_container_width=True, hide_index=True)
             for _, row in df.iterrows():
-                render_attachment(row)
+                render_record_attachments("tracabilite", row, champ_id)
 
 
 # ============================================================
@@ -1963,6 +2176,7 @@ elif menu == "📦 Intrants & Stocks":
                 rec = db_insert(
                     "intrants",
                     {
+                        "champ_id": champ_id,
                         "nom": name.strip(),
                         "categorie": category,
                         "stock_actuel": current,
@@ -1976,7 +2190,7 @@ elif menu == "📦 Intrants & Stocks":
                     f"Intrant {name.strip()} — réception {purchased}",
                 )
                 if rec and proof is not None:
-                    meta = storage_upload(proof, "intrants", rec.get("id","new"))
+                    meta = storage_save(proof, "intrants", "intrants", rec.get("id","new"), champ_id)
                     if meta:
                         db_update("intrants","id",rec.get("id"),meta,"Justificatif intrant ajouté")
                 st.success("Stock enregistré.")
@@ -2020,6 +2234,7 @@ elif menu == "🚜 Matériel & Maintenance":
                 rec = db_insert(
                     "materiel",
                     {
+                        "champ_id": champ_id,
                         "nom_equipement": name.strip(),
                         "categorie": category,
                         "statut_marche": status,
@@ -2031,7 +2246,7 @@ elif menu == "🚜 Matériel & Maintenance":
                     f"Matériel {name.strip()}",
                 )
                 if rec and photo is not None:
-                    meta = storage_upload(photo, "materiel", rec.get("id","new"))
+                    meta = storage_save(photo, "materiel", "materiel", rec.get("id","new"), champ_id)
                     if meta:
                         db_update("materiel","id",rec.get("id"),meta,"Photo matériel ajoutée")
                 st.success("Matériel enregistré.")
@@ -2041,7 +2256,7 @@ elif menu == "🚜 Matériel & Maintenance":
     if not df.empty:
         st.dataframe(df, use_container_width=True, hide_index=True)
         for _, row in df.iterrows():
-            render_attachment(row)
+            render_record_attachments("intrants", row, champ_id)
 
 
 # ============================================================
@@ -2085,7 +2300,7 @@ elif menu == "💰 Finances & Coûts":
                         f"Dépense {kind.strip()} — {amount} FCFA — {champ_name}",
                     )
                     if rec and proof is not None:
-                        meta = storage_upload(proof, "depenses", rec.get("id","new"))
+                        meta = storage_save(proof, "depenses", "depenses", rec.get("id","new"), champ_id)
                         if meta:
                             db_update("depenses","id",rec.get("id"),meta,"Justificatif dépense ajouté")
                     st.success("Dépense enregistrée dans Supabase.")
@@ -2096,7 +2311,7 @@ elif menu == "💰 Finances & Coûts":
             st.metric("Coûts cumulés", f"{safe_num(df,'montant'):,.0f} FCFA")
             st.dataframe(df, use_container_width=True, hide_index=True)
             for _, row in df.iterrows():
-                render_attachment(row)
+                render_record_attachments("materiel", row, champ_id)
 
 
 # ============================================================
@@ -2188,15 +2403,39 @@ elif menu == "📑 Rapports Professionnels":
         report_date = st.date_input("Date officielle du rapport", value=date.today())
 
         if st.button("📄 Générer le rapport A4 professionnel", type="primary", use_container_width=True):
+            # Relecture immédiate de l'ID sélectionné : impossible de générer
+            # le PDF avec une ancienne parcelle conservée dans l'état Streamlit.
+            active_id = st.session_state.get("active_champ_id", champ_id)
+            try:
+                active_id = int(active_id)
+            except Exception:
+                active_id = None
+
+            if active_id is None or not champ_access(active_id):
+                st.error("🔒 Parcelle invalide ou non autorisée.")
+                st.stop()
+
+            current = load_accessible_champs()
+            current_row = current[
+                pd.to_numeric(current["id"], errors="coerce") == active_id
+            ] if not current.empty and "id" in current.columns else pd.DataFrame()
+
+            if current_row.empty:
+                st.error("La parcelle sélectionnée n'existe plus ou n'est plus accessible.")
+                st.stop()
+
+            canonical_name = str(current_row.iloc[0].get("nom", f"Parcelle {active_id}"))
+
             with st.spinner("Génération du rapport..."):
                 pdf = generate_pdf_report(
-                    champ_id, champ_name, report_date
+                    active_id, canonical_name, report_date
                 )
+
             st.session_state.report_pdf = pdf
             st.session_state.report_name = (
-                f"Rapport_YAM_{safe_filename(champ_name)}_{report_date}.pdf"
+                f"Rapport_YAM_{safe_filename(canonical_name)}_{report_date}.pdf"
             )
-            st.success("Rapport généré.")
+            st.success(f"Rapport généré pour : {canonical_name}")
 
         if st.session_state.get("report_pdf"):
             st.download_button(
@@ -2220,7 +2459,7 @@ elif menu == "📑 Rapports Professionnels":
                 )()
                 meta = storage_upload(fake, "rapports", champ_id)
                 if meta:
-                    db_insert(
+                    report_msg = db_insert(
                         "messages_workspace",
                         {
                             "auteur": f"{prenom} {nom}".strip(),
@@ -2236,6 +2475,8 @@ elif menu == "📑 Rapports Professionnels":
                         },
                         f"Archivage rapport {champ_name}",
                     )
+                    if report_msg:
+                        save_media_record(meta, "messages_workspace", report_msg.get("id"), champ_id, "rapports")
                     st.success("Rapport archivé dans Supabase Storage.")
 
 
@@ -2283,7 +2524,7 @@ elif menu == "💬 Collaboration & Workspace":
                 meta = storage_upload(
                     attachment, "workspace", datetime.now().strftime("%Y%m%d")
                 ) if attachment is not None else {}
-                db_insert(
+                workspace_record = db_insert(
                     "messages_workspace",
                     {
                         "auteur": f"{prenom} {nom}".strip(),
@@ -2296,10 +2537,19 @@ elif menu == "💬 Collaboration & Workspace":
                         "date_heure": datetime.now().isoformat(timespec="seconds"),
                         "type_contenu": content_type,
                         "champ_concerne": linked_champ,
+                        "champ_id": next(
+                            (int(r["id"]) for _, r in db_champs.iterrows()
+                             if str(r.get("nom","")) == linked_champ), None
+                        ) if linked_champ != "Aucune" else None,
                         **meta,
                     },
                     f"Publication workspace {content_type}",
                 )
+                if workspace_record and meta:
+                    save_media_record(
+                        meta, "messages_workspace", workspace_record.get("id"),
+                        champ_id if linked_champ != "Aucune" else None, "workspace"
+                    )
                 st.success("Publication enregistrée.")
                 st.rerun()
             else:
@@ -2317,7 +2567,7 @@ elif menu == "💬 Collaboration & Workspace":
                 if nonempty(row.get("champ_concerne","")):
                     st.caption(f"Parcelle : {row.get('champ_concerne')}")
                 st.write(row.get("texte",""))
-                render_attachment(row)
+                render_record_attachments("depenses", row, champ_id)
 
 
 # ============================================================
@@ -2329,11 +2579,20 @@ elif menu == "🔐 Liste Blanche & Administration":
         st.error("🔒 Accès réservé à l'administration.")
         st.stop()
 
-    st.title("🔐 Liste Blanche, rôles, modules et paramètres")
+    st.title("🔐 Administration — comptes, modules et périmètres")
     st.info(
-        "La liste blanche détermine les comptes autorisés. "
-        "Le rôle définit le socle fonctionnel et modules_autorises peut encore restreindre ce socle."
+        "Un compte reçoit d'abord un rôle, puis une liste de modules. "
+        "Son périmètre parcellaire est ensuite défini dans user_champs."
     )
+
+    champs_admin = pd.DataFrame(
+        supabase.table("champs").select("id,nom").execute().data or []
+    )
+    champ_options = {
+        f"{r.get('id')} — {r.get('nom','')}": int(r["id"])
+        for _, r in champs_admin.iterrows()
+        if r.get("id") is not None
+    }
 
     with st.form("new_user"):
         c1,c2,c3 = st.columns(3)
@@ -2350,15 +2609,19 @@ elif menu == "🔐 Liste Blanche & Administration":
                 default=DEFAULT_ROLE_MODULES.get(new_role, []),
             )
         with c3:
-            st.markdown("**Droits du rôle**")
+            selected_champs = st.multiselect(
+                "Parcelles autorisées",
+                list(champ_options.keys()),
+            )
             st.write({
                 "Niveau": ROLE_LEVEL.get(new_role, 0),
-                "Nombre de modules": len(modules),
+                "Modules": len(modules),
+                "Parcelles": len(selected_champs),
             })
 
-        if st.form_submit_button("➕ Ajouter à la liste blanche", type="primary", use_container_width=True):
-            if email.strip():
-                db_insert(
+        if st.form_submit_button("➕ Créer le compte", type="primary", use_container_width=True):
+            if email.strip() and password:
+                rec = db_insert(
                     "whitelist_users",
                     {
                         "email": email.strip().lower(),
@@ -2367,16 +2630,71 @@ elif menu == "🔐 Liste Blanche & Administration":
                         "nom": last.strip(),
                         "role": new_role,
                         "modules_autorises": json.dumps(modules, ensure_ascii=False),
+                        "actif": True,
                     },
                     f"Ajout utilisateur {email.strip().lower()}",
                 )
-                st.success("Utilisateur ajouté.")
+                if rec:
+                    for label in selected_champs:
+                        db_insert(
+                            "user_champs",
+                            {
+                                "user_email": email.strip().lower(),
+                                "champ_id": champ_options[label],
+                                "actif": True,
+                            },
+                            f"Affectation parcelle {label}",
+                        )
+                st.success("Compte et périmètre enregistrés.")
                 st.rerun()
+            else:
+                st.warning("L'e-mail et le mot de passe sont obligatoires.")
 
-    df = load_table("whitelist_users")
+    df = pd.DataFrame(
+        supabase.table("whitelist_users").select("*").execute().data or []
+    )
     if not df.empty:
-        display_cols = [c for c in ["id","email","prenom","nom","role","modules_autorises"] if c in df.columns]
+        display_cols = [
+            c for c in ["id","email","prenom","nom","role","actif","modules_autorises"]
+            if c in df.columns
+        ]
         st.dataframe(df[display_cols], use_container_width=True, hide_index=True)
+
+        st.subheader("🗺️ Modifier le périmètre d'un utilisateur")
+        target_email = st.selectbox(
+            "Utilisateur",
+            df["email"].astype(str).tolist()
+        )
+        current_links = pd.DataFrame(
+            supabase.table("user_champs")
+            .select("champ_id")
+            .eq("user_email", target_email)
+            .eq("actif", True)
+            .execute().data or []
+        )
+        current_ids = {
+            int(x["champ_id"]) for x in current_links.to_dict("records")
+            if x.get("champ_id") is not None
+        }
+        selected_labels = st.multiselect(
+            "Parcelles accessibles",
+            list(champ_options.keys()),
+            default=[k for k,v in champ_options.items() if v in current_ids],
+            key="admin_scope_champs",
+        )
+        if st.button("💾 Enregistrer le périmètre", type="primary"):
+            supabase.table("user_champs").delete().eq(
+                "user_email", target_email
+            ).execute()
+            for label in selected_labels:
+                db_insert(
+                    "user_champs",
+                    {"user_email": target_email, "champ_id": champ_options[label], "actif": True},
+                    f"Périmètre {target_email} — {label}",
+                )
+            st.success("Périmètre mis à jour.")
+            clear_caches()
+            st.rerun()
 
         if "id" in df.columns:
             for _, row in df.iterrows():
@@ -2390,6 +2708,9 @@ elif menu == "🔐 Liste Blanche & Administration":
                         "whitelist_users","id",row["id"],
                         f"Suppression utilisateur {row.get('email','')}"
                     )
+                    supabase.table("user_champs").delete().eq(
+                        "user_email", str(row.get("email","")).lower()
+                    ).execute()
                     st.rerun()
 
 
