@@ -1,2039 +1,2528 @@
-import streamlit as st
-import pandas as pd
-from datetime import datetime, date
+# ============================================================
+# YouAgronoMe (YAM) — Agriculture Operations Platform
+# Version refondue : modules, rôles, Supabase Storage, IA agricole,
+# rapports PDF intelligents et gestion professionnelle du temps.
+#
+# Dépendances :
+#   pip install streamlit pandas supabase reportlab folium
+#               streamlit-folium openai pillow
+#
+# Secrets Streamlit (.streamlit/secrets.toml) :
+#   SUPABASE_URL = "https://....supabase.co"
+#   SUPABASE_KEY = "..."
+#   SUPABASE_BUCKET = "yam-media"
+#   OPENAI_API_KEY = "sk-..."
+#   OPENAI_MODEL = "gpt-5.6-sol"
+#
+# IMPORTANT :
+#   - Les mots de passe existants de l'ancien projet sont conservés
+#     pour compatibilité. Pour une vraie production, migrer vers
+#     Supabase Auth et ne plus stocker de mots de passe en clair.
+#   - Le fichier SQL fourni avec cette version crée les colonnes/tables
+#     nécessaires et le bucket Storage.
+# ============================================================
+
 import io
 import os
+import re
+import json
 import math
-from folium.plugins import Draw
-from streamlit_js_eval import get_geolocation
-# Importation pour la cartographie dynamique interactive
-import folium
-from streamlit_folium import st_folium
+import hashlib
+from datetime import datetime, date, time, timedelta
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
-# Imports pour l'intégration de Supabase
+import pandas as pd
+import streamlit as st
+
 from supabase import create_client, Client
 
-# Imports pour les exports PDF
-from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, KeepTogether
-from reportlab.lib.utils import ImageReader
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib import colors
+import folium
+from folium.plugins import Draw
+from streamlit_folium import st_folium
 
-# ==========================================
-# 1. CONFIGURATION DE LA PAGE & DESIGN ÉPURÉ
-# ==========================================
-st.set_page_config(
-    page_title="YouAgronoMe (YAM)",
-    page_icon="🌾",
-    layout="wide",
-    initial_sidebar_state="collapsed"
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.utils import ImageReader
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+    PageBreak, Image as RLImage, KeepTogether
 )
 
-# Barre d'outils Streamlit : mode minimal + masquage visuel des commandes
-# Share / Star / Edit / GitHub / More afin que l'interface reste centrée sur YAM.
+try:
+    from PIL import Image
+except Exception:
+    Image = None
+
+try:
+    from openai import OpenAI
+except Exception:
+    OpenAI = None
+
+
+# ============================================================
+# 1. CONFIGURATION
+# ============================================================
+
+st.set_page_config(
+    page_title="YouAgronoMe — YAM",
+    page_icon="🌾",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
 try:
     st.set_option("client.toolbarMode", "minimal")
 except Exception:
     pass
 
-# Création du dossier pour stocker les fichiers médias et rapports partagés
-UPLOAD_DIR = "uploads_workspace"
-if not os.path.exists(UPLOAD_DIR):
-    os.makedirs(UPLOAD_DIR)
+APP_NAME = "YouAgronoMe"
+APP_SHORT = "YAM"
+UPLOAD_DIR = Path("uploads_workspace")
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-st.markdown("""
-    <style>
-        /* Interface YAM : suppression des commandes de plateforme (Share, Star, Edit, GitHub, More). */
-        [data-testid="stToolbar"], [data-testid="stDecoration"], #MainMenu { display:none !important; }
-        header[data-testid="stHeader"] { visibility:hidden !important; height:0 !important; }
-        .stApp { background: linear-gradient(135deg,#f7faf8 0%,#eef5f0 100%); color:#17251d; }
-        [data-testid="stSidebar"] { background: linear-gradient(180deg,#10281d 0%,#173b29 100%); }
-        [data-testid="stSidebar"] * { color:#f5fbf7 !important; }
-        .main-header { background:linear-gradient(135deg,#ffffff,#eef7f0); padding:22px 28px; border:1px solid #d7e7dc; border-radius:22px; box-shadow:0 12px 35px rgba(20,70,40,.10); margin:8px 0 22px; display:flex; justify-content:space-between; align-items:center; gap:16px; }
-        .brand-title { font-size:30px; font-weight:900; color:#123b28; letter-spacing:-.5px; }
-        .brand-subtitle { font-size:13px; color:#5b6f63; margin-top:3px; }
-        .user-badge { background:#dff2e6; color:#17482d; border:1px solid #bddbc8; padding:9px 14px; border-radius:999px; font-weight:700; white-space:nowrap; }
-        .card-container { background:rgba(255,255,255,.96); padding:22px; border:1px solid #dce9df; border-radius:18px; box-shadow:0 10px 30px rgba(24,68,42,.08); margin-bottom:18px; }
-        div.stButton > button { border-radius:12px; font-weight:750; min-height:42px; border:1px solid #cfe0d4; background:#ffffff; color:#163b27; }
-        div.stButton > button:hover { border-color:#4e9c6b; color:#123b28; box-shadow:0 5px 18px rgba(37,110,65,.13); }
-        .yam-download-zone { background:linear-gradient(135deg,#0e6b3b,#123b28); padding:18px; border-radius:22px; box-shadow:0 14px 35px rgba(14,107,59,.20); margin:10px 0 18px; border:1px solid #55b47a; }
-        .yam-download-title { color:white; font-size:21px; font-weight:900; margin-bottom:4px; }
-        .yam-download-subtitle { color:#dff7e7; font-size:13px; margin-bottom:12px; }
-        .yam-download-zone .stDownloadButton > button { min-height:64px !important; border-radius:16px !important; font-size:18px !important; font-weight:900 !important; background:white !important; color:#123b28 !important; border:3px solid #bce8cc !important; box-shadow:0 8px 22px rgba(0,0,0,.15) !important; }
-        .yam-download-zone .stDownloadButton > button:hover { transform:translateY(-2px); box-shadow:0 12px 28px rgba(0,0,0,.20) !important; }
-        .stTabs [data-baseweb="tab-list"] { gap:8px; background:#ffffff; padding:8px; border:1px solid #dce9df; border-radius:16px; box-shadow:0 8px 25px rgba(20,70,40,.07); }
-        .stTabs [data-baseweb="tab"] { height:44px; border-radius:11px; font-weight:800; color:#315342; }
-        .stTabs [aria-selected="true"] { background:#dff2e6; color:#0e4a2a !important; }
-        .stTextInput input,.stNumberInput input,.stTextArea textarea { color:#17251d !important; background:#ffffff !important; }
-        label, .stMarkdown, .stCaption, .stSelectbox, .stTextInput, .stNumberInput, .stTextArea { color:#17251d !important; }
-        [data-testid="stMetricValue"] { color:#123b28; font-weight:900; }
-        @media(max-width:768px){ .main-header{flex-direction:column;align-items:flex-start}.user-badge{white-space:normal}.brand-title{font-size:24px} }
-    </style>
-""", unsafe_allow_html=True)
+ROLES = [
+    "Administration",
+    "Propriétaire",
+    "Gestionnaire",
+    "Technicien Supérieur",
+    "Technicien",
+    "Stagiaire",
+]
 
-# ==========================================
-# 2. GESTION DE LA BASE DE DONNÉES SUPABASE & SÉCURITÉ XXL
-# ==========================================
+ROLE_LEVEL = {
+    "Stagiaire": 10,
+    "Technicien": 20,
+    "Technicien Supérieur": 30,
+    "Gestionnaire": 40,
+    "Propriétaire": 50,
+    "Administration": 100,
+}
+
+# Titres/modules de la liste blanche.
+MODULES = {
+    "📊 Tableau de Bord": "pilotage",
+    "🧭 Centre Opérations": "operations",
+    "🌱 Cartographie & Parcelles": "parcelles",
+    "⏰ Temps & Pointage": "temps",
+    "📅 Planning & Travaux": "travaux",
+    "🌾 Récoltes & Rendements": "recoltes",
+    "🌧️ Pluviométrie": "pluviometrie",
+    "💧 Irrigation & Eau": "irrigation",
+    "⚠️ Incidents & Observations": "incidents",
+    "🏷️ Traçabilité & Lots": "tracabilite",
+    "📦 Intrants & Stocks": "stocks",
+    "🚜 Matériel & Maintenance": "materiel",
+    "💰 Finances & Coûts": "finances",
+    "📈 Rentabilité & ROI": "roi",
+    "🌤️ Risques & Météo": "risques",
+    "🤖 IA Agricole": "ia",
+    "💬 Collaboration & Workspace": "workspace",
+    "📑 Rapports Professionnels": "rapports",
+    "🔐 Liste Blanche & Administration": "admin",
+    "📜 Journal d'Audit": "audit",
+}
+
+DEFAULT_ROLE_MODULES = {
+    "Administration": list(MODULES.keys()),
+    "Propriétaire": [
+        "📊 Tableau de Bord", "🧭 Centre Opérations",
+        "🌱 Cartographie & Parcelles", "📅 Planning & Travaux",
+        "🌾 Récoltes & Rendements", "📦 Intrants & Stocks",
+        "🚜 Matériel & Maintenance", "💰 Finances & Coûts",
+        "📈 Rentabilité & ROI", "🌤️ Risques & Météo",
+        "🤖 IA Agricole", "💬 Collaboration & Workspace",
+        "📑 Rapports Professionnels",
+    ],
+    "Gestionnaire": [
+        "📊 Tableau de Bord", "🧭 Centre Opérations",
+        "🌱 Cartographie & Parcelles", "⏰ Temps & Pointage",
+        "📅 Planning & Travaux", "🌾 Récoltes & Rendements",
+        "🌧️ Pluviométrie", "💧 Irrigation & Eau",
+        "⚠️ Incidents & Observations", "🏷️ Traçabilité & Lots",
+        "📦 Intrants & Stocks", "🚜 Matériel & Maintenance",
+        "💰 Finances & Coûts", "📈 Rentabilité & ROI",
+        "🌤️ Risques & Météo", "🤖 IA Agricole",
+        "💬 Collaboration & Workspace", "📑 Rapports Professionnels",
+    ],
+    "Technicien Supérieur": [
+        "📊 Tableau de Bord", "🧭 Centre Opérations",
+        "🌱 Cartographie & Parcelles", "⏰ Temps & Pointage",
+        "📅 Planning & Travaux", "🌾 Récoltes & Rendements",
+        "🌧️ Pluviométrie", "💧 Irrigation & Eau",
+        "⚠️ Incidents & Observations", "🏷️ Traçabilité & Lots",
+        "📦 Intrants & Stocks", "🚜 Matériel & Maintenance",
+        "🌤️ Risques & Météo", "🤖 IA Agricole",
+        "💬 Collaboration & Workspace", "📑 Rapports Professionnels",
+    ],
+    "Technicien": [
+        "🧭 Centre Opérations", "🌱 Cartographie & Parcelles",
+        "⏰ Temps & Pointage", "📅 Planning & Travaux",
+        "🌾 Récoltes & Rendements", "🌧️ Pluviométrie",
+        "💧 Irrigation & Eau", "⚠️ Incidents & Observations",
+        "🏷️ Traçabilité & Lots", "📦 Intrants & Stocks",
+        "🌤️ Risques & Météo", "🤖 IA Agricole",
+        "💬 Collaboration & Workspace", "📑 Rapports Professionnels",
+    ],
+    "Stagiaire": [
+        "🧭 Centre Opérations", "🌱 Cartographie & Parcelles",
+        "⏰ Temps & Pointage", "📅 Planning & Travaux",
+        "⚠️ Incidents & Observations", "🌧️ Pluviométrie",
+        "🤖 IA Agricole", "💬 Collaboration & Workspace",
+    ],
+}
+
+# Alias pour les anciens intitulés.
+MODULE_ALIASES = {
+    "⏰ Pointage des Horaires": "⏰ Temps & Pointage",
+    "⚠️ Incidents": "⚠️ Incidents & Observations",
+    "💰 Finances & Marges": "💰 Finances & Coûts",
+    "📦 Stocks d'Intrants": "📦 Intrants & Stocks",
+    "🚜 Maintenance Matériel": "🚜 Matériel & Maintenance",
+    "🌤️ Risques & Météo": "🌤️ Risques & Météo",
+    "💬 Espace Collaboration & Workspace": "💬 Collaboration & Workspace",
+    "📑 EXPORT RAPPORT PARCELLE": "📑 Rapports Professionnels",
+    "📈 Rentabilité & ROI": "📈 Rentabilité & ROI",
+}
+
+
+# ============================================================
+# 2. STYLE
+# ============================================================
+
+st.markdown(
+    """
+<style>
+.stApp {
+    background: linear-gradient(135deg,#f6faf7 0%,#edf5ef 100%);
+    color:#17251d;
+}
+[data-testid="stSidebar"] {
+    background: linear-gradient(180deg,#10281d 0%,#173b29 100%);
+}
+[data-testid="stSidebar"] * { color:#f5fbf7 !important; }
+.main-header {
+    background:linear-gradient(135deg,#ffffff,#eef7f0);
+    padding:22px 28px;
+    border:1px solid #d7e7dc;
+    border-radius:22px;
+    box-shadow:0 12px 35px rgba(20,70,40,.10);
+    margin:8px 0 18px;
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    gap:16px;
+}
+.brand-title {font-size:30px;font-weight:900;color:#123b28;}
+.brand-subtitle {font-size:13px;color:#5b6f63;margin-top:3px;}
+.user-badge {
+    background:#dff2e6;color:#17482d;border:1px solid #bddbc8;
+    padding:9px 14px;border-radius:999px;font-weight:700;
+}
+.card {
+    background:rgba(255,255,255,.97);
+    padding:20px;
+    border:1px solid #dce9df;
+    border-radius:18px;
+    box-shadow:0 10px 30px rgba(24,68,42,.08);
+    margin-bottom:16px;
+}
+.kpi {
+    background:#fff;
+    border:1px solid #dce9df;
+    border-radius:16px;
+    padding:16px;
+    box-shadow:0 6px 20px rgba(24,68,42,.06);
+}
+.ai-box {
+    background:linear-gradient(135deg,#eef8f1,#ffffff);
+    border:1px solid #b9dcc5;
+    border-left:5px solid #0e6b3b;
+    border-radius:16px;
+    padding:18px;
+}
+.warning-box {
+    background:#fffaf0;
+    border:1px solid #efd7a2;
+    border-left:5px solid #d99000;
+    border-radius:14px;
+    padding:14px;
+}
+.danger-box {
+    background:#fff5f5;
+    border:1px solid #edc3c3;
+    border-left:5px solid #b42318;
+    border-radius:14px;
+    padding:14px;
+}
+div.stButton > button {
+    border-radius:12px;
+    font-weight:750;
+    min-height:42px;
+}
+.stTabs [data-baseweb="tab-list"] {
+    gap:6px;background:#fff;padding:7px;
+    border:1px solid #dce9df;border-radius:15px;
+}
+.stTabs [data-baseweb="tab"] {
+    height:42px;border-radius:10px;font-weight:800;
+}
+.stTabs [aria-selected="true"] {background:#dff2e6;color:#0e4a2a !important;}
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+
+# ============================================================
+# 3. SUPABASE
+# ============================================================
+
 @st.cache_resource
 def init_supabase() -> Client:
-    # Récupération sécurisée des clés depuis st.secrets ou variables d'environnement
-    supabase_url = st.secrets.get("SUPABASE_URL", os.environ.get("SUPABASE_URL", ""))
-    supabase_key = st.secrets.get("SUPABASE_KEY", os.environ.get("SUPABASE_KEY", ""))
-    
-    if not supabase_url or not supabase_key:
-        # Fallback pour éviter le crash visuel si les secrets ne sont pas saisis immédiatement
-        st.error("⚠️ Veuillez configurer SUPABASE_URL et SUPABASE_KEY dans vos secrets Streamlit (.streamlit/secrets.toml).")
-    return create_client(supabase_url, supabase_key)
+    url = st.secrets.get("SUPABASE_URL", os.getenv("SUPABASE_URL", ""))
+    key = st.secrets.get("SUPABASE_KEY", os.getenv("SUPABASE_KEY", ""))
+    if not url or not key:
+        st.error("SUPABASE_URL et SUPABASE_KEY sont obligatoires.")
+        st.stop()
+    return create_client(url, key)
+
 
 supabase = init_supabase()
+SUPABASE_BUCKET = st.secrets.get(
+    "SUPABASE_BUCKET", os.getenv("SUPABASE_BUCKET", "yam-media")
+)
 
-def init_db_supabase():
+
+def db_error_message(exc: Exception) -> str:
+    return str(exc).replace("\n", " ")[:600]
+
+
+@st.cache_data(ttl=15)
+def load_table(table_name: str) -> pd.DataFrame:
     try:
-        # Vérification initiale ou auto-initialisation de l'administrateur principal dans Supabase
-        res = supabase.table("whitelist_users").select("*").eq("email", "iy@2012").execute()
-        if not res.data:
+        res = supabase.table(table_name).select("*").execute()
+        return pd.DataFrame(res.data or [])
+    except Exception:
+        return pd.DataFrame()
+
+
+def clear_caches():
+    try:
+        load_table.clear()
+    except Exception:
+        pass
+    try:
+        load_accessible_champs.clear()
+    except Exception:
+        pass
+
+
+def db_insert(table: str, data: Dict[str, Any], action: str = "") -> Optional[Dict]:
+    try:
+        res = supabase.table(table).insert(data).execute()
+        clear_caches()
+        if action:
+            audit_log(action, table, "INSERT", data)
+        return (res.data or [None])[0]
+    except Exception as exc:
+        st.error(f"Erreur Supabase — {table}: {db_error_message(exc)}")
+        return None
+
+
+def db_update(
+    table: str, match_col: str, match_val: Any,
+    data: Dict[str, Any], action: str = ""
+) -> bool:
+    try:
+        supabase.table(table).update(data).eq(match_col, match_val).execute()
+        clear_caches()
+        if action:
+            audit_log(action, table, "UPDATE", data)
+        return True
+    except Exception as exc:
+        st.error(f"Erreur Supabase — {table}: {db_error_message(exc)}")
+        return False
+
+
+def db_delete(
+    table: str, match_col: str, match_val: Any, action: str = ""
+) -> bool:
+    try:
+        supabase.table(table).delete().eq(match_col, match_val).execute()
+        clear_caches()
+        if action:
+            audit_log(action, table, "DELETE", {"match": match_val})
+        return True
+    except Exception as exc:
+        st.error(f"Erreur Supabase — {table}: {db_error_message(exc)}")
+        return False
+
+
+# ============================================================
+# 4. SESSION / AUTHENTIFICATION / LISTE BLANCHE
+# ============================================================
+
+def current_user() -> Dict[str, Any]:
+    return st.session_state.get("yam_user", {}) or {}
+
+
+def user_email() -> str:
+    return str(current_user().get("email", "")).strip().lower()
+
+
+def user_role() -> str:
+    return str(current_user().get("role", "Stagiaire")).strip()
+
+
+def is_admin() -> bool:
+    return user_role() == "Administration" or user_email() == "iy@2012"
+
+
+def parse_modules(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        values = value
+    else:
+        text = str(value).strip()
+        if not text or text.upper() == "TOUS":
+            return ["TOUS"]
+        try:
+            parsed = json.loads(text)
+            values = parsed if isinstance(parsed, list) else text.replace(";", ",").split(",")
+        except Exception:
+            values = text.replace(";", ",").split(",")
+    result = []
+    for item in values:
+        item = str(item).strip()
+        if item in MODULE_ALIASES:
+            item = MODULE_ALIASES[item]
+        if item:
+            result.append(item)
+    return result
+
+
+def allowed_modules() -> List[str]:
+    if is_admin():
+        return list(MODULES.keys())
+
+    stored = parse_modules(current_user().get("modules_autorises"))
+    if "TOUS" in [x.upper() for x in stored]:
+        return list(MODULES.keys())
+
+    role_defaults = DEFAULT_ROLE_MODULES.get(user_role(), [])
+    # La liste blanche est une restriction supplémentaire.
+    if stored:
+        return [m for m in role_defaults if m in stored]
+    return role_defaults
+
+
+def module_allowed(module: str) -> bool:
+    return module in allowed_modules()
+
+
+def require_module(module: str) -> bool:
+    if module_allowed(module):
+        return True
+    st.error("🔒 Ce module n'est pas autorisé pour votre rôle / votre liste blanche.")
+    return False
+
+
+def init_admin_if_needed():
+    # Compatibilité avec la structure de l'ancien projet.
+    try:
+        found = (
+            supabase.table("whitelist_users")
+            .select("*")
+            .eq("email", "iy@2012")
+            .execute()
+        )
+        if not found.data:
             supabase.table("whitelist_users").insert({
                 "email": "iy@2012",
                 "password": "issayoume2026",
                 "prenom": "Issa",
                 "nom": "Youme",
                 "role": "Administration",
-                "modules_autorises": "TOUS"
+                "modules_autorises": "TOUS",
             }).execute()
-    except Exception as e:
-        # Gère les cas où les tables distantes n'ont pas encore été créées dans le dashboard Supabase
+    except Exception:
         pass
 
-init_db_supabase()
 
-@st.cache_data(ttl=8)
-def load_table(table_name):
-    try:
-        response = supabase.table(table_name).select("*").execute()
-        data = response.data
-        if data:
-            return pd.DataFrame(data)
-        return pd.DataFrame()
-    except Exception as e:
-        return pd.DataFrame()
-
-# ==========================================
-# 3 BIS. ISOLEMENT STRICT DES PARCELLES PAR UTILISATEUR
-# ==========================================
-def current_user():
-    return st.session_state.get('registered_tech', {}) or {}
-
-def current_user_email():
-    return str(current_user().get('gmail', '')).strip().lower()
-
-def is_general_admin():
-    u = current_user()
-    return str(u.get('role', '')).strip().lower() == 'administration' or current_user_email() == 'iy@2012'
-
-def parse_modules(value):
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [str(x).strip() for x in value]
-    txt = str(value).strip()
-    if not txt or txt.upper() == 'TOUS':
-        return ['TOUS']
-    return [x.strip() for x in txt.replace(';', ',').split(',') if x.strip()]
-
-def module_allowed(label):
-    if is_general_admin():
-        return True
-    allowed = parse_modules(current_user().get('modules_autorises', 'TOUS'))
-    return 'TOUS' in [x.upper() for x in allowed] or label in allowed
-
-@st.cache_data(ttl=8)
-def load_accessible_champs():
-    """Ne récupère que les parcelles autorisées pour l'utilisateur connecté.
-    L'administrateur général est le seul rôle qui peut récupérer toutes les parcelles."""
-    try:
-        query = supabase.table('champs').select('*')
-        if not is_general_admin():
-            email = current_user_email()
-            if not email:
-                return pd.DataFrame()
-            query = query.eq('createur_email', email)
-        response = query.execute()
-        return pd.DataFrame(response.data or [])
-    except Exception as e:
-        # Si la colonne de sécurité n'existe pas encore, l'application refuse
-        # volontairement l'accès aux parcelles plutôt que d'exposer les données.
-        if not is_general_admin():
-            st.error("🔒 Sécurité parcellaire : la colonne 'createur_email' doit être ajoutée à la table 'champs'. Exécutez le script SQL de migration fourni avec cette version.")
-        return pd.DataFrame()
-
-def require_champ_access(champ_id):
-    if champ_id is None:
-        return False
-    if is_general_admin():
-        return True
-    df = load_accessible_champs()
-    if df.empty or 'id' not in df.columns:
-        return False
-    try:
-        return int(champ_id) in set(pd.to_numeric(df['id'], errors='coerce').dropna().astype(int).tolist())
-    except Exception:
-        return False
-
-def accessible_champ_ids():
-    df = load_accessible_champs()
-    if df.empty or 'id' not in df.columns:
-        return []
-    return pd.to_numeric(df['id'], errors='coerce').dropna().astype(int).tolist()
-
-def execute_query(query_type, table_name, data=None, match_col=None, match_val=None, action_desc="", user_info=None):
-    try:
-        if query_type == "INSERT":
-            supabase.table(table_name).insert(data).execute()
-        elif query_type == "DELETE":
-            supabase.table(table_name).delete().eq(match_col, match_val).execute()
-        elif query_type == "UPDATE":
-            supabase.table(table_name).update(data).eq(match_col, match_val).execute()
-            
-        # Journalisation réservée à l'administration générale.
-        # L'échec du journal ne doit jamais annuler une opération métier réussie.
-        if action_desc and user_info and table_name != "historique_modifications":
-            try:
-                date_act = datetime.now().strftime("%d/%m/%Y à %H:%M")
-                supabase.table("historique_modifications").insert({
-                    "date_heure": date_act,
-                    "utilisateur": f"{user_info.get('prenom', '')} {user_info.get('nom', '')}".strip(),
-                    "email": user_info.get('gmail', ''),
-                    "role": user_info.get('role', ''),
-                    "action": action_desc,
-                    "details": "Succès"
-                }).execute()
-            except Exception:
-                pass
-
-        # Synchronisation immédiate de tous les caches après chaque écriture.
-        load_table.clear()
-        load_accessible_champs.clear()
-        st.session_state["last_sync"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-        return True
-    except Exception as e:
-        st.error(f"Erreur Supabase ({action_desc}) : {e}")
-        return False
-
-
-def synchroniser_donnees():
-    """Force la relecture Supabase de tous les modules dans la session courante."""
-    try:
-        load_table.clear()
-        load_accessible_champs.clear()
-        st.session_state["last_sync"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-        return True
-    except Exception:
-        return False
-
-
-# ==========================================
-# 3. OUTILS PIÈCES JUSTIFICATIVES & RAPPORT XXL
-# ==========================================
-def save_uploaded_evidence(uploaded_file, prefix="piece"):
-    """Enregistre une pièce jointe dans l'espace de travail local et retourne son chemin."""
-    if uploaded_file is None:
-        return "", ""
-    try:
-        safe_name = os.path.basename(uploaded_file.name).replace(" ", "_")
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        file_name = f"{prefix}_{stamp}_{safe_name}"
-        file_path = os.path.join(UPLOAD_DIR, file_name)
-        with open(file_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        return file_path, file_name
-    except Exception as e:
-        st.error(f"Erreur lors de l'enregistrement de la pièce justificative : {e}")
-        return "", ""
-
-def optional_insert(table_name, data, optional_keys=None, action_desc="", user_info=None):
-    """
-    Tente l'insertion complète. Si Supabase signale une colonne facultative
-    absente, réessaie sans ces colonnes afin de préserver la compatibilité
-    avec les anciennes bases. Le fichier reste disponible dans uploads_workspace.
-    """
-    optional_keys = optional_keys or []
-    ok = execute_query(
-        "INSERT", table_name, data=data,
-        action_desc=action_desc, user_info=user_info
-    )
-    if ok:
+def authenticate() -> bool:
+    if st.session_state.get("authenticated"):
         return True
 
-    # execute_query gère les erreurs Supabase et retourne False : on retente
-    # donc sans les colonnes facultatives si l'ancienne structure est utilisée.
-    reduced = dict(data)
-    changed = False
-    for key in optional_keys:
-        if key in reduced:
-            reduced.pop(key, None)
-            changed = True
-    if changed:
-        return execute_query(
-            "INSERT", table_name, data=reduced,
-            action_desc=action_desc + " (compatibilité ancienne structure)",
-            user_info=user_info
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    c1, c2, c3 = st.columns([1, 1.6, 1])
+    with c2:
+        st.markdown(
+            """
+<div class="card">
+<h1 style="text-align:center;color:#0e6b3b;">🌾 YouAgronoMe</h1>
+<p style="text-align:center;color:#66776d;">
+Plateforme professionnelle de centralisation et de pilotage agricole
+</p>
+</div>
+""",
+            unsafe_allow_html=True,
         )
+        with st.form("login"):
+            email = st.text_input("E-mail professionnel")
+            password = st.text_input("Mot de passe", type="password")
+            submitted = st.form_submit_button(
+                "Se connecter", type="primary", use_container_width=True
+            )
+            if submitted:
+                try:
+                    res = (
+                        supabase.table("whitelist_users")
+                        .select("*")
+                        .ilike("email", email.strip().lower())
+                        .execute()
+                    )
+                    record = (res.data or [None])[0]
+                    if record and password == str(record.get("password", "")):
+                        st.session_state.authenticated = True
+                        st.session_state.yam_user = {
+                            "id": record.get("id"),
+                            "email": email.strip().lower(),
+                            "prenom": record.get("prenom", ""),
+                            "nom": record.get("nom", ""),
+                            "role": record.get("role", "Technicien"),
+                            "modules_autorises": record.get("modules_autorises", "TOUS"),
+                        }
+                        st.rerun()
+                    else:
+                        st.error("Identifiants incorrects ou compte non autorisé.")
+                except Exception as exc:
+                    st.error(f"Connexion Supabase impossible : {db_error_message(exc)}")
     return False
 
-def _safe_report_text(value):
-    """Nettoyage minimal pour Paragraph ReportLab."""
-    if value is None:
+
+init_admin_if_needed()
+if not authenticate():
+    st.stop()
+
+
+# ============================================================
+# 5. AUDIT
+# ============================================================
+
+def audit_log(action: str, table: str = "", operation: str = "", details: Any = None):
+    try:
+        u = current_user()
+        payload = {
+            "date_heure": datetime.now().isoformat(timespec="seconds"),
+            "utilisateur": f"{u.get('prenom','')} {u.get('nom','')}".strip(),
+            "email": u.get("email", ""),
+            "role": u.get("role", ""),
+            "action": action,
+            "table_cible": table,
+            "operation": operation,
+            "details": json.dumps(details, ensure_ascii=False, default=str)[:4000],
+        }
+        supabase.table("historique_modifications").insert(payload).execute()
+    except Exception:
+        # L'audit ne doit jamais casser une opération métier.
+        pass
+
+
+# ============================================================
+# 6. PARCELLES / PÉRIMÈTRE
+# ============================================================
+
+@st.cache_data(ttl=15)
+def load_accessible_champs() -> pd.DataFrame:
+    try:
+        q = supabase.table("champs").select("*")
+        if not is_admin():
+            email = user_email()
+            if not email:
+                return pd.DataFrame()
+            # Compatibilité : createur_email reste le propriétaire technique
+            # de la parcelle dans le modèle actuel.
+            q = q.eq("createur_email", email)
+        return pd.DataFrame(q.execute().data or [])
+    except Exception:
+        return pd.DataFrame()
+
+
+def accessible_champ_ids() -> List[int]:
+    df = load_accessible_champs()
+    if df.empty or "id" not in df.columns:
+        return []
+    return (
+        pd.to_numeric(df["id"], errors="coerce")
+        .dropna().astype(int).tolist()
+    )
+
+
+def champ_access(champ_id: Any) -> bool:
+    if is_admin():
+        return True
+    try:
+        return int(champ_id) in set(accessible_champ_ids())
+    except Exception:
+        return False
+
+
+def selected_champ() -> Tuple[Optional[int], str, pd.Series]:
+    df = load_accessible_champs()
+    if df.empty or "id" not in df.columns or "nom" not in df.columns:
+        return None, "Aucune parcelle", pd.Series(dtype=object)
+
+    names = df["nom"].astype(str).tolist()
+    name = st.selectbox("📍 Parcelle active", names, key="active_champ")
+    row = df[df["nom"].astype(str) == name].iloc[0]
+    return row.get("id"), name, row
+
+
+# ============================================================
+# 7. SUPABASE STORAGE — CORRECTION DU PROBLÈME DES PHOTOS
+# ============================================================
+
+def safe_filename(name: str) -> str:
+    name = os.path.basename(name or "fichier")
+    name = re.sub(r"[^a-zA-Z0-9._-]+", "_", name)
+    return name[:180]
+
+
+def storage_upload(uploaded_file, category: str, entity_id: Any = "") -> Dict[str, str]:
+    """
+    Upload réel dans Supabase Storage.
+    On ne stocke PLUS un chemin local comme référence métier.
+    La table reçoit storage_path, storage_bucket et original_name.
+    """
+    if uploaded_file is None:
+        return {}
+
+    try:
+        raw = uploaded_file.getvalue()
+        original = safe_filename(uploaded_file.name)
+        stamp = datetime.now().strftime("%Y%m%d/%H%M%S_%f")
+        uid = hashlib.sha256(raw).hexdigest()[:12]
+        path = f"{category}/{entity_id or 'general'}/{stamp}_{uid}_{original}"
+
+        content_type = getattr(uploaded_file, "type", None) or "application/octet-stream"
+
+        supabase.storage.from_(SUPABASE_BUCKET).upload(
+            path,
+            raw,
+            {"content-type": content_type, "upsert": "false"},
+        )
+        return {
+            "storage_bucket": SUPABASE_BUCKET,
+            "storage_path": path,
+            "original_name": original,
+            "mime_type": content_type,
+            "size_bytes": str(len(raw)),
+        }
+    except Exception as exc:
+        st.error(
+            "❌ Upload Supabase Storage impossible. "
+            f"Vérifiez le bucket '{SUPABASE_BUCKET}' et les policies Storage. "
+            f"Détail : {db_error_message(exc)}"
+        )
+        return {}
+
+
+def storage_download(bucket: str, path: str) -> Optional[bytes]:
+    if not path:
+        return None
+    try:
+        return supabase.storage.from_(bucket or SUPABASE_BUCKET).download(path)
+    except Exception:
+        return None
+
+
+def storage_signed_url(bucket: str, path: str, expires: int = 3600) -> str:
+    if not path:
         return ""
-    txt = str(value)
-    txt = txt.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    return txt.replace("\n", "<br/>")
-
-def _df_for_champ(df, champ_id, champ_nom=None, table_name="", person=None):
-    """Rapport strictement limité à la parcelle active et, si disponible, à la personne responsable."""
-    if df is None or df.empty: return pd.DataFrame()
-    out=df.copy()
-    if "champ_id" in out.columns and champ_id is not None:
-        try: out=out[pd.to_numeric(out["champ_id"],errors="coerce")==int(champ_id)].copy()
-        except Exception: out=out[out["champ_id"].astype(str)==str(champ_id)].copy()
-    elif table_name=="pointage" and champ_nom and "champ_nom" in out.columns:
-        out=out[out["champ_nom"].astype(str).str.strip().str.lower()==str(champ_nom).strip().lower()].copy()
-    else: return pd.DataFrame()
-    if person:
-        email=str(person.get("gmail",person.get("email",""))).strip().lower()
-        full_name=f"{person.get('prenom','')} {person.get('nom','')}".strip().lower()
-        cols=[c for c in ["email","createur_email","auteur_email","user_email","technicien_email","responsable_email","employe_email","employe_nom","responsable","technicien","auteur"] if c in out.columns]
-        if cols:
-            mask=pd.Series(False,index=out.index)
-            for col in cols:
-                vals=out[col].fillna("").astype(str).str.strip().str.lower()
-                if "email" in col and email: mask |= vals.eq(email)
-                elif full_name: mask |= vals.eq(full_name) | vals.str.contains(full_name,regex=False)
-            out=out[mask].copy()
-    return out
+    try:
+        result = supabase.storage.from_(bucket or SUPABASE_BUCKET).create_signed_url(
+            path, expires
+        )
+        if isinstance(result, dict):
+            return result.get("signedURL") or result.get("signedUrl") or ""
+        return ""
+    except Exception:
+        return ""
 
 
-def _clean_report_columns(df):
-    """Exclut du rapport les identifiants, secrets, emails et champs de sécurité."""
-    if df is None or df.empty:
-        return pd.DataFrame() if df is None else df.copy()
-    forbidden = {"id","uuid","user_id","utilisateur_id","champ_id","createur_email","email","auteur_email","user_email","technicien_email","responsable_email","employe_email","password","mot_de_passe","password_hash","admin_password_hash","token","secret","access_token","refresh_token","modules_autorises","role","permissions","session","ip","ip_address","security","securite","fichier_path","prenom","nom","utilisateur","employe_nom","responsable","technicien","auteur","chef_groupe"}
-    return df[[c for c in df.columns if str(c).strip().lower() not in forbidden]].copy()
-
-def _add_dataframe_full(elements, title, df, styles, max_rows=None):
-    """Ajoute TOUTES les colonnes d'un DataFrame, sous forme lisible et multi-page."""
-    subtitle_style = styles["subtitle"]
-    normal_style = styles["normal"]
-    elements.append(Paragraph(_safe_report_text(title), subtitle_style))
-    if df is None or df.empty:
-        elements.append(Paragraph("<i>Aucune donnée enregistrée.</i>", normal_style))
-        elements.append(Spacer(1, 8))
+def render_attachment(
+    row: pd.Series,
+    path_fields: Tuple[str, ...] = ("storage_path", "piece_jointe_path", "photo_path"),
+):
+    path = ""
+    for field in path_fields:
+        val = row.get(field, "")
+        if val and isinstance(val, str):
+            path = val
+            break
+    if not path:
         return
 
-    work = _clean_report_columns(df)
-    if max_rows is not None and len(work) > max_rows:
-        work = work.head(max_rows)
+    bucket = str(row.get("storage_bucket", SUPABASE_BUCKET))
+    name = str(
+        row.get("original_name")
+        or row.get("piece_jointe_nom")
+        or row.get("photo_nom")
+        or row.get("facture_nom")
+        or Path(path).name
+    )
+    mime = str(row.get("mime_type", "")).lower()
 
-    for idx, row in work.iterrows():
-        record_title = f"Enregistrement {idx + 1}"
+    if path.startswith("http"):
+        url = path
+    else:
+        url = storage_signed_url(bucket, path)
+
+    if url and (mime.startswith("image/") or name.lower().endswith(
+        (".png", ".jpg", ".jpeg", ".webp")
+    )):
+        st.image(url, caption=name, width=380)
+        return
+
+    if url:
+        st.link_button(f"📎 Ouvrir {name}", url, use_container_width=False)
+
+
+def local_or_storage_bytes(row: pd.Series) -> Optional[bytes]:
+    path = str(row.get("storage_path", "") or "")
+    if path:
+        return storage_download(
+            str(row.get("storage_bucket", SUPABASE_BUCKET)), path
+        )
+    old_path = str(
+        row.get("piece_jointe_path")
+        or row.get("photo_path")
+        or row.get("fichier_path")
+        or ""
+    )
+    if old_path and os.path.exists(old_path):
+        try:
+            return Path(old_path).read_bytes()
+        except Exception:
+            return None
+    return None
+
+
+# ============================================================
+# 8. OUTILS DATA / SÉCURITÉ DES RAPPORTS
+# ============================================================
+
+SENSITIVE_COLUMNS = {
+    "id", "uuid", "user_id", "utilisateur_id", "champ_id",
+    "createur_email", "email", "auteur_email", "user_email",
+    "technicien_email", "responsable_email", "employe_email",
+    "password", "mot_de_passe", "password_hash", "token",
+    "secret", "access_token", "refresh_token", "modules_autorises",
+    "permissions", "session", "ip", "ip_address", "security",
+    "securite",
+}
+
+
+def clean_report_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame() if df is None else df.copy()
+    keep = [
+        c for c in df.columns
+        if str(c).strip().lower() not in SENSITIVE_COLUMNS
+    ]
+    return df[keep].copy()
+
+
+def filter_by_champ(df: pd.DataFrame, champ_id: Any) -> pd.DataFrame:
+    if df is None or df.empty or champ_id is None:
+        return pd.DataFrame()
+    if "champ_id" not in df.columns:
+        return pd.DataFrame()
+    try:
+        return df[
+            pd.to_numeric(df["champ_id"], errors="coerce")
+            == int(champ_id)
+        ].copy()
+    except Exception:
+        return df[df["champ_id"].astype(str) == str(champ_id)].copy()
+
+
+def nonempty(v: Any) -> bool:
+    if v is None:
+        return False
+    if pd.isna(v) if not isinstance(v, (list, dict)) else False:
+        return False
+    return str(v).strip().lower() not in ("", "none", "nan", "nat")
+
+
+def df_records(df: pd.DataFrame, max_rows: int = 100) -> List[Dict[str, Any]]:
+    if df is None or df.empty:
+        return []
+    work = df.head(max_rows).copy()
+    return json.loads(work.to_json(orient="records", date_format="iso"))
+
+
+def safe_num(df: pd.DataFrame, col: str) -> float:
+    if df is None or df.empty or col not in df.columns:
+        return 0.0
+    return float(pd.to_numeric(df[col], errors="coerce").fillna(0).sum())
+
+
+# ============================================================
+# 9. IA AGRICOLE — ANALYSE MULTISOURCE + VISION
+# ============================================================
+
+AGRI_SYSTEM_PROMPT = """
+Tu es YAM AGRI-EXPERT, un copilote agricole professionnel destiné à des
+propriétaires, gestionnaires, techniciens supérieurs, techniciens, stagiaires
+et administrateurs d'exploitation.
+
+Ta mission est d'analyser les données de l'exploitation avec une logique
+agronomique, opérationnelle, économique et de traçabilité.
+
+Tu dois :
+1. distinguer clairement les faits saisis des hypothèses;
+2. détecter incohérences, données manquantes importantes et anomalies;
+3. interpréter les tendances (travaux, eau, pluie, incidents, récoltes, coûts,
+   intrants, temps de travail, matériel);
+4. proposer des actions concrètes, hiérarchisées par urgence;
+5. expliquer les risques et les contrôles à effectuer;
+6. tenir compte de la parcelle, de la culture, de la date et des mesures;
+7. pour une photo, décrire uniquement ce qui est réellement visible et signaler
+   les limites de l'analyse visuelle;
+8. ne jamais inventer une mesure, une maladie ou un diagnostic certain;
+9. pour les traitements phytosanitaires, recommander de confirmer le diagnostic,
+   l'étiquette homologuée, la dose autorisée et la réglementation locale;
+10. adapter le niveau de langage au rôle de l'utilisateur.
+
+Format recommandé :
+- Synthèse exécutive
+- Constats factuels
+- Anomalies / points de vigilance
+- Analyse agronomique
+- Priorités 24–48 h
+- Actions 7 jours
+- Suivi à documenter
+- Avis YAM AGRI-EXPERT
+- Niveau de confiance
+"""
+
+@st.cache_resource
+def init_openai():
+    key = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY", ""))
+    if not key or OpenAI is None:
+        return None
+    return OpenAI(api_key=key)
+
+
+def ai_model() -> str:
+    return st.secrets.get(
+        "OPENAI_MODEL", os.getenv("OPENAI_MODEL", "gpt-5.6-sol")
+    )
+
+
+def ai_available() -> bool:
+    return init_openai() is not None
+
+
+def build_ai_context(champ_id: Any, champ_name: str) -> Dict[str, Any]:
+    tables = [
+        "pointage", "taches", "recoltes", "depenses", "intrants",
+        "materiel", "pluviometrie", "incidents", "tracabilite",
+        "irrigation", "alertes_meteo",
+    ]
+    context = {
+        "application": APP_NAME,
+        "date_analyse": datetime.now().isoformat(timespec="seconds"),
+        "utilisateur_role": user_role(),
+        "parcelle": {},
+        "donnees": {},
+    }
+
+    champs = load_accessible_champs()
+    if not champs.empty and "id" in champs.columns:
+        r = champs[pd.to_numeric(champs["id"], errors="coerce") == int(champ_id)]
+        if not r.empty:
+            context["parcelle"] = clean_report_df(r).iloc[0].to_dict()
+
+    for table in tables:
+        df = filter_by_champ(load_table(table), champ_id)
+        context["donnees"][table] = df_records(clean_report_df(df), 80)
+
+    # KPI utiles, calculés à partir des données existantes.
+    dep = filter_by_champ(load_table("depenses"), champ_id)
+    rec = filter_by_champ(load_table("recoltes"), champ_id)
+    plu = filter_by_champ(load_table("pluviometrie"), champ_id)
+    irr = filter_by_champ(load_table("irrigation"), champ_id)
+    context["indicateurs"] = {
+        "depenses_fcfa": safe_num(dep, "montant"),
+        "recolte_kg": safe_num(rec, "quantite_kg"),
+        "valeur_recoltes_fcfa": (
+            float(
+                (
+                    pd.to_numeric(rec.get("quantite_kg", pd.Series(dtype=float)), errors="coerce").fillna(0)
+                    * pd.to_numeric(rec.get("prix_unitaire", pd.Series(dtype=float)), errors="coerce").fillna(0)
+                ).sum()
+            )
+            if not rec.empty else 0.0
+        ),
+        "pluie_mm": safe_num(plu, "pluie_mm"),
+        "eau_m3": safe_num(irr, "volume_eau_m3"),
+    }
+    return context
+
+
+def ai_analyse_agricole(
+    champ_id: Any,
+    champ_name: str,
+    question: str = "",
+    image_rows: Optional[List[pd.Series]] = None,
+) -> str:
+    client = init_openai()
+    if client is None:
+        return (
+            "IA non activée : configurez OPENAI_API_KEY dans les secrets "
+            "Streamlit. Les données restent utilisables sans l'IA."
+        )
+
+    context = build_ai_context(champ_id, champ_name)
+    question = question.strip() or (
+        "Fais un diagnostic global de cette parcelle et donne les priorités "
+        "opérationnelles immédiates, les risques, les incohérences et les "
+        "actions de suivi."
+    )
+
+    content = [
+        {
+            "type": "input_text",
+            "text": (
+                f"Rôle utilisateur : {user_role()}\n"
+                f"Parcelle : {champ_name}\n"
+                f"Question : {question}\n\n"
+                "DONNÉES YAM (JSON) :\n"
+                + json.dumps(context, ensure_ascii=False, default=str)
+            ),
+        }
+    ]
+
+    # Vision : jusqu'à 4 images pertinentes, téléchargées depuis Storage.
+    for row in (image_rows or [])[:4]:
+        raw = local_or_storage_bytes(row)
+        if not raw:
+            continue
+        mime = str(row.get("mime_type", "image/jpeg"))
+        if not mime.startswith("image/"):
+            continue
+        import base64
+        encoded = base64.b64encode(raw).decode("utf-8")
+        content.append({
+            "type": "input_image",
+            "image_url": f"data:{mime};base64,{encoded}",
+        })
+
+    try:
+        response = client.responses.create(
+            model=ai_model(),
+            instructions=AGRI_SYSTEM_PROMPT,
+            input=[{"role": "user", "content": content}],
+        )
+        return getattr(response, "output_text", "") or str(response)
+    except Exception as exc:
+        return f"Erreur IA : {db_error_message(exc)}"
+
+
+# ============================================================
+# 10. RAPPORT PDF PROFESSIONNEL
+# ============================================================
+
+def pdf_styles():
+    ss = getSampleStyleSheet()
+    return {
+        "title": ParagraphStyle(
+            "YTitle", parent=ss["Heading1"], fontName="Helvetica-Bold",
+            fontSize=19, leading=23, alignment=1,
+            textColor=colors.HexColor("#123b28"), spaceAfter=8
+        ),
+        "subtitle": ParagraphStyle(
+            "YSub", parent=ss["Heading2"], fontName="Helvetica-Bold",
+            fontSize=11, leading=14, textColor=colors.HexColor("#0e6b3b"),
+            spaceBefore=10, spaceAfter=6
+        ),
+        "normal": ParagraphStyle(
+            "YNorm", parent=ss["Normal"], fontName="Helvetica",
+            fontSize=8.4, leading=11, textColor=colors.HexColor("#26382d")
+        ),
+        "small": ParagraphStyle(
+            "YSmall", parent=ss["Normal"], fontName="Helvetica",
+            fontSize=7, leading=9, textColor=colors.HexColor("#5b6f63")
+        ),
+        "field": ParagraphStyle(
+            "YField", parent=ss["Normal"], fontName="Helvetica-Bold",
+            fontSize=7.4, leading=9, textColor=colors.HexColor("#123b28")
+        ),
+        "ai": ParagraphStyle(
+            "YAI", parent=ss["Normal"], fontName="Helvetica",
+            fontSize=8.2, leading=11, textColor=colors.HexColor("#244d34")
+        ),
+    }
+
+
+def esc(text: Any) -> str:
+    if text is None:
+        return ""
+    s = str(text)
+    return (
+        s.replace("&", "&amp;")
+         .replace("<", "&lt;")
+         .replace(">", "&gt;")
+         .replace("\n", "<br/>")
+    )
+
+
+def add_clean_df(elements, title: str, df: pd.DataFrame, styles, max_rows: int = 80):
+    work = clean_report_df(df)
+    # Important : on n'affiche aucune section vide.
+    if work.empty:
+        return
+
+    elements.append(Paragraph(esc(title), styles["subtitle"]))
+    for idx, row in work.head(max_rows).iterrows():
         fields = []
         for col in work.columns:
             val = row.get(col, "")
-            if pd.isna(val):
-                val = ""
+            if not nonempty(val):
+                continue
             fields.append([
-                Paragraph(_safe_report_text(col), styles["field"]),
-                Paragraph(_safe_report_text(val), normal_style)
+                Paragraph(esc(col), styles["field"]),
+                Paragraph(esc(val), styles["normal"]),
             ])
-        if fields:
-            t = Table(fields, colWidths=[145, 355], repeatRows=0, hAlign="LEFT")
-            t.setStyle(TableStyle([
-                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#eef6f0")),
-                ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#d7e7dc")),
-                ("LEFTPADDING", (0, 0), (-1, -1), 5),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-                ("TOPPADDING", (0, 0), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-            ]))
-            elements.append(Paragraph(f"<b>{record_title}</b>", styles["record"]))
-            elements.append(t)
-            elements.append(Spacer(1, 7))
-
-def _find_evidence_files(champ_id=None, champ_nom=None, person=None):
-    if not os.path.isdir(UPLOAD_DIR): return []
-    tokens=[str(champ_id)] if champ_id is not None else []
-    if champ_nom: tokens.append(str(champ_nom).strip().replace(" ","_"))
-    files=[]
-    for name in os.listdir(UPLOAD_DIR):
-        path=os.path.join(UPLOAD_DIR,name); low=name.lower()
-        if os.path.isfile(path) and any(t and t.lower() in low for t in tokens) and low.endswith((".png",".jpg",".jpeg",".webp",".pdf",".docx",".xlsx")):
-            files.append(path)
-    return sorted(set(files))
-
-def _add_evidence_section(elements, champ_id, champ_nom, styles, person=None):
-    files=_find_evidence_files(champ_id,champ_nom,person)
-    elements.append(Paragraph("PIÈCES JUSTIFICATIVES & ÉVIDENCES PHOTOGRAPHIQUES",styles["subtitle"]))
-    if not files:
-        elements.append(Paragraph("<i>Aucune pièce justificative associée à cette parcelle.</i>",styles["normal"])); return
-    for path in files:
-        name=os.path.basename(path)
-        if path.lower().endswith((".png",".jpg",".jpeg",".webp")):
-            try:
-                iw,ih=ImageReader(path).getSize(); scale=min(480/float(iw),300/float(ih),1.0)
-                elements.append(Paragraph(f"<b>Photo / preuve :</b> {_safe_report_text(name)}",styles["record"]))
-                elements.append(__import__("reportlab.platypus",fromlist=["Image"]).Image(path,width=iw*scale,height=ih*scale)); elements.append(Spacer(1,8))
-            except Exception: elements.append(Paragraph(f"<b>Pièce :</b> {_safe_report_text(name)}",styles["normal"]))
-        else: elements.append(Paragraph(f"📎 <b>Document justificatif :</b> {_safe_report_text(name)}",styles["normal"]))
+        if not fields:
+            continue
+        table = Table(fields, colWidths=[145, 355], hAlign="LEFT")
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0,0),(0,-1), colors.HexColor("#eef6f0")),
+            ("GRID", (0,0),(-1,-1), .35, colors.HexColor("#d7e7dc")),
+            ("VALIGN", (0,0),(-1,-1), "TOP"),
+            ("LEFTPADDING",(0,0),(-1,-1),5),
+            ("RIGHTPADDING",(0,0),(-1,-1),5),
+            ("TOPPADDING",(0,0),(-1,-1),4),
+            ("BOTTOMPADDING",(0,0),(-1,-1),4),
+        ]))
+        elements.append(table)
+        elements.append(Spacer(1, 5))
 
 
-# ==========================================
-# 3. AUTHENTIFICATION DYNAMIQUE & TRANSAPOLITE
-# ==========================================
-def auth_system():
-    if "authenticated" not in st.session_state:
-        st.session_state.authenticated = False
+def add_storage_images(elements, rows: List[pd.Series], styles, max_images=8):
+    valid = []
+    for row in rows:
+        mime = str(row.get("mime_type", "")).lower()
+        name = str(
+            row.get("original_name")
+            or row.get("photo_nom")
+            or row.get("piece_jointe_nom")
+            or row.get("facture_nom")
+            or ""
+        )
+        if mime.startswith("image/") or name.lower().endswith(
+            (".png",".jpg",".jpeg",".webp")
+        ):
+            valid.append(row)
 
-    if not st.session_state.authenticated:
-        st.markdown("<br><br>", unsafe_allow_html=True)
-        col_auth1, col_auth2, col_auth3 = st.columns([1, 1.5, 1])
-        with col_auth2:
-            st.markdown("""
-                <div style="background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.08);">
-                    <h2 style="text-align: center; color: #10b981; margin-bottom: 5px;">🌾 YouAgronoMe (YAM)</h2>
-                    <p style="text-align: center; color: #6b7280; font-size: 14px; margin-bottom: 25px;">Plateforme intégrée YouAgronoMe — gestion, suivi et traçabilité agricoles</p>
-            """, unsafe_allow_html=True)
+    if not valid:
+        return
 
-            with st.form("form_login_admin"):
-                email_input = st.text_input("Adresse e-mail professionnelle *", placeholder="iy@2012")
-                password_input = st.text_input("Mot de passe d'accès *", type="password")
-                st.markdown("<br>", unsafe_allow_html=True)
-                submit_login = st.form_submit_button("Se Connecter", use_container_width=True, type="primary")
+    elements.append(Paragraph("ÉVIDENCES PHOTOGRAPHIQUES", styles["subtitle"]))
+    for row in valid[:max_images]:
+        raw = local_or_storage_bytes(row)
+        if not raw:
+            continue
+        try:
+            img_reader = ImageReader(io.BytesIO(raw))
+            iw, ih = img_reader.getSize()
+            scale = min(490 / float(iw), 285 / float(ih), 1.0)
+            elements.append(
+                Paragraph(
+                    f"<b>Photo :</b> {esc(row.get('original_name','Évidence'))}",
+                    styles["normal"]
+                )
+            )
+            elements.append(
+                RLImage(io.BytesIO(raw), width=iw*scale, height=ih*scale)
+            )
+            elements.append(Spacer(1, 8))
+        except Exception:
+            continue
 
-                if submit_login:
-                    email_propre = email_input.strip().lower()
-                    try:
-                        res = supabase.table("whitelist_users").select("*").ilike("email", email_propre).execute()
-                        user_records = res.data
-                        
-                        if user_records and password_input == user_records[0].get("password"):
-                            user_record = user_records[0]
-                            st.session_state.authenticated = True
-                            st.session_state.registered_tech = {
-                                "nom": user_record.get("nom", ""),
-                                "prenom": user_record.get("prenom", ""),
-                                "gmail": email_propre,
-                                "role": user_record.get("role", "Technicien"),
-                                "modules_autorises": user_record.get("modules_autorises", "TOUS")
-                            }
-                            st.rerun()
-                        else:
-                            st.error("❌ Identifiants incorrects ou non autorisés.")
-                    except Exception as ex:
-                        st.error(f"❌ Erreur de connexion à la base de données : {ex}")
-            st.markdown("</div>", unsafe_allow_html=True)
-        return False
-    return True
 
-if not auth_system():
-    st.stop()
-
-# ==========================================
-# 4. EXPORTATIONS PDF FORMAT A4 STRICT
-# ==========================================
-def export_fiche_parcelle_a4(nom_p, surf_p, cult_p, lat_p, lon_p, stat_p):
+def generate_pdf_report(
+    champ_id: Any,
+    champ_name: str,
+    report_date: date,
+    ai_text: str = "",
+) -> bytes:
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
-    elements = []
-    styles = getSampleStyleSheet()
-    
-    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontName='Helvetica-Bold', fontSize=15, alignment=1, textColor=colors.HexColor('#10b981'), spaceAfter=10)
-    subtitle_style = ParagraphStyle('SubTitleStyle', parent=styles['Heading2'], fontName='Helvetica-Bold', fontSize=11, textColor=colors.HexColor('#1e3d59'), spaceBefore=10, spaceAfter=6)
-    normal_style = ParagraphStyle('NormalStyle', parent=styles['Normal'], fontName='Helvetica', fontSize=10, textColor=colors.HexColor('#333333'), leading=14)
-    
-    elements.append(Paragraph("AGRIGESTION PRO — FICHE TECHNIQUE DE PARCELLE", title_style))
-    elements.append(Paragraph(f"<b>Date d'édition :</b> {datetime.now().strftime('%d/%m/%Y à %H:%M')}", normal_style))
-    elements.append(Spacer(1, 10))
-    
-    elements.append(Paragraph("1. Spécifications Générales", subtitle_style))
-    data_fiche = [
-        ["Nom de la Parcelle", str(nom_p)],
-        ["Superficie Exploitable", f"{surf_p} Hectares"],
-        ["Culture Actuelle", str(cult_p)],
-        ["Statut Phénologique", str(stat_p)],
-        ["Repérage GPS (Lat, Lon)", f"{lat_p} , {lon_p}"]
+    styles = pdf_styles()
+
+    doc = SimpleDocTemplate(
+        buffer, pagesize=A4,
+        rightMargin=28, leftMargin=28, topMargin=30, bottomMargin=35
+    )
+
+    champs = load_accessible_champs()
+    champ_info = pd.DataFrame()
+    if not champs.empty and "id" in champs.columns:
+        tmp = champs[
+            pd.to_numeric(champs["id"], errors="coerce") == int(champ_id)
+        ]
+        if not tmp.empty:
+            champ_info = tmp.iloc[[0]]
+
+    table_titles = [
+        ("pointage", "TEMPS & ACTIVITÉS HUMAINES"),
+        ("taches", "TRAVAUX & PLANNING"),
+        ("recoltes", "RÉCOLTES & RENDEMENTS"),
+        ("depenses", "DÉPENSES & ACHATS"),
+        ("intrants", "INTRANTS & STOCKS"),
+        ("materiel", "MATÉRIEL & MAINTENANCE"),
+        ("pluviometrie", "PLUVIOMÉTRIE"),
+        ("incidents", "INCIDENTS & OBSERVATIONS"),
+        ("tracabilite", "TRAÇABILITÉ & LOTS"),
+        ("irrigation", "IRRIGATION & EAU"),
+        ("alertes_meteo", "RISQUES & MÉTÉO"),
     ]
-    t = Table(data_fiche, colWidths=[180, 320], hAlign='LEFT')
-    t.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#f3f4f6')),
-        ('TEXTCOLOR', (0, 0), (-1, -1), colors.HexColor('#1f2937')),
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-        ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 0), (-1, -1), 9.5),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-        ('TOPPADDING', (0, 0), (-1, -1), 6),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e5e7eb')),
-    ]))
-    elements.append(t)
-    elements.append(Spacer(1, 15))
-    elements.append(Paragraph("2. Note d'Exploitation & Suivi", subtitle_style))
-    elements.append(Paragraph("Cette fiche certifie l'enregistrement de la parcelle dans le système de gestion agricole intégré YouAgronoMe (YAM) (Supabase).", normal_style))
-    doc.build(elements)
-    return buffer.getvalue()
 
-def export_parcelle_pdf(champ_nom, date_rapport):
-    """Rapport YAM premium : une parcelle, périmètre opérationnel, sans identifiants ni sécurité."""
-    buffer = io.BytesIO()
-    tech = st.session_state.get("registered_tech", {}) or {}
-    ss = getSampleStyleSheet()
+    collected = {}
+    for table, title in table_titles:
+        collected[table] = filter_by_champ(load_table(table), champ_id)
 
-    styles = {
-        "title": ParagraphStyle("rt", parent=ss["Heading1"], fontName="Helvetica-Bold", fontSize=17, leading=21, alignment=1, textColor=colors.HexColor("#123b28"), spaceAfter=8),
-        "subtitle": ParagraphStyle("rs", parent=ss["Heading2"], fontName="Helvetica-Bold", fontSize=11, leading=14, textColor=colors.HexColor("#0e6b3b"), spaceBefore=12, spaceAfter=7),
-        "normal": ParagraphStyle("rn", parent=ss["Normal"], fontName="Helvetica", fontSize=8.5, leading=11, textColor=colors.HexColor("#26382d")),
-        "field": ParagraphStyle("rf", parent=ss["Normal"], fontName="Helvetica-Bold", fontSize=7.5, leading=9, textColor=colors.HexColor("#123b28")),
-        "record": ParagraphStyle("rr", parent=ss["Normal"], fontName="Helvetica-Bold", fontSize=8.5, leading=10, textColor=colors.HexColor("#1e3d59")),
-        "small": ParagraphStyle("rsmall", parent=ss["Normal"], fontName="Helvetica", fontSize=7, leading=8.5, textColor=colors.HexColor("#555555")),
-        "cover_big": ParagraphStyle("coverbig", parent=ss["Title"], fontName="Helvetica-Bold", fontSize=27, leading=31, alignment=1, textColor=colors.HexColor("#0e6b3b"), spaceAfter=7),
-        "cover_sub": ParagraphStyle("coversub", parent=ss["Normal"], fontName="Helvetica-Bold", fontSize=11, leading=14, alignment=1, textColor=colors.HexColor("#365844"), spaceAfter=7),
-        "cover_text": ParagraphStyle("covertext", parent=ss["Normal"], fontName="Helvetica", fontSize=8.8, leading=12, alignment=1, textColor=colors.HexColor("#33443a")),
-        "toc": ParagraphStyle("toc", parent=ss["Normal"], fontName="Helvetica", fontSize=8.5, leading=11, textColor=colors.HexColor("#26382d")),
-    }
+    # Évidences venant des tables métier.
+    evidence_rows = []
+    for table in ["depenses","intrants","materiel","incidents","tracabilite"]:
+        df = collected.get(table, pd.DataFrame())
+        if not df.empty:
+            for _, row in df.iterrows():
+                if local_or_storage_bytes(row):
+                    evidence_rows.append(row)
 
-    def footer(canvas, doc):
+    dep = collected["depenses"]
+    rec = collected["recoltes"]
+    total_dep = safe_num(dep, "montant")
+    total_kg = safe_num(rec, "quantite_kg")
+    value = (
+        float(
+            (
+                pd.to_numeric(rec.get("quantite_kg", pd.Series(dtype=float)), errors="coerce").fillna(0)
+                * pd.to_numeric(rec.get("prix_unitaire", pd.Series(dtype=float)), errors="coerce").fillna(0)
+            ).sum()
+        )
+        if not rec.empty else 0.0
+    )
+    margin = value - total_dep
+
+    def footer(canvas, doc_obj):
         canvas.saveState()
         canvas.setStrokeColor(colors.HexColor("#d7e7dc"))
-        canvas.line(28, 25, A4[0] - 28, 25)
-        canvas.setFont("Helvetica-Bold", 7.5)
+        canvas.line(28, 25, A4[0]-28, 25)
+        canvas.setFont("Helvetica-Bold", 7.2)
         canvas.setFillColor(colors.HexColor("#0e6b3b"))
-        canvas.drawString(28, 13, "YouAgronoMe (YAM) • Suivi • Traçabilité • Décision agricole")
+        canvas.drawString(28, 13, "YouAgronoMe (YAM) • Pilotage • Traçabilité • Décision")
         canvas.setFont("Helvetica", 7)
         canvas.setFillColor(colors.HexColor("#6b7280"))
-        canvas.drawRightString(A4[0] - 28, 13, f"Page {doc.page}")
+        canvas.drawRightString(A4[0]-28, 13, f"Page {doc_obj.page}")
         canvas.restoreState()
 
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=28, leftMargin=28, topMargin=30, bottomMargin=35)
-
-    # Parcelle accessible : aucune autre parcelle ne doit entrer dans le rapport.
-    df_c = load_accessible_champs()
-    champ_id = None
-    champ_info = pd.DataFrame()
-    if not df_c.empty and "nom" in df_c.columns:
-        x = df_c[df_c["nom"].astype(str).str.strip().str.lower() == str(champ_nom).strip().lower()].copy()
-        if not x.empty:
-            champ_info = x.iloc[[0]].copy()
-            if "id" in x.columns:
-                champ_id = x["id"].iloc[0]
-
-    tables = [
-        ("pointage", "2. POINTAGE ET ACTIVITÉS HUMAINES"),
-        ("taches", "3. TRAVAUX ET PLANNING"),
-        ("recoltes", "4. RÉCOLTES ET RENDEMENTS"),
-        ("depenses", "5. DÉPENSES ET ACHATS"),
-        ("intrants", "6. INTRANTS ET STOCKS"),
-        ("materiel", "7. MATÉRIEL ET MAINTENANCE"),
-        ("pluviometrie", "8. PLUVIOMÉTRIE"),
-        ("incidents", "9. INCIDENTS"),
-        ("tracabilite", "10. TRAÇABILITÉ ET LOTS"),
-        ("irrigation", "11. IRRIGATION ET EAU"),
-        ("alertes_meteo", "12. RISQUES, MÉTÉO ET RECOMMANDATIONS"),
-    ]
-    collected = {}
-    for tn, title in tables:
-        df = _df_for_champ(load_table(tn), champ_id, champ_nom, tn, tech)
-        collected[tn] = _clean_report_columns(df)
-
-    # Calculs utiles pour la page d'accueil.
-    total_dep = pd.to_numeric(collected["depenses"].get("montant", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
-    qte_rec = pd.to_numeric(collected["recoltes"].get("quantite_kg", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
-    prix = pd.to_numeric(collected["recoltes"].get("prix_unitaire", pd.Series(dtype=float)), errors="coerce").fillna(0)
-    qser = pd.to_numeric(collected["recoltes"].get("quantite_kg", pd.Series(dtype=float)), errors="coerce").fillna(0)
-    ventes = (qser * prix).sum()
-    marge = ventes - total_dep
-    total_actions = sum(len(v) for v in collected.values())
-
     el = []
-
-    # ================= PAGE 1 : ACCUEIL YAM + LITTÉRATURE + PLAN =================
     el.append(Spacer(1, 8))
-    el.append(Paragraph("YouAgronoMe (YAM)", styles["cover_big"]))
-    el.append(Paragraph("RAPPORT PROFESSIONNEL DE SUIVI AGRICOLE", styles["cover_sub"]))
-    el.append(Paragraph(f"PARCELLE : <b>{_safe_report_text(champ_nom).upper()}</b>", styles["cover_sub"]))
-    el.append(Spacer(1, 5))
-
-    banner = Table([[Paragraph("🌱 PILOTER • SUIVRE • TRAÇER • DÉCIDER", styles["cover_sub"])]], colWidths=[500])
-    banner.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#dff2e6")),
-        ("BOX", (0, 0), (-1, -1), 1, colors.HexColor("#79b991")),
-        ("TOPPADDING", (0, 0), (-1, -1), 8),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-    ]))
-    el.append(banner)
-    el.append(Spacer(1, 10))
-
-    el.append(Paragraph("À propos de YouAgronoMe (YAM)", styles["subtitle"]))
+    el.append(Paragraph("YouAgronoMe (YAM)", styles["title"]))
     el.append(Paragraph(
-        "YouAgronoMe, abrégé <b>YAM</b>, est la plateforme numérique de suivi et de gestion agricole mise en avant dans ce rapport. "
-        "Elle vise à réunir dans un même environnement les informations de terrain, la gestion des parcelles, le suivi des travaux, "
-        "les pointages, les récoltes, les dépenses, les intrants, l'irrigation, la pluviométrie, les incidents, la traçabilité et les risques. "
-        "L'objectif est de transformer les données saisies sur le terrain en informations lisibles, traçables et utiles à la décision.",
-        styles["cover_text"]
+        "RAPPORT PROFESSIONNEL DE SUIVI AGRICOLE",
+        ParagraphStyle(
+            "cover", parent=styles["subtitle"], alignment=1,
+            fontSize=11, spaceBefore=0
+        )
     ))
-    el.append(Spacer(1, 6))
     el.append(Paragraph(
-        "YAM met l'accent sur la centralisation des données, la continuité du suivi entre les espaces de travail, la justification des opérations "
-        "par pièces ou photographies et la production de rapports professionnels pouvant servir au pilotage, au contrôle, à la supervision, "
-        "à la formation des stagiaires et à la valorisation des activités agricoles.",
-        styles["cover_text"]
+        f"PARCELLE : <b>{esc(champ_name).upper()}</b>",
+        ParagraphStyle("cover2", parent=styles["subtitle"], alignment=1)
     ))
 
-    el.append(Paragraph("Lecture rapide de cette parcelle", styles["subtitle"]))
-    quick = Table([
-        ["Actions suivies", "Récolte", "Dépenses", "Valeur récoltes", "Marge estimative"],
-        [str(total_actions), f"{qte_rec:,.2f} kg", f"{total_dep:,.0f} FCFA", f"{ventes:,.0f} FCFA", f"{marge:,.0f} FCFA"],
-    ], colWidths=[100, 100, 100, 100, 100])
-    quick.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#123b28")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#f3faf5")),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("GRID", (0, 0), (-1, -1), .5, colors.HexColor("#cbded0")),
-        ("FONTSIZE", (0, 0), (-1, -1), 7.8),
-        ("TOPPADDING", (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    kpi = Table(
+        [[
+            "Récolte", "Dépenses", "Valeur récoltes", "Marge estimative",
+            "Incidents"
+        ],[
+            f"{total_kg:,.2f} kg",
+            f"{total_dep:,.0f} FCFA",
+            f"{value:,.0f} FCFA",
+            f"{margin:,.0f} FCFA",
+            str(len(collected["incidents"])),
+        ]],
+        colWidths=[100]*5
+    )
+    kpi.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,0),colors.HexColor("#123b28")),
+        ("TEXTCOLOR",(0,0),(-1,0),colors.white),
+        ("BACKGROUND",(0,1),(-1,1),colors.HexColor("#f3faf5")),
+        ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),
+        ("FONTNAME",(0,1),(-1,1),"Helvetica-Bold"),
+        ("ALIGN",(0,0),(-1,-1),"CENTER"),
+        ("GRID",(0,0),(-1,-1),.5,colors.HexColor("#cbded0")),
+        ("FONTSIZE",(0,0),(-1,-1),7.5),
+        ("TOPPADDING",(0,0),(-1,-1),6),
+        ("BOTTOMPADDING",(0,0),(-1,-1),6),
     ]))
-    el.append(quick)
-
-    el.append(Paragraph("PLAN DU RAPPORT", styles["subtitle"]))
-    plan_items = [
-        "1. Accueil YAM, présentation et lecture rapide de la parcelle",
-        "2. Identification opérationnelle de la parcelle",
-        "3. Pointage et activités humaines",
-        "4. Travaux et planning",
-        "5. Récoltes et rendements",
-        "6. Dépenses et achats",
-        "7. Intrants et stocks",
-        "8. Matériel et maintenance",
-        "9. Pluviométrie",
-        "10. Incidents",
-        "11. Traçabilité et lots",
-        "12. Irrigation et eau",
-        "13. Risques, météo et recommandations",
-        "14. Résumé synthétique et indicateurs",
-        "15. Pièces justificatives et photographies",
-        "16. Observations, recommandations et signatures",
-    ]
-    plan_table = Table([[Paragraph("<b>•</b> " + _safe_report_text(x), styles["toc"])] for x in plan_items], colWidths=[500])
-    plan_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f8fbf9")),
-        ("BOX", (0, 0), (-1, -1), .5, colors.HexColor("#d7e7dc")),
-        ("INNERGRID", (0, 0), (-1, -1), .25, colors.HexColor("#e8f0ea")),
-        ("LEFTPADDING", (0, 0), (-1, -1), 8),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-        ("TOPPADDING", (0, 0), (-1, -1), 3),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-    ]))
-    el.append(plan_table)
-    el.append(Spacer(1, 6))
-    el.append(Paragraph(f"Rapport édité le {date_rapport.strftime('%d/%m/%Y')} • Données arrêtées selon les informations disponibles dans YAM au moment de l'édition.", styles["small"]))
-    el.append(PageBreak())
-
-    # ================= DONNÉES OPÉRATIONNELLES =================
-    el.append(Paragraph("1. IDENTIFICATION OPÉRATIONNELLE DE LA PARCELLE", styles["subtitle"]))
-    _add_dataframe_full(el, "", champ_info, styles)
-
-    section_number = 2
-    for tn, title in tables:
-        df = collected[tn]
-        if not df.empty:
-            el.append(Paragraph(title, styles["subtitle"]))
-            _add_dataframe_full(el, "", df, styles)
-        section_number += 1
-
-    # Synthèse complète.
-    el.append(PageBreak())
-    el.append(Paragraph("14. RÉSUMÉ SYNTHÉTIQUE ET INDICATEURS", styles["subtitle"]))
-    counts = [
-        ("Pointages", len(collected["pointage"])),
-        ("Travaux", len(collected["taches"])),
-        ("Récoltes", len(collected["recoltes"])),
-        ("Dépenses", len(collected["depenses"])),
-        ("Intrants", len(collected["intrants"])),
-        ("Maintenance", len(collected["materiel"])),
-        ("Pluviométrie", len(collected["pluviometrie"])),
-        ("Incidents", len(collected["incidents"])),
-        ("Lots", len(collected["tracabilite"])),
-        ("Irrigations", len(collected["irrigation"])),
-        ("Alertes / risques", len(collected["alertes_meteo"])),
-    ]
-    synth = [["Indicateur", "Résultat"]] + [[a, str(b)] for a, b in counts] + [
-        ["Actions totales enregistrées", str(total_actions)],
-        ["Dépenses totales", f"{total_dep:,.0f} FCFA"],
-        ["Quantité récoltée", f"{qte_rec:,.2f} kg"],
-        ["Valeur estimée des récoltes", f"{ventes:,.0f} FCFA"],
-        ["Marge estimative", f"{marge:,.0f} FCFA"],
-    ]
-    t = Table(synth, colWidths=[300, 200], repeatRows=1)
-    t.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#123b28")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("GRID", (0, 0), (-1, -1), .5, colors.HexColor("#d7e7dc")),
-        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-    ]))
-    el.append(t)
+    el.append(kpi)
     el.append(Spacer(1, 10))
     el.append(Paragraph(
-        "<b>Synthèse :</b> ce document rassemble les informations opérationnelles disponibles pour la seule parcelle sélectionnée. "
-        "Les informations d'identification technique, identifiants internes, données de sécurité, mots de passe, permissions, e-mails et autres champs sensibles ne sont pas publiés.",
-        styles["normal"]
+        f"Édité le {report_date.strftime('%d/%m/%Y')} à "
+        f"{datetime.now().strftime('%H:%M')}. "
+        "Seules les informations réellement renseignées sont présentées.",
+        styles["small"]
     ))
 
-    el.append(Paragraph("15. PIÈCES JUSTIFICATIVES ET PHOTOGRAPHIES", styles["subtitle"]))
-    _add_evidence_section(el, champ_id, champ_nom, styles, tech)
+    add_clean_df(el, "1. IDENTIFICATION DE LA PARCELLE", champ_info, styles)
 
-    el.append(Spacer(1, 15))
-    el.append(Paragraph("16. OBSERVATIONS, RECOMMANDATIONS ET VALIDATION", styles["subtitle"]))
-    el.append(Paragraph("Observations / recommandations complémentaires :", styles["normal"]))
-    obs = Table([["\n\n\n\n\n"]], colWidths=[500], rowHeights=[90])
-    obs.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), .7, colors.HexColor("#9ca3af")), ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fbfdfb"))]))
-    el.append(obs)
-    el.append(Spacer(1, 18))
+    for table, title in table_titles:
+        add_clean_df(el, title, collected[table], styles)
 
-    sig = Table([
-        ["RESPONSABLE DU SUIVI", "VALIDATION / SUPERVISION"],
-        ["\nNom : __________________________\nSignature : _____________________\nDate : ____ / ____ / ______", "\nNom : __________________________\nSignature : _____________________\nDate : ____ / ____ / ______"],
-    ], colWidths=[250, 250], rowHeights=[22, 85])
+    # IA : uniquement si elle a effectivement produit un avis.
+    if ai_text.strip():
+        el.append(PageBreak())
+        el.append(Paragraph("AVIS YAM AGRI-EXPERT", styles["subtitle"]))
+        for block in ai_text.split("\n"):
+            if block.strip():
+                el.append(Paragraph(esc(block), styles["ai"]))
+                el.append(Spacer(1, 3))
+
+    add_storage_images(el, evidence_rows, styles)
+
+    # Validation/signatures.
+    el.append(Paragraph("VALIDATION PROFESSIONNELLE", styles["subtitle"]))
+    sig = Table(
+        [[
+            "RESPONSABLE DU SUIVI",
+            "SUPERVISION / PROPRIÉTAIRE"
+        ],[
+            "Nom : ______________________\nSignature : __________________\nDate : ____ / ____ / ______",
+            "Nom : ______________________\nSignature : __________________\nDate : ____ / ____ / ______"
+        ]],
+        colWidths=[250,250], rowHeights=[22,85]
+    )
     sig.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#dff2e6")),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("GRID", (0, 0), (-1, -1), .6, colors.HexColor("#9ca3af")),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
-        ("TOPPADDING", (0, 1), (-1, -1), 8),
+        ("BACKGROUND",(0,0),(-1,0),colors.HexColor("#dff2e6")),
+        ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),
+        ("GRID",(0,0),(-1,-1),.6,colors.HexColor("#9ca3af")),
+        ("VALIGN",(0,0),(-1,-1),"TOP"),
+        ("FONTSIZE",(0,0),(-1,-1),8.5),
+        ("TOPPADDING",(0,1),(-1,-1),8),
     ]))
     el.append(sig)
-    el.append(Spacer(1, 10))
-    el.append(Paragraph("YouAgronoMe (YAM) — rapport généré à partir des données saisies et synchronisées dans la plateforme au moment de l'édition.", styles["small"]))
 
     doc.build(el, onFirstPage=footer, onLaterPages=footer)
     return buffer.getvalue()
 
 
-# ==========================================
-# 5. NAVIGATION PREMIUM EN 5 GRANDS ONGLETS
-# ==========================================
-tech = st.session_state.get('registered_tech', {})
-prenom_tech = tech.get('prenom', 'Utilisateur')
-nom_tech = tech.get('nom', '')
-role_tech = tech.get('role', 'Technicien')
-email_connecte = tech.get('gmail', '').lower()
+# ============================================================
+# 11. NAVIGATION
+# ============================================================
 
-# Menu stable : uniquement les composants natifs Streamlit sont utilisés.
-# Cela évite les conflits React/DOM du type "removeChild" provoqués par du JavaScript
-# ou des éléments HTML qui modifient l'arbre DOM de Streamlit.
-menu_administration = [
-    "🔐 Paramètres & Liste Blanche",
-    "📜 Historique des Modifications"
-]
-menu_gestionnaire = [
-    "📊 Tableau de Bord", "👥 Groupes & Membres", "💰 Finances & Marges",
-    "📦 Stocks d'Intrants", "🚜 Maintenance Matériel", "📈 Rentabilité & ROI"
-]
-menu_techniciens = [
-    "🧪 Poste Technique",
-    "🌱 Cartographie & Parcelles", "⏰ Pointage des Horaires", "📅 Planning & Travaux",
-    "🌾 Récoltes & Rendements", "🌧️ Pluviométrie", "⚠️ Incidents",
-    "🏷️ Traçabilité & Lots", "💧 Irrigation & Eau", "🌤️ Risques & Météo",
-    "📑 EXPORT RAPPORT PARCELLE"
-]
-menu_commun = ["💬 Espace Collaboration & Workspace"]
+u = current_user()
+prenom = u.get("prenom", "Utilisateur")
+nom = u.get("nom", "")
+role = user_role()
 
-if is_general_admin():
-    accessibles = menu_commun + menu_administration + menu_gestionnaire + menu_techniciens
-elif role_tech in ("Gestionnaire", "Propriétaire"):
-    accessibles = menu_commun + menu_gestionnaire + menu_techniciens
-else:
-    # Technicien Supérieur / Technicien / Stagiaire : uniquement les fonctions de terrain.
-    accessibles = menu_commun + menu_techniciens
+st.markdown(
+    f"""
+<div class="main-header">
+<div>
+<div class="brand-title">🌾 YouAgronoMe (YAM)</div>
+<div class="brand-subtitle">Centralisation agricole intelligente · données · terrain · décision · traçabilité</div>
+</div>
+<div class="user-badge">👤 {prenom} {nom} · {role}</div>
+</div>
+""",
+    unsafe_allow_html=True,
+)
 
-# Respect du champ modules_autorises en plus du rôle.
-accessibles = [m for m in accessibles if module_allowed(m)]
-# Le stagiaire doit toujours disposer du pointage pour ses activités de terrain.
-if role_tech == "Stagiaire" and "⏰ Pointage des Horaires" not in accessibles:
-    accessibles.append("⏰ Pointage des Horaires")
+accessible = allowed_modules()
+if not accessible:
+    st.error("Aucun module n'est autorisé pour ce compte.")
+    st.stop()
 
-groupes = {
-    "🏠 ACCUEIL": [m for m in ["📊 Tableau de Bord", "🧪 Poste Technique"] if m in accessibles],
-    "🌱 EXPLOITATION": [m for m in ["🌱 Cartographie & Parcelles", "📅 Planning & Travaux", "🌾 Récoltes & Rendements", "🌧️ Pluviométrie", "💧 Irrigation & Eau", "🌤️ Risques & Météo"] if m in accessibles],
-    "👥 ÉQUIPE & OPÉRATIONS": [m for m in ["👥 Groupes & Membres", "⏰ Pointage des Horaires", "⚠️ Incidents", "🏷️ Traçabilité & Lots", "💬 Espace Collaboration & Workspace"] if m in accessibles],
-    "💰 GESTION & MATÉRIEL": [m for m in ["💰 Finances & Marges", "📦 Stocks d'Intrants", "🚜 Maintenance Matériel", "📈 Rentabilité & ROI"] if m in accessibles],
-    "⚙️ ADMINISTRATION": [m for m in ["🔐 Paramètres & Liste Blanche", "📜 Historique des Modifications", "📑 EXPORT RAPPORT PARCELLE"] if m in accessibles],
+if "selected_menu" not in st.session_state:
+    st.session_state.selected_menu = accessible[0]
+if st.session_state.selected_menu not in accessible:
+    st.session_state.selected_menu = accessible[0]
+
+# Navigation en groupes.
+groups = {
+    "🏠 PILOTAGE": [
+        "📊 Tableau de Bord", "🧭 Centre Opérations", "🤖 IA Agricole",
+        "📑 Rapports Professionnels"
+    ],
+    "🌱 EXPLOITATION": [
+        "🌱 Cartographie & Parcelles", "📅 Planning & Travaux",
+        "🌾 Récoltes & Rendements", "🌧️ Pluviométrie",
+        "💧 Irrigation & Eau", "🌤️ Risques & Météo"
+    ],
+    "👷 TERRAIN": [
+        "⏰ Temps & Pointage", "⚠️ Incidents & Observations",
+        "🏷️ Traçabilité & Lots", "📦 Intrants & Stocks",
+        "🚜 Matériel & Maintenance"
+    ],
+    "💼 GESTION": [
+        "💰 Finances & Coûts", "📈 Rentabilité & ROI",
+        "💬 Collaboration & Workspace"
+    ],
+    "🔐 ADMIN": [
+        "🔐 Liste Blanche & Administration", "📜 Journal d'Audit"
+    ],
 }
 
-# Mémoriser la page courante sans jamais supposer qu'une variable `menu` existe.
-if "selected_menu" not in st.session_state or st.session_state.selected_menu not in accessibles:
-    st.session_state.selected_menu = accessibles[0] if accessibles else "📊 Tableau de Bord"
-
-st.markdown(f"""
-<div class="main-header">
-  <div>
-    <div class="brand-title">🌾 YouAgronoMe (YAM)</div>
-    <div class="brand-subtitle">Pilotage agricole intelligent · espace sécurisé</div>
-  </div>
-  <div class="user-badge">👤 {prenom_tech} {nom_tech} · {role_tech}</div>
-</div>
-""", unsafe_allow_html=True)
-
-tab_labels = list(groupes.keys())
-tabs = st.tabs(tab_labels)
-for tab, label in zip(tabs, tab_labels):
+tabs = st.tabs([g for g in groups])
+for tab, group_name in zip(tabs, groups):
     with tab:
-        items = groupes[label]
-        if items:
-            # Navigation secondaire native, horizontale, en haut de la page.
-            cols = st.columns(min(len(items), 5))
-            for i, item in enumerate(items):
-                with cols[i % len(cols)]:
-                    if st.button(item, key=f"topnav_{label}_{i}", use_container_width=True):
-                        st.session_state.selected_menu = item
-                        st.rerun()
-        else:
-            st.caption("Aucune fonctionnalité disponible pour votre rôle.")
+        items = [x for x in groups[group_name] if x in accessible]
+        if not items:
+            st.caption("Aucun module autorisé.")
+            continue
+        cols = st.columns(min(5, len(items)))
+        for i, item in enumerate(items):
+            with cols[i % len(cols)]:
+                if st.button(item, key=f"nav_{group_name}_{i}", use_container_width=True):
+                    st.session_state.selected_menu = item
+                    st.rerun()
 
-menu = st.session_state.get("selected_menu", accessibles[0] if accessibles else "📊 Tableau de Bord")
+menu = st.session_state.selected_menu
 
-# La sidebar est volontairement supprimée : navigation uniquement par modules/onglets.
-col_head1, col_head2, col_head3 = st.columns([4, 1, 1])
-with col_head1:
-    derniere_sync = st.session_state.get("last_sync", "À l'ouverture")
-    st.caption(f"Module actif : **{menu}** · Dernière synchronisation : **{derniere_sync}**")
-with col_head2:
-    if st.button("🔄 Synchroniser", use_container_width=True, help="Relire immédiatement les données Supabase pour tous les modules"):
-        synchroniser_donnees()
+c1, c2, c3 = st.columns([5,1,1])
+with c1:
+    st.caption(
+        f"Module actif : **{menu}** · "
+        f"Dernière synchronisation : **{st.session_state.get('last_sync','À l’ouverture')}**"
+    )
+with c2:
+    if st.button("🔄 Synchroniser", use_container_width=True):
+        clear_caches()
+        st.session_state.last_sync = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
         st.rerun()
-with col_head3:
+with c3:
     if st.button("🚪 Déconnexion", use_container_width=True):
-        st.session_state.authenticated = False
-        st.session_state.registered_tech = {}
+        st.session_state.clear()
         st.rerun()
+
+
+# ============================================================
+# 12. SÉLECTION DE PARCELLE
+# ============================================================
 
 db_champs = load_accessible_champs()
-champ_id_actif = None
-champ_selectionne = "Aucune parcelle"
+champ_id = None
+champ_name = "Aucune parcelle"
+champ_row = pd.Series(dtype=object)
 
-# Sélecteur de parcelle uniquement hors cartographie.
-if menu != "🌱 Cartographie & Parcelles":
-    if not db_champs.empty and 'nom' in db_champs.columns and 'id' in db_champs.columns:
-        liste_champs = {row['nom']: row['id'] for _, row in db_champs.iterrows()}
-        if liste_champs:
-            col_sel1, col_sel2 = st.columns([3, 1])
-            with col_sel1:
-                champ_selectionne = st.selectbox("📍 Parcelle active", list(liste_champs.keys()))
-                champ_id_actif = liste_champs[champ_selectionne]
-                row_champ_actuel = db_champs[db_champs['id'] == champ_id_actif].iloc[0]
-                pin_enreg = row_champ_actuel.get('code_pin')
-                has_pin = pin_enreg is not None and str(pin_enreg).strip() not in ("", "None", "nan")
-                if has_pin:
-                    if f"pin_ok_{champ_id_actif}" not in st.session_state:
-                        st.session_state[f"pin_ok_{champ_id_actif}"] = False
-                    if not st.session_state[f"pin_ok_{champ_id_actif}"]:
-                        st.warning(f"🔒 Parcelle protégée : {champ_selectionne}")
-                        saisie_pin = st.text_input("Code PIN", type="password", key=f"input_pin_{champ_id_actif}")
-                        if st.button("🔓 Déverrouiller", key=f"btn_unlock_{champ_id_actif}"):
-                            if saisie_pin == str(pin_enreg):
-                                st.session_state[f"pin_ok_{champ_id_actif}"] = True
-                                st.success("✅ Accès autorisé")
-                                st.rerun()
-                            else:
-                                st.error("❌ Code PIN incorrect")
-            with col_sel2:
-                st.write("")
-                if st.button("➕ Nouvelle parcelle", use_container_width=True):
-                    st.session_state.selected_menu = "🌱 Cartographie & Parcelles"
-                    st.rerun()
-    st.divider()
+if menu != "🌱 Cartographie & Parcelles" and menu not in (
+    "🔐 Liste Blanche & Administration", "📜 Journal d'Audit"
+):
+    if not db_champs.empty:
+        champ_id, champ_name, champ_row = selected_champ()
+    else:
+        st.info("Aucune parcelle accessible. Créez-en une dans Cartographie & Parcelles.")
 
-# ==========================================
-# 6. MODULES APPLICATIFS STRUCTURÉS
-# ==========================================
+
+# ============================================================
+# 13. TABLEAU DE BORD
+# ============================================================
 
 if menu == "📊 Tableau de Bord":
-    st.title("📊 Tableau de Bord Global (Espace Gestionnaire)")
-    m1, m2, m3, m4 = st.columns(4)
-    df_c = load_accessible_champs()
-    df_e = load_table('employes')
-    df_eq = load_table('equipes')
-    df_r = load_table('recoltes')
-    
-    tot_surf = df_c['superficie_ha'].sum() if not df_c.empty and 'superficie_ha' in df_c.columns else 0
-    tot_ouv = len(df_e) if not df_e.empty else 0
-    tot_eq = len(df_eq) if not df_eq.empty else 0
-    tot_rec = df_r['quantite_kg'].sum() if not df_r.empty and 'quantite_kg' in df_r.columns else 0
-    
-    m1.metric("Superficie Totale", f"{tot_surf:.2f} Ha")
-    m2.metric("Groupes Actifs", f"{tot_eq}")
-    m3.metric("Effectif Global", f"{tot_ouv}")
-    m4.metric("Récoltes Totales", f"{tot_rec/1000:.2f} T")
-    st.divider()
-    if df_c.empty:
-        st.info("👋 Aucune parcelle enregistrée.")
-    else:
-        st.subheader("📍 Aperçu Global des Parcelles")
-        colonnes_affichees = [col for col in ["nom", "superficie_ha", "culture_actuelle", "statut"] if col in df_c.columns]
-        st.dataframe(df_c[colonnes_affichees], use_container_width=True)
+    if not require_module(menu):
+        st.stop()
 
-elif menu == "🧪 Poste Technique":
-    st.title("🧪 Poste Technique — Technicien Supérieur")
-    st.caption("Espace opérationnel de terrain : contrôle, suivi, mesures et rapports sur vos seules parcelles.")
-    df_tc = load_accessible_champs()
-    ids = accessible_champ_ids()
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Mes parcelles", len(df_tc))
-    c2.metric("Surface suivie", f"{pd.to_numeric(df_tc.get('superficie_ha', pd.Series(dtype=float)), errors='coerce').fillna(0).sum():.2f} Ha" if not df_tc.empty else "0.00 Ha")
-    df_inc_t = load_table('incidents')
-    if ids and not df_inc_t.empty and 'champ_id' in df_inc_t.columns:
-        df_inc_t = df_inc_t[df_inc_t['champ_id'].isin(ids)]
-    else:
-        df_inc_t = pd.DataFrame()
-    df_rec_t = load_table('recoltes')
-    if ids and not df_rec_t.empty and 'champ_id' in df_rec_t.columns:
-        df_rec_t = df_rec_t[df_rec_t['champ_id'].isin(ids)]
-    else:
-        df_rec_t = pd.DataFrame()
-    c3.metric("Incidents suivis", len(df_inc_t))
-    c4.metric("Enregistrements récolte", len(df_rec_t))
-    st.markdown("### 🔧 Actions techniques rapides")
-    qa1, qa2, qa3 = st.columns(3)
-    with qa1:
-        st.info("**SIG & Parcelles**\n\nCréer, localiser et documenter uniquement vos parcelles.")
-    with qa2:
-        st.info("**Suivi terrain**\n\nPointage, travaux, pluviométrie, irrigation et incidents.")
-    with qa3:
-        st.info("**Contrôle & rapport**\n\nTraçabilité, récoltes, risques et export A4 technique.")
-    if not df_tc.empty:
-        st.markdown("### 📍 Mes parcelles uniquement")
-        cols = [c for c in ["id", "nom", "superficie_ha", "culture_actuelle", "statut"] if c in df_tc.columns]
-        st.dataframe(df_tc[cols], use_container_width=True, hide_index=True)
-    else:
-        st.warning("Aucune parcelle créée par ce compte.")
+    st.title("📊 Tableau de Bord — Pilotage de l'exploitation")
+    champs = load_accessible_champs()
+    rec = load_table("recoltes")
+    dep = load_table("depenses")
+    inc = load_table("incidents")
+    taches = load_table("taches")
 
-elif menu == "🌱 Cartographie & Parcelles":
-    st.title("🌱 Cartographie & Éditeur de Parcelles (YAM Gestion)")
-    
-    if 'lat_active' not in st.session_state:
-        st.session_state['lat_active'] = 14.6937
-    if 'lon_active' not in st.session_state:
-        st.session_state['lon_active'] = -17.4441
+    if not is_admin():
+        ids = accessible_champ_ids()
+        rec = filter_by_champ(rec, None) if rec.empty else (
+            rec[rec["champ_id"].isin(ids)] if "champ_id" in rec.columns else pd.DataFrame()
+        )
+        dep = dep[dep["champ_id"].isin(ids)] if not dep.empty and "champ_id" in dep.columns else pd.DataFrame()
+        inc = inc[inc["champ_id"].isin(ids)] if not inc.empty and "champ_id" in inc.columns else pd.DataFrame()
+        taches = taches[taches["champ_id"].isin(ids)] if not taches.empty and "champ_id" in taches.columns else pd.DataFrame()
 
-    st.markdown("<div class='card-container'>", unsafe_allow_html=True)
-    st.subheader("🗺️ 1. Éditeur de Dessin SIG & Navigation Google Maps")
-    
-    col_s1, col_s2 = st.columns([3, 1])
-    with col_s1:
-        search_query = st.text_input("🔍 Rechercher une zone / village / localité :", placeholder="Ex: Touba, Bambey, Niakhar, Diourbel...")
-        if search_query:
-            try:
-                from geopy.geocoders import Nominatim
-                geolocator = Nominatim(user_agent="agrigestion_app")
-                location = geolocator.geocode(search_query + ", Senegal")
-                if location:
-                    st.session_state['lat_active'] = location.latitude
-                    st.session_state['lon_active'] = location.longitude
-                    st.success(f"📍 Navigation vers : {location.address}")
-            except Exception:
-                st.info("Saisissez un nom de lieu valide.")
-    with col_s2:
-        st.write(" ")
-        st.write(" ")
-        st.caption("ℹ️ Utilisez la barre d'outils à gauche de la carte pour dessiner votre parcelle.")
-
-    df_c = load_accessible_champs()
-    
-    m = folium.Map(
-        location=[float(st.session_state['lat_active']), float(st.session_state['lon_active'])], 
-        zoom_start=15,
-        tiles=None
+    surface = safe_num(champs, "superficie_ha")
+    kg = safe_num(rec, "quantite_kg")
+    couts = safe_num(dep, "montant")
+    valeur = (
+        float((
+            pd.to_numeric(rec.get("quantite_kg", pd.Series(dtype=float)), errors="coerce").fillna(0)
+            * pd.to_numeric(rec.get("prix_unitaire", pd.Series(dtype=float)), errors="coerce").fillna(0)
+        ).sum()) if not rec.empty else 0
     )
 
+    a,b,c,d,e = st.columns(5)
+    a.metric("🌱 Parcelles", len(champs))
+    b.metric("📐 Surface", f"{surface:.2f} ha")
+    c.metric("🌾 Récolte", f"{kg/1000:.2f} t")
+    d.metric("💰 Coûts", f"{couts:,.0f} FCFA")
+    e.metric("📈 Valeur récoltes", f"{valeur:,.0f} FCFA")
+
+    st.markdown("### 🔎 Vigilance opérationnelle")
+    incidents_ouverts = len(inc)
+    if incidents_ouverts:
+        st.markdown(
+            f'<div class="danger-box"><b>{incidents_ouverts} incident(s)</b> '
+            "sont enregistrés dans votre périmètre. Consultez le module Incidents "
+            "et demandez une analyse IA si nécessaire.</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.success("Aucun incident enregistré dans le périmètre courant.")
+
+    if not champs.empty:
+        cols = [c for c in ["nom","superficie_ha","culture_actuelle","statut"] if c in champs.columns]
+        st.dataframe(champs[cols], use_container_width=True, hide_index=True)
+
+
+# ============================================================
+# 14. CENTRE OPÉRATIONS
+# ============================================================
+
+elif menu == "🧭 Centre Opérations":
+    st.title("🧭 Centre Opérations — vue technicien / gestionnaire")
+    if champ_id is None:
+        st.info("Sélectionnez une parcelle.")
+    else:
+        tables = {
+            "Travaux": filter_by_champ(load_table("taches"), champ_id),
+            "Incidents": filter_by_champ(load_table("incidents"), champ_id),
+            "Récoltes": filter_by_champ(load_table("recoltes"), champ_id),
+            "Irrigation": filter_by_champ(load_table("irrigation"), champ_id),
+            "Pluie": filter_by_champ(load_table("pluviometrie"), champ_id),
+        }
+        a,b,c,d,e = st.columns(5)
+        a.metric("Travaux", len(tables["Travaux"]))
+        b.metric("Incidents", len(tables["Incidents"]))
+        c.metric("Récoltes", len(tables["Récoltes"]))
+        d.metric("Irrigations", len(tables["Irrigation"]))
+        e.metric("Relevés pluie", len(tables["Pluie"]))
+
+        st.markdown("### 📌 Derniers événements")
+        rows = []
+        for label, df in tables.items():
+            if not df.empty:
+                row = df.iloc[-1].to_dict()
+                row["module"] = label
+                rows.append(row)
+        if rows:
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        else:
+            st.info("Aucun événement renseigné.")
+
+
+# ============================================================
+# 15. CARTOGRAPHIE & PARCELLES
+# ============================================================
+
+elif menu == "🌱 Cartographie & Parcelles":
+    st.title("🌱 Cartographie & Parcelles")
+    if not require_module(menu):
+        st.stop()
+
+    if "map_lat" not in st.session_state:
+        st.session_state.map_lat = 14.6937
+    if "map_lon" not in st.session_state:
+        st.session_state.map_lon = -17.4441
+
+    col1,col2 = st.columns([3,1])
+    with col1:
+        search = st.text_input(
+            "🔍 Localité / village / zone",
+            placeholder="Ex. Bambey, Touba, Diourbel..."
+        )
+        if search:
+            try:
+                from geopy.geocoders import Nominatim
+                loc = Nominatim(user_agent="yam_agri").geocode(search + ", Senegal")
+                if loc:
+                    st.session_state.map_lat = loc.latitude
+                    st.session_state.map_lon = loc.longitude
+                    st.success(f"Position : {loc.address}")
+            except Exception:
+                st.info("Installez geopy ou saisissez directement les coordonnées.")
+    with col2:
+        st.metric("Parcelles accessibles", len(db_champs))
+
+    m = folium.Map(
+        location=[st.session_state.map_lat, st.session_state.map_lon],
+        zoom_start=13,
+        tiles="OpenStreetMap",
+    )
     folium.TileLayer(
         tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
         attr="Google",
-        name="🛰️ Google Satellite / Hybride",
+        name="Satellite",
         overlay=False,
-        control=True
     ).add_to(m)
 
-    folium.TileLayer(
-        tiles="https://mt1.google.com/vt/lyrs=p&x={x}&y={y}&z={z}",
-        attr="Google",
-        name="🏔️ Google Relief / Topographie",
-        overlay=False,
-        control=True
-    ).add_to(m)
+    if not db_champs.empty and "latitude" in db_champs.columns and "longitude" in db_champs.columns:
+        for _, r in db_champs.iterrows():
+            try:
+                folium.Marker(
+                    [float(r["latitude"]), float(r["longitude"])],
+                    popup=(
+                        f"<b>{r.get('nom','')}</b><br>"
+                        f"Culture: {r.get('culture_actuelle','')}<br>"
+                        f"Surface: {r.get('superficie_ha','')} ha"
+                    ),
+                ).add_to(m)
+            except Exception:
+                continue
 
-    folium.TileLayer(
-        tiles="https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}",
-        attr="Google",
-        name="🗺️ Google Plan Standard",
-        overlay=False,
-        control=True
-    ).add_to(m)
-
-    if not df_c.empty and 'latitude' in df_c.columns and 'longitude' in df_c.columns:
-        for _, r in df_c.iterrows():
-            folium.Marker(
-                location=[r['latitude'], r['longitude']],
-                popup=f"<b>{r.get('nom','')}</b><br>Culture: {r.get('culture_actuelle','')}<br>Superficie: {r.get('superficie_ha','')} Ha",
-                icon=folium.Icon(color="green", icon="leaf")
-            ).add_to(m)
-
-    draw = Draw(
+    Draw(
         export=False,
-        position='topleft',
+        position="topleft",
         draw_options={
-            'polyline': False,
-            'polygon': True,
-            'rectangle': True,
-            'circle': False,
-            'marker': True,
-            'circlemarker': False
+            "polyline": False, "polygon": True, "rectangle": True,
+            "circle": False, "marker": True, "circlemarker": False
         },
-        edit_options={
-            'poly': {'allowIntersection': False},
-            'edit': True,
-            'remove': True
-        }
-    )
-    draw.add_to(m)
+        edit_options={"poly": {"allowIntersection": False}, "edit": True, "remove": True},
+    ).add_to(m)
 
-    folium.LayerControl(position="topright", collapsed=False).add_to(m)
-    
-    output = st_folium(
-        m, 
-        width="100%", 
-        height=400, 
-        key=f"map_arcgis_editor_{st.session_state['lat_active']}_{st.session_state['lon_active']}",
-        returned_objects=["all_drawings"]
-    )
+    output = st_folium(m, width="100%", height=470, returned_objects=["all_drawings"])
 
-    calc_surf_ha = 0.0
-    center_lat_val = float(st.session_state['lat_active'])
-    center_lon_val = float(st.session_state['lon_active'])
+    surface_calc = 0.0
+    lat_calc = float(st.session_state.map_lat)
+    lon_calc = float(st.session_state.map_lon)
 
     if output and output.get("all_drawings"):
         drawings = output["all_drawings"]
-        if len(drawings) > 0:
-            last_geometry = drawings[-1].get("geometry", {})
-            geom_type = last_geometry.get("type")
-            coords = last_geometry.get("coordinates", [])
-
-            if geom_type in ["Polygon", "Rectangle"] and len(coords) > 0:
+        if drawings:
+            geom = drawings[-1].get("geometry", {})
+            coords = geom.get("coordinates", [])
+            if geom.get("type") in ("Polygon","Rectangle") and coords:
                 ring = coords[0]
-                lats = [pt[1] for pt in ring]
-                lons = [pt[0] for pt in ring]
-                
-                center_lat_val = round(sum(lats) / len(lats), 6)
-                center_lon_val = round(sum(lons) / len(lons), 6)
+                lats = [p[1] for p in ring]
+                lons = [p[0] for p in ring]
+                lat_calc = round(sum(lats)/len(lats),6)
+                lon_calc = round(sum(lons)/len(lons),6)
+                mlat = math.radians(lat_calc)
+                mx = 111139 * math.cos(mlat)
+                my = 111139
+                xy = [(p[0]*mx,p[1]*my) for p in ring]
+                area = 0
+                for i in range(len(xy)):
+                    j=(i+1)%len(xy)
+                    area += xy[i][0]*xy[j][1]-xy[j][0]*xy[i][1]
+                surface_calc = round(abs(area)/2/10000,2)
+                st.success(
+                    f"Emprise : {surface_calc} ha · GPS {lat_calc}, {lon_calc}"
+                )
+            elif geom.get("type") == "Point" and len(coords) >= 2:
+                lon_calc, lat_calc = round(coords[0],6), round(coords[1],6)
 
-                lat_avg = math.radians(center_lat_val)
-                m_per_deg_lat = 111139.0
-                m_per_deg_lon = 111139.0 * math.cos(lat_avg)
-                
-                xy = [(pt[0] * m_per_deg_lon, pt[1] * m_per_deg_lat) for pt in ring]
-                area = 0.0
-                n = len(xy)
-                for i in range(n):
-                    j = (i + 1) % n
-                    area += xy[i][0] * xy[j][1]
-                    area -= xy[j][0] * xy[i][1]
-                area_m2 = abs(area) / 2.0
-                calc_surf_ha = round(area_m2 / 10000.0, 2)
-                if calc_surf_ha == 0:
-                    calc_surf_ha = 0.01
+    st.markdown("### ➕ Nouvelle parcelle")
+    with st.form("new_champ"):
+        c1,c2 = st.columns(2)
+        with c1:
+            nom_p = st.text_input("Nom de la parcelle *")
+            surf_p = st.number_input("Superficie (ha)", min_value=0.01, value=max(surface_calc,0.01))
+            culture = st.text_input("Culture principale")
+            statut = st.selectbox(
+                "Statut", ["En préparation","Semé","En croissance","Prêt à récolter","En repos"]
+            )
+        with c2:
+            lat = st.number_input("Latitude", value=float(lat_calc), format="%.6f")
+            lon = st.number_input("Longitude", value=float(lon_calc), format="%.6f")
+            pin = st.text_input("PIN parcellaire (optionnel)", type="password")
 
-                st.success(f"📐 **Emprise capturée ({geom_type}) :** Centre GPS ({center_lat_val}, {center_lon_val}) | Superficie : **{calc_surf_ha} Ha**")
-
-            elif geom_type == "Point" and len(coords) >= 2:
-                center_lon_val = round(coords[0], 6)
-                center_lat_val = round(coords[1], 6)
-                st.info(f"📍 **Point sélectionné :** GPS ({center_lat_val}, {center_lon_val})")
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    st.markdown("<div class='card-container'>", unsafe_allow_html=True)
-    st.subheader("➕ 2. Enregistrement de la Parcelle & Génération Fiche A4")
-    
-    with st.form("form_champ_arcgis_sync"):
-        col_f_1, col_f_2 = st.columns(2)
-        with col_f_1:
-            nom_p = st.text_input("Nom de la parcelle *", placeholder="Ex: Parcelle Nord 01")
-            surf_p = st.number_input("Superficie (Ha)", min_value=0.01, value=float(calc_surf_ha if calc_surf_ha > 0 else 1.0), step=0.1)
-            cult_p = st.text_input("Culture principale", placeholder="Ex: Maïs, Arachide, Oignon...")
-            stat_p = st.selectbox("Statut initial", ["En préparation", "Semé", "En croissance", "Prêt à récolter"])
-        with col_f_2:
-            lat_p = st.number_input("Latitude Centre GPS", value=float(center_lat_val), format="%.6f")
-            lon_p = st.number_input("Longitude Centre GPS", value=float(center_lon_val), format="%.6f")
-            pin_p = st.text_input("Code PIN de sécurité (optionnel)", type="password")
-        
-        submit_parcelle = st.form_submit_button("💾 Enregistrer la Parcelle & Générer la Fiche A4", use_container_width=True, type="primary")
-        if submit_parcelle:
+        if st.form_submit_button("💾 Enregistrer", type="primary", use_container_width=True):
             if nom_p.strip():
-                data_dict = {
-                    "nom": nom_p.strip(),
-                    "superficie_ha": surf_p,
-                    "latitude": lat_p,
-                    "longitude": lon_p,
-                    "culture_actuelle": cult_p,
-                    "statut": stat_p,
-                    "icone_lieu": "leaf",
-                    "code_pin": pin_p.strip() if pin_p else "",
-                    # Identité immuable du créateur : elle sert de périmètre d'accès.
-                    "createur_email": email_connecte
-                }
-                success_ins = execute_query("INSERT", "champs", data=data_dict, action_desc=f"Création de la parcelle '{nom_p.strip()}'", user_info=tech)
-                if success_ins:
-                    st.success(f"✅ Parcelle **{nom_p.strip()}** enregistrée avec succès !")
-                    try:
-                        pdf_data = export_fiche_parcelle_a4(nom_p.strip(), surf_p, cult_p, lat_p, lon_p, stat_p)
-                        st.session_state['last_created_pdf'] = pdf_data
-                        st.session_state['last_created_name'] = nom_p.strip()
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Erreur lors de la génération du PDF : {e}")
+                db_insert(
+                    "champs",
+                    {
+                        "nom": nom_p.strip(),
+                        "superficie_ha": surf_p,
+                        "latitude": lat,
+                        "longitude": lon,
+                        "culture_actuelle": culture.strip(),
+                        "statut": statut,
+                        "icone_lieu": "leaf",
+                        "code_pin": pin.strip(),
+                        "createur_email": user_email(),
+                    },
+                    f"Création parcelle {nom_p.strip()}",
+                )
+                st.success("Parcelle enregistrée dans Supabase.")
+                st.rerun()
             else:
-                st.warning("⚠️ Indiquez un nom de parcelle.")
-    
-    if 'last_created_pdf' in st.session_state:
-        st.markdown("---")
-        st.download_button(
-            label=f"📄 Télécharger la Fiche A4 Officielle ({st.session_state.get('last_created_name', 'Parcelle')})", 
-            data=st.session_state['last_created_pdf'], 
-            file_name=f"fiche_a4_{st.session_state.get('last_created_name', 'parcelle')}.pdf", 
-            mime="application/pdf", 
+                st.warning("Le nom de parcelle est obligatoire.")
+
+    st.markdown("### 🗂️ Parcelles accessibles")
+    if not db_champs.empty:
+        st.dataframe(
+            db_champs[
+                [c for c in ["id","nom","superficie_ha","culture_actuelle","statut","latitude","longitude"]
+                 if c in db_champs.columns]
+            ],
             use_container_width=True,
-            type="primary"
+            hide_index=True,
         )
-    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown("<div class='card-container'>", unsafe_allow_html=True)
-    st.subheader("🗑️ Liste & Suppression des Parcelles")
-    if not df_c.empty and 'id' in df_c.columns:
-        for _, cp in df_c.iterrows():
-            col_cp1, col_cp2 = st.columns([4, 1])
-            with col_cp1:
-                st.write(f"📍 **{cp.get('nom','')}** — {cp.get('superficie_ha','')} Ha | GPS : ({cp.get('latitude','')}, {cp.get('longitude','')}) | Culture : {cp.get('culture_actuelle','')}")
-            with col_cp2:
-                if st.button("🗑️ Supprimer", key=f"del_champ_{cp['id']}"):
-                    if not require_champ_access(cp['id']):
-                        st.error("🔒 Accès refusé : cette parcelle n'appartient pas à votre périmètre.")
-                        st.stop()
-                    execute_query("DELETE", "champs", match_col="id", match_val=cp['id'], action_desc=f"Suppression parcelle '{cp.get('nom','')}'", user_info=tech)
-                    st.success("Parcelle supprimée !")
-                    st.rerun()
-    else:
-        st.info("Aucune parcelle enregistrée.")
-    st.markdown("</div>", unsafe_allow_html=True)
 
-elif menu == "👥 Groupes & Membres":
-    st.title("👥 Gestion des Groupes & Membres (Espace Gestionnaire)")
-    col_g1, col_g2 = st.columns(2)
-    with col_g1:
-        st.subheader("1️⃣ Groupes de Travail")
-        with st.form("form_grp"):
-            nom_g = st.text_input("Nom du groupe")
-            chef_g = st.text_input("Chef de groupe")
-            if st.form_submit_button("Ajouter le Groupe", use_container_width=True):
-                if nom_g.strip():
-                    execute_query("INSERT", "equipes", data={"nom_groupe": nom_g.strip(), "chef_groupe": chef_g.strip()}, action_desc=f"Création groupe '{nom_g}'", user_info=tech)
-                    st.success("✅ Groupe créé !")
-                    st.rerun()
-        
-        df_eq_list = load_table('equipes')
-        if not df_eq_list.empty and 'id' in df_eq_list.columns:
-            st.markdown("---")
-            st.write("**Liste des groupes :**")
-            for _, g in df_eq_list.iterrows():
-                cg1, cg2 = st.columns([3, 1])
-                cg1.write(f"👥 **{g.get('nom_groupe','')}** (Chef : {g.get('chef_groupe','')})")
-                if cg2.button("🗑️", key=f"del_eq_{g['id']}"):
-                    execute_query("DELETE", "equipes", match_col="id", match_val=g['id'], action_desc=f"Suppression groupe '{g.get('nom_groupe','')}'", user_info=tech)
-                    st.success("Groupe supprimé !")
-                    st.rerun()
+# ============================================================
+# 16. TEMPS & POINTAGE
+# ============================================================
 
-    with col_g2:
-        st.subheader("2️⃣ Membres / Employés")
-        df_eq_disp = load_table('equipes')
-        groupes_noms = df_eq_disp['nom_groupe'].tolist() if not df_eq_disp.empty and 'nom_groupe' in df_eq_disp.columns else []
-        with st.form("form_emp"):
-            nom_emp = st.text_input("Nom et Prénom")
-            role_emp = st.text_input("Rôle (ex: Ouvrier, Mécanicien)")
-            grp_emp = st.selectbox("Groupe assigné", groupes_noms if groupes_noms else ["Aucun"])
-            tarif = st.number_input("Tarif journalier (FCFA)", min_value=0.0, value=2500.0)
-            if st.form_submit_button("Ajouter l'Employé", use_container_width=True):
-                if nom_emp.strip():
-                    execute_query("INSERT", "employes", data={"nom": nom_emp.strip(), "role": role_emp.strip(), "groupe_nom": grp_emp, "tarif_journalier": tarif}, action_desc=f"Ajout employé '{nom_emp}'", user_info=tech)
-                    st.success("✅ Employé ajouté !")
-                    st.rerun()
-        
-        df_emp_list = load_table('employes')
-        if not df_emp_list.empty and 'id' in df_emp_list.columns:
-            st.markdown("---")
-            st.write("**Liste des employés :**")
-            for _, emp in df_emp_list.iterrows():
-                ce1, ce2 = st.columns([3, 1])
-                ce1.write(f"👤 **{emp.get('nom','')}** ({emp.get('role','')})")
-                if ce2.button("🗑️", key=f"del_emp_{emp['id']}"):
-                    execute_query("DELETE", "employes", match_col="id", match_val=emp['id'], action_desc=f"Suppression employé '{emp.get('nom','')}'", user_info=tech)
-                    st.success("Employé supprimé !")
-                    st.rerun()
+elif menu == "⏰ Temps & Pointage":
+    st.title("⏰ Temps & Pointage — heures réelles, présence et productivité")
+    if not require_module(menu):
+        st.stop()
 
-elif menu == "⏰ Pointage des Horaires":
-    st.title(f"⏰ Pointage des Horaires — {champ_selectionne} (Espace Technicien)")
-    if champ_selectionne == "Aucune parcelle":
-        st.warning("⚠️ Veuillez sélectionner une parcelle active.")
-    else:
-        df_emp = load_table('employes')
-        if df_emp.empty:
-            st.warning("⚠️ Aucun employé enregistré.")
-        else:
-            groupes_disponibles = df_emp['groupe_nom'].dropna().unique().tolist() if 'groupe_nom' in df_emp.columns else []
-            
-            with st.form("form_pointage_params"):
-                col_f1, col_f2, col_f3 = st.columns(3)
-                with col_f1:
-                    groupes_selectionnes = st.multiselect("Filtrer par Groupe(s) :", groupes_disponibles, default=groupes_disponibles)
-                with col_f2:
-                    date_p = st.date_input("Date du pointage", value=date.today())
-                with col_f3:
-                    tache_globale = st.selectbox("Tâche par défaut :", ["Travaux", "Labour", "Semis", "Désherbage", "Récolte", "Irrigation"])
-                
-                df_emp_filtre = df_emp[df_emp['groupe_nom'].isin(groupes_selectionnes)] if groupes_selectionnes and 'groupe_nom' in df_emp.columns else df_emp
-                
-                lignes = [{
-                    "Présent": True, 
-                    "Employé": f"{e.get('nom','')} - {e.get('role','')}", 
-                    "Groupe": e.get('groupe_nom',''), 
-                    "Tâche": tache_globale, 
-                    "Heures": 8.0, 
-                    "Remarque": ""
-                } for _, e in df_emp_filtre.iterrows()]
-                
-                edited = st.data_editor(pd.DataFrame(lignes), hide_index=True, use_container_width=True)
-                if st.form_submit_button("💾 Enregistrer le Pointage Global", use_container_width=True, type="primary"):
-                    for _, r in edited.iterrows():
-                        if r["Présent"]:
-                            execute_query(
-                                "INSERT", "pointage",
-                                data={
-                                    "date": str(date_p),
-                                    "employe_nom": r["Employé"],
-                                    "groupe_nom": r["Groupe"],
-                                    "champ_nom": champ_selectionne,
-                                    "statut_presence": "Présent",
-                                    "tache_effectuee": r["Tâche"],
-                                    "heures_travaillees": float(r["Heures"]),
-                                    "remarque": str(r["Remarque"])
-                                },
-                                action_desc=f"Pointage de {r['Employé']} sur {champ_selectionne}",
-                                user_info=tech
-                            )
-                    st.success("✅ Pointage enregistré avec succès !")
-                    st.rerun()
+    # Le nouveau schéma utilise time_entries. Fallback sur pointage si nécessaire.
+    employees = load_table("employes")
+    with st.form("time_entry"):
+        c1,c2,c3 = st.columns(3)
+        with c1:
+            employee = st.selectbox(
+                "Personne",
+                employees["nom"].astype(str).tolist()
+                if not employees.empty and "nom" in employees.columns
+                else [f"{prenom} {nom}".strip() or user_email()]
+            )
+            work_date = st.date_input("Date", value=date.today())
+        with c2:
+            start = st.time_input("Heure d'arrivée", value=time(8,0))
+            end = st.time_input("Heure de départ", value=time(17,0))
+        with c3:
+            pause = st.number_input("Pause (minutes)", min_value=0, max_value=480, value=60)
+            task = st.text_input("Activité / chantier", placeholder="Semis, irrigation, entretien...")
 
-        st.markdown("---")
-        st.subheader("📜 Historique des pointages de la parcelle")
-        df_pts = load_table('pointage')
-        df_pts_champ = df_pts[df_pts['champ_nom'].astype(str).str.strip().str.lower() == str(champ_selectionne).strip().lower()] if not df_pts.empty and 'champ_nom' in df_pts.columns else pd.DataFrame()
-        
-        if not df_pts_champ.empty and 'id' in df_pts_champ.columns:
-            for _, pt in df_pts_champ.iterrows():
-                cp1, cp2 = st.columns([4, 1])
-                cp1.write(f"📅 {pt.get('date','')} | Groupe: **{pt.get('groupe_nom', 'N/A')}** | Membre: **{pt.get('employe_nom','')}** — Tâche : {pt.get('tache_effectuee','')} ({pt.get('heures_travaillees','')}h)")
-                if cp2.button("🗑️ Supprimer", key=f"del_pt_{pt['id']}"):
-                    execute_query("DELETE", "pointage", match_col="id", match_val=pt['id'], action_desc="Suppression d'un pointage", user_info=tech)
-                    st.success("Pointage supprimé !")
-                    st.rerun()
-        else:
-            st.info("Aucun pointage enregistré spécifiquement pour cette parcelle.")
+        remark = st.text_area("Observation")
+        submit = st.form_submit_button("💾 Enregistrer le temps", type="primary", use_container_width=True)
+
+        if submit:
+            start_dt = datetime.combine(work_date, start)
+            end_dt = datetime.combine(work_date, end)
+            if end_dt <= start_dt:
+                end_dt += timedelta(days=1)
+            minutes = max(0, int((end_dt-start_dt).total_seconds()/60) - int(pause))
+            hours = round(minutes/60,2)
+            payload = {
+                "date": str(work_date),
+                "employe_nom": employee,
+                "champ_id": champ_id,
+                "champ_nom": champ_name,
+                "heure_arrivee": start.strftime("%H:%M"),
+                "heure_depart": end.strftime("%H:%M"),
+                "pause_minutes": pause,
+                "heures_travaillees": hours,
+                "tache_effectuee": task.strip(),
+                "remarque": remark.strip(),
+                "statut_presence": "Présent",
+            }
+            inserted = db_insert(
+                "time_entries", payload,
+                f"Pointage {employee} — {hours} h — {champ_name}"
+            )
+            if inserted:
+                st.success(f"{hours:.2f} h enregistrées.")
+                st.rerun()
+
+    df_time = load_table("time_entries")
+    if not df_time.empty:
+        if champ_id is not None and "champ_id" in df_time.columns:
+            df_time = filter_by_champ(df_time, champ_id)
+        st.subheader("Historique")
+        st.dataframe(
+            df_time[
+                [c for c in [
+                    "date","employe_nom","heure_arrivee","heure_depart",
+                    "pause_minutes","heures_travaillees","tache_effectuee","remarque"
+                ] if c in df_time.columns]
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+# ============================================================
+# 17. PLANNING & TRAVAUX
+# ============================================================
 
 elif menu == "📅 Planning & Travaux":
-    st.title(f"📅 Planning & Travaux — {champ_selectionne}")
-    if champ_id_actif:
-        with st.form("form_plan"):
-            t_trav = st.selectbox("Type de travaux", ["Labour", "Semis", "Désherbage", "Fertilisation", "Récolte"])
-            d_tache = st.date_input("Date prévue", value=date.today())
-            hrs = st.number_input("Heures prévues", value=8.0)
-            if st.form_submit_button("💾 Planifier", use_container_width=True):
-                execute_query("INSERT", "taches", data={"champ_id": champ_id_actif, "groupe_id": 1, "type_travail": t_trav, "date_tache": str(d_tache), "heures_travaillees": hrs, "statut": "Planifié"}, action_desc=f"Planification '{t_trav}'", user_info=tech)
-                st.success("✅ Planifié !")
+    st.title(f"📅 Planning & Travaux — {champ_name}")
+    if champ_id is None:
+        st.warning("Sélectionnez une parcelle.")
+    else:
+        with st.form("task_form"):
+            c1,c2,c3 = st.columns(3)
+            with c1:
+                task_type = st.selectbox(
+                    "Travail", [
+                        "Préparation sol","Labour","Semis","Désherbage",
+                        "Fertilisation","Traitement","Irrigation",
+                        "Entretien","Récolte","Autre"
+                    ]
+                )
+                planned = st.date_input("Date prévue", value=date.today())
+            with c2:
+                priority = st.selectbox("Priorité", ["Normale","Haute","Urgente"])
+                duration = st.number_input("Durée prévue (h)", min_value=0.0, value=8.0)
+            with c3:
+                status = st.selectbox("Statut", ["Planifié","En cours","Terminé","Reporté","Annulé"])
+                responsible = st.text_input("Responsable / équipe")
+            note = st.text_area("Consignes techniques")
+            if st.form_submit_button("💾 Planifier", type="primary", use_container_width=True):
+                db_insert(
+                    "taches",
+                    {
+                        "champ_id": champ_id,
+                        "type_travail": task_type,
+                        "date_tache": str(planned),
+                        "heures_travaillees": duration,
+                        "statut": status,
+                        "priorite": priority,
+                        "responsable": responsible.strip(),
+                        "consigne": note.strip(),
+                    },
+                    f"Planification {task_type} sur {champ_name}",
+                )
+                st.success("Travail planifié.")
                 st.rerun()
-        
-        df_t = load_table('taches')
-        df_t_champ = df_t[df_t['champ_id'] == champ_id_actif] if not df_t.empty and 'champ_id' in df_t.columns else pd.DataFrame()
-        st.markdown("---")
-        st.subheader("Liste des tâches planifiées")
-        if not df_t_champ.empty and 'id' in df_t_champ.columns:
-            for _, tc in df_t_champ.iterrows():
-                ct1, ct2 = st.columns([4, 1])
-                ct1.write(f"📌 **{tc.get('type_travail','')}** (Prévu le : {tc.get('date_tache','')} — {tc.get('heures_travaillees','')}h)")
-                if ct2.button("🗑️", key=f"del_tc_{tc['id']}"):
-                    execute_query("DELETE", "taches", match_col="id", match_val=tc['id'], action_desc=f"Suppression tâche '{tc.get('type_travail','')}'", user_info=tech)
-                    st.success("Tâche supprimée !")
-                    st.rerun()
-        else:
-            st.info("Aucune tâche planifiée.")
+
+        df = filter_by_champ(load_table("taches"), champ_id)
+        if not df.empty:
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+# ============================================================
+# 18. RÉCOLTES
+# ============================================================
 
 elif menu == "🌾 Récoltes & Rendements":
-    st.title(f"🌾 Récoltes & Rendements — {champ_selectionne}")
-    if champ_id_actif:
-        with st.form("form_rec"):
-            cult = st.text_input("Culture")
-            qte = st.number_input("Quantité (Kg)", min_value=0.0)
-            pu = st.number_input("Prix unitaire (FCFA)", min_value=0.0, value=300.0)
-            if st.form_submit_button("Enregistrer Récolte", use_container_width=True):
-                execute_query("INSERT", "recoltes", data={"champ_id": champ_id_actif, "culture": cult, "date_recolte": str(date.today()), "quantite_kg": qte, "prix_unitaire": pu}, action_desc=f"Récolte '{cult}' ({qte} Kg)", user_info=tech)
-                st.success("✅ Enregistré !")
-                st.rerun()
-        
-        df_r = load_table('recoltes')
-        df_r_champ = df_r[df_r['champ_id'] == champ_id_actif] if not df_r.empty and 'champ_id' in df_r.columns else pd.DataFrame()
-        st.markdown("---")
-        st.subheader("Historique des récoltes")
-        if not df_r_champ.empty and 'id' in df_r_champ.columns:
-            for _, rc in df_r_champ.iterrows():
-                cr1, cr2 = st.columns([4, 1])
-                cr1.write(f"🌾 **{rc.get('culture','')}** : {rc.get('quantite_kg','')} Kg à {rc.get('prix_unitaire','')} FCFA/Kg ({rc.get('date_recolte','')})")
-                if cr2.button("🗑️", key=f"del_rc_{rc['id']}"):
-                    execute_query("DELETE", "recoltes", match_col="id", match_val=rc['id'], action_desc="Suppression d'une récolte", user_info=tech)
-                    st.success("Récolte supprimée !")
-                    st.rerun()
-        else:
-            st.info("Aucune récolte enregistrée.")
-
-elif menu == "💰 Finances & Marges":
-    st.title(f"💰 Finances & Marges — {champ_selectionne} (Espace Gestionnaire)")
-    if champ_id_actif:
-        with st.form("form_fin"):
-            motif = st.text_input("Motif de la dépense (ex: Achat Engrais)")
-            mnt = st.number_input("Montant (FCFA)", min_value=0.0)
-            piece_fin = st.file_uploader(
-                "📷 Photo / facture / reçu justificatif",
-                type=["png", "jpg", "jpeg", "webp", "pdf"],
-                key="piece_finance"
-            )
-            st.caption("Ajoutez une photo ou un scan pour justifier l'achat ou la dépense.")
-            if st.form_submit_button("Enregistrer Dépense", use_container_width=True):
-                if motif.strip():
-                    fichier_path, nom_fichier = save_uploaded_evidence(
-                        piece_fin, f"depense_champ_{champ_id_actif}"
-                    )
-                    data_dep = {
-                        "champ_id": champ_id_actif,
-                        "type": motif.strip(),
-                        "montant": mnt,
-                        "date": str(date.today()),
-                        "facture_nom": nom_fichier or "Aucune",
-                        # Compatibilité si ces colonnes ont déjà été ajoutées à Supabase.
-                        "piece_jointe_path": fichier_path,
-                        "photo_justificative": nom_fichier or "",
-                    }
-                    optional_insert(
-                        "depenses", data_dep,
-                        optional_keys=["piece_jointe_path", "photo_justificative"],
-                        action_desc=f"Dépense '{motif}' ({mnt} FCFA)",
-                        user_info=tech
-                    )
-                    st.success("✅ Dépense enregistrée avec justificatif si fourni !")
-                    st.rerun()
-                else:
-                    st.warning("⚠️ Indiquez le motif de la dépense.")
-
-        df_d = load_table('depenses')
-        df_d_champ = df_d[df_d['champ_id'] == champ_id_actif] if not df_d.empty and 'champ_id' in df_d.columns else pd.DataFrame()
-        st.markdown("---")
-        st.subheader("Liste des dépenses et justificatifs")
-        if not df_d_champ.empty and 'id' in df_d_champ.columns:
-            for _, dp in df_d_champ.iterrows():
-                cd1, cd2 = st.columns([4, 1])
-                justificatif = dp.get("piece_jointe_path", "")
-                if not justificatif:
-                    justificatif = dp.get("facture_nom", "")
-                cd1.write(
-                    f"💸 **{dp.get('type','')}** : {dp.get('montant','')} FCFA "
-                    f"({dp.get('date','')}) — Justificatif : {dp.get('facture_nom','Aucun')}"
+    st.title(f"🌾 Récoltes & Rendements — {champ_name}")
+    if champ_id is not None:
+        with st.form("harvest_form"):
+            c1,c2,c3 = st.columns(3)
+            with c1:
+                culture = st.text_input("Culture", value=str(champ_row.get("culture_actuelle","")))
+                harvest_date = st.date_input("Date", value=date.today())
+            with c2:
+                quantity = st.number_input("Quantité récoltée (kg)", min_value=0.0)
+                quality = st.selectbox("Qualité", ["Non renseignée","Bonne","Moyenne","À trier"])
+            with c3:
+                price = st.number_input("Prix unitaire (FCFA/kg)", min_value=0.0)
+                lot = st.text_input("Lot associé (optionnel)")
+            remark = st.text_area("Observation")
+            if st.form_submit_button("💾 Enregistrer la récolte", type="primary", use_container_width=True):
+                db_insert(
+                    "recoltes",
+                    {
+                        "champ_id": champ_id,
+                        "culture": culture.strip(),
+                        "date_recolte": str(harvest_date),
+                        "quantite_kg": quantity,
+                        "prix_unitaire": price,
+                        "qualite": quality,
+                        "lot_code": lot.strip(),
+                        "remarque": remark.strip(),
+                    },
+                    f"Récolte {culture} — {quantity} kg — {champ_name}",
                 )
-                if justificatif and isinstance(justificatif, str) and os.path.exists(justificatif):
-                    if justificatif.lower().endswith((".png",".jpg",".jpeg",".webp")):
-                        cd1.image(justificatif, width=220)
-                    else:
-                        with open(justificatif, "rb") as f:
-                            cd1.download_button(
-                                "📎 Télécharger le justificatif", f,
-                                file_name=os.path.basename(justificatif),
-                                key=f"dl_dep_piece_{dp['id']}"
-                            )
-                if cd2.button("🗑️ Supprimer", key=f"del_dp_{dp['id']}"):
-                    execute_query("DELETE", "depenses", match_col="id", match_val=dp['id'], action_desc=f"Suppression dépense '{dp.get('type','')}'", user_info=tech)
-                    st.success("Dépense supprimée !")
-                    st.rerun()
-        else:
-            st.info("Aucune dépense enregistrée.")
-
-elif menu == "📦 Stocks d'Intrants":
-    st.title("📦 Stocks d'Intrants (Espace Gestionnaire)")
-    with st.form("form_int"):
-        nom_i = st.text_input("Nom de l'intrant")
-        cat_i = st.selectbox("Catégorie", ["Engrais", "Semence", "Pesticide", "Carburant"])
-        qte_achat_i = st.number_input("🛒 Quantité achetée", min_value=0.0, value=0.0)
-        stk = st.number_input("Stock actuel", min_value=0.0)
-        unite = st.text_input("Unité (Sacs, Litres, Kg)")
-        prix_achat_i = st.number_input("Prix d'achat unitaire (FCFA)", min_value=0.0, value=0.0)
-        fournisseur_i = st.text_input("Fournisseur")
-        piece_i = st.file_uploader(
-            "📷 Photo / facture / reçu de l'achat",
-            type=["png", "jpg", "jpeg", "webp", "pdf"],
-            key="piece_intrant"
-        )
-        st.caption("La quantité achetée est conservée séparément du stock actuel.")
-        if st.form_submit_button("Ajouter l'intrant / achat", use_container_width=True):
-            if nom_i.strip():
-                fichier_path, nom_fichier = save_uploaded_evidence(
-                    piece_i, f"intrant_achat_{nom_i.strip().replace(' ','_')}"
-                )
-                data_int = {
-                    "nom": nom_i.strip(),
-                    "categorie": cat_i,
-                    "stock_actuel": stk,
-                    "unite": unite.strip(),
-                    "seuil_alerte": 2.0,
-                    "facture_nom": nom_fichier or "Aucune",
-                    "quantite_achetee": qte_achat_i,
-                    "prix_achat_unitaire": prix_achat_i,
-                    "fournisseur": fournisseur_i.strip(),
-                    "piece_jointe_path": fichier_path,
-                    "photo_justificative": nom_fichier or "",
-                    "date_achat": str(date.today()),
-                }
-                optional_insert(
-                    "intrants", data_int,
-                    optional_keys=[
-                        "quantite_achetee", "prix_achat_unitaire", "fournisseur",
-                        "piece_jointe_path", "photo_justificative", "date_achat"
-                    ],
-                    action_desc=f"Ajout intrant '{nom_i}' — quantité achetée {qte_achat_i}",
-                    user_info=tech
-                )
-                st.success("✅ Achat/intrant enregistré avec quantité et justificatif si fourni !")
+                st.success("Récolte enregistrée.")
                 st.rerun()
-            else:
-                st.warning("⚠️ Indiquez le nom de l'intrant.")
 
-    df_i = load_table('intrants')
-    st.markdown("---")
-    st.subheader("Liste des stocks et achats")
-    if not df_i.empty and 'id' in df_i.columns:
-        for _, in_t in df_i.iterrows():
-            ci1, ci2 = st.columns([4, 1])
-            ci1.write(
-                f"📦 **{in_t.get('nom','')}** ({in_t.get('categorie','')}) — "
-                f"Stock : {in_t.get('stock_actuel','')} {in_t.get('unite','')} — "
-                f"Quantité achetée : {in_t.get('quantite_achetee','Non renseignée')} "
-                f"{in_t.get('unite','')}"
-            )
-            if in_t.get("fournisseur"):
-                ci1.caption(f"Fournisseur : {in_t.get('fournisseur')} | Prix achat unitaire : {in_t.get('prix_achat_unitaire','')}")
-            piece = in_t.get("piece_jointe_path", "")
-            if not piece:
-                piece = in_t.get("facture_nom", "")
-            if piece and isinstance(piece, str) and os.path.exists(piece):
-                if piece.lower().endswith((".png",".jpg",".jpeg",".webp")):
-                    ci1.image(piece, width=220)
-                else:
-                    with open(piece, "rb") as f:
-                        ci1.download_button(
-                            "📎 Télécharger le justificatif", f,
-                            file_name=os.path.basename(piece),
-                            key=f"dl_int_piece_{in_t['id']}"
-                        )
-            if ci2.button("🗑️", key=f"del_in_{in_t['id']}"):
-                execute_query("DELETE", "intrants", match_col="id", match_val=in_t['id'], action_desc=f"Suppression intrant '{in_t.get('nom','')}'", user_info=tech)
-                st.success("Intrant supprimé !")
-                st.rerun()
-    else:
-        st.info("Aucun intrant en stock.")
+        df = filter_by_champ(load_table("recoltes"), champ_id)
+        if not df.empty:
+            qty = safe_num(df, "quantite_kg")
+            val = float((
+                pd.to_numeric(df.get("quantite_kg",pd.Series(dtype=float)),errors="coerce").fillna(0)
+                * pd.to_numeric(df.get("prix_unitaire",pd.Series(dtype=float)),errors="coerce").fillna(0)
+            ).sum())
+            a,b = st.columns(2)
+            a.metric("Quantité cumulée", f"{qty:,.2f} kg")
+            b.metric("Valeur estimative", f"{val:,.0f} FCFA")
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+# ============================================================
+# 19. PLUVIOMÉTRIE
+# ============================================================
 
 elif menu == "🌧️ Pluviométrie":
-    st.title(f"🌧️ Pluviométrie — {champ_selectionne}")
-    if champ_id_actif:
-        with st.form("form_plu"):
-            mm = st.number_input("Hauteur de pluie (mm)", min_value=0.0)
-            if st.form_submit_button("Enregistrer", use_container_width=True):
-                execute_query("INSERT", "pluviometrie", data={"champ_id": champ_id_actif, "date": str(date.today()), "pluie_mm": mm}, action_desc=f"Pluviométrie {mm} mm", user_info=tech)
-                st.success("✅ Enregistré !")
+    st.title(f"🌧️ Pluviométrie — {champ_name}")
+    if champ_id is not None:
+        with st.form("rain_form"):
+            d = st.date_input("Date", value=date.today())
+            mm = st.number_input("Pluie (mm)", min_value=0.0)
+            method = st.text_input("Méthode / station / source")
+            remark = st.text_area("Observation")
+            if st.form_submit_button("💾 Enregistrer", type="primary", use_container_width=True):
+                db_insert(
+                    "pluviometrie",
+                    {
+                        "champ_id": champ_id,
+                        "date": str(d),
+                        "pluie_mm": mm,
+                        "source": method.strip(),
+                        "remarque": remark.strip(),
+                    },
+                    f"Pluie {mm} mm — {champ_name}",
+                )
+                st.success("Relevé enregistré.")
                 st.rerun()
-                
-        df_plu = load_table('pluviometrie')
-        df_plu_champ = df_plu[df_plu['champ_id'] == champ_id_actif] if not df_plu.empty and 'champ_id' in df_plu.columns else pd.DataFrame()
-        st.markdown("---")
-        st.subheader("Historique des relevés pluviométriques")
-        if not df_plu_champ.empty and 'id' in df_plu_champ.columns:
-            for _, plu in df_plu_champ.iterrows():
-                cpl1, cpl2 = st.columns([4, 1])
-                cpl1.write(f"🌧️ Date : {plu.get('date','')} — **{plu.get('pluie_mm','')} mm**")
-                if cpl2.button("🗑️", key=f"del_plu_{plu['id']}"):
-                    execute_query("DELETE", "pluviometrie", match_col="id", match_val=plu['id'], action_desc="Suppression relevé pluviométrique", user_info=tech)
-                    st.success("Relevé supprimé !")
-                    st.rerun()
-        else:
-            st.info("Aucun relevé pluviométrique.")
+        df = filter_by_champ(load_table("pluviometrie"), champ_id)
+        if not df.empty:
+            st.metric("Pluie cumulée enregistrée", f"{safe_num(df,'pluie_mm'):.1f} mm")
+            st.dataframe(df, use_container_width=True, hide_index=True)
 
-elif menu == "⚠️ Incidents":
-    st.title(f"⚠️ Incidents — {champ_selectionne}")
-    if champ_id_actif:
-        with st.form("form_inc"):
-            desc = st.text_area("Description de l'incident")
-            grav = st.selectbox("Gravité", ["Faible", "Modéré", "Critique"])
-            action_inc = st.text_area("Action / recommandation technique immédiate")
-            photo_inc = st.file_uploader(
-                "📷 Photo obligatoire si l'incident doit être visuellement justifié",
-                type=["png", "jpg", "jpeg", "webp"],
-                key="photo_incident"
-            )
-            if st.form_submit_button("Déclarer l'incident", use_container_width=True):
-                if desc.strip():
-                    fichier_path, nom_fichier = save_uploaded_evidence(
-                        photo_inc, f"incident_champ_{champ_id_actif}"
-                    )
-                    data_inc = {
-                        "champ_id": champ_id_actif,
-                        "date": str(date.today()),
-                        "description": desc.strip(),
-                        "gravite": grav,
-                        "action": action_inc.strip() or "En attente",
-                        "photo_path": fichier_path,
-                        "photo_nom": nom_fichier or "",
-                    }
-                    optional_insert(
-                        "incidents", data_inc,
-                        optional_keys=["photo_path", "photo_nom"],
-                        action_desc=f"Incident ({grav})",
-                        user_info=tech
-                    )
-                    st.success("✅ Incident déclaré avec preuve photo si fournie !")
-                    st.rerun()
-                else:
-                    st.warning("⚠️ Décrivez l'incident avant de valider.")
 
-        df_inc = load_table('incidents')
-        df_inc_champ = df_inc[df_inc['champ_id'] == champ_id_actif] if not df_inc.empty and 'champ_id' in df_inc.columns else pd.DataFrame()
-        st.markdown("---")
-        st.subheader("Liste des incidents déclarés")
-        if not df_inc_champ.empty and 'id' in df_inc_champ.columns:
-            for _, inc in df_inc_champ.iterrows():
-                cin1, cin2 = st.columns([4, 1])
-                cin1.write(
-                    f"⚠️ [{inc.get('gravite','')}] {inc.get('date','')} : "
-                    f"{inc.get('description','')} — Action : {inc.get('action','')}"
-                )
-                photo = inc.get("photo_path", "")
-                if photo and isinstance(photo, str) and os.path.exists(photo):
-                    cin1.image(photo, caption=inc.get("photo_nom", "Preuve photo"), width=320)
-                if cin2.button("🗑️", key=f"del_inc_{inc['id']}"):
-                    execute_query("DELETE", "incidents", match_col="id", match_val=inc['id'], action_desc="Suppression incident", user_info=tech)
-                    st.success("Incident supprimé !")
-                    st.rerun()
-        else:
-            st.info("Aucun incident déclaré.")
-
-elif menu == "🚜 Maintenance Matériel":
-    st.title("🚜 Maintenance Matériel (Espace Gestionnaire)")
-    with st.form("form_mat"):
-        nom_eq = st.text_input("Nom de l'équipement")
-        cat_eq = st.selectbox("Catégorie", ["Tracteur", "Motopompe", "Semoir", "Pulvérisateur"])
-        stat_m = st.selectbox("Statut", ["Opérationnel", "En panne", "En révision"])
-        d_rev = st.date_input("Dernière révision", value=date.today())
-        p_rev = st.date_input("Prochaine révision", value=date.today())
-        photo_mat = st.file_uploader(
-            "📷 Photo de l'équipement / justificatif de maintenance",
-            type=["png", "jpg", "jpeg", "webp", "pdf"],
-            key="piece_materiel"
-        )
-        if st.form_submit_button("Ajouter le Matériel", use_container_width=True):
-            if nom_eq.strip():
-                fichier_path, nom_fichier = save_uploaded_evidence(
-                    photo_mat, f"materiel_{nom_eq.strip().replace(' ','_')}"
-                )
-                data_mat = {
-                    "nom_equipement": nom_eq.strip(),
-                    "categorie": cat_eq,
-                    "statut_marche": stat_m,
-                    "date_derniere_revision": str(d_rev),
-                    "prochaine_revision": str(p_rev),
-                    "photo_path": fichier_path,
-                    "photo_nom": nom_fichier or "",
-                }
-                optional_insert(
-                    "materiel", data_mat,
-                    optional_keys=["photo_path", "photo_nom"],
-                    action_desc=f"Ajout matériel '{nom_eq}'",
-                    user_info=tech
-                )
-                st.success("✅ Matériel ajouté avec justificatif si fourni !")
-                st.rerun()
-            else:
-                st.warning("⚠️ Indiquez le nom de l'équipement.")
-
-    df_mat = load_table('materiel')
-    st.markdown("---")
-    st.subheader("Parc matériel")
-    if not df_mat.empty and 'id' in df_mat.columns:
-        for _, mat in df_mat.iterrows():
-            cmat1, cmat2 = st.columns([4, 1])
-            cmat1.write(
-                f"🚜 **{mat.get('nom_equipement','')}** ({mat.get('categorie','')}) — "
-                f"Statut : {mat.get('statut_marche','')}"
-            )
-            photo = mat.get("photo_path", "")
-            if photo and isinstance(photo, str) and os.path.exists(photo):
-                if photo.lower().endswith((".png",".jpg",".jpeg",".webp")):
-                    cmat1.image(photo, width=260)
-                else:
-                    with open(photo, "rb") as f:
-                        cmat1.download_button(
-                            "📎 Télécharger le justificatif", f,
-                            file_name=os.path.basename(photo),
-                            key=f"dl_mat_piece_{mat['id']}"
-                        )
-            if cmat2.button("🗑️", key=f"del_mat_{mat['id']}"):
-                execute_query("DELETE", "materiel", match_col="id", match_val=mat['id'], action_desc=f"Suppression matériel '{mat.get('nom_equipement','')}'", user_info=tech)
-                st.success("Matériel supprimé !")
-                st.rerun()
-    else:
-        st.info("Aucun matériel enregistré.")
-
-elif menu == "🏷️ Traçabilité & Lots":
-    st.title(f"🏷️ Traçabilité & Lots — {champ_selectionne}")
-    if champ_id_actif:
-        with st.form("form_trac"):
-            lot = st.text_input("Code du lot", placeholder="Ex: LOT-TOMATE-2026-01")
-            cult_tr = st.text_input("Culture associée")
-            norme = st.text_input("Norme de certification (ex: GlobalGAP)")
-            acheteur = st.text_input("Acheteur / Destination")
-            qte_lot = st.number_input("🛒 Quantité achetée / entrée dans le lot", min_value=0.0, value=0.0)
-            unite_lot = st.text_input("Unité de quantité (Kg, sacs, caisses, L...)")
-            prix_lot = st.number_input("Prix d'achat unitaire (FCFA)", min_value=0.0, value=0.0)
-            fournisseur_lot = st.text_input("Fournisseur / origine")
-            preuve_lot = st.file_uploader(
-                "📷 Photo / document justificatif du lot",
-                type=["png", "jpg", "jpeg", "webp", "pdf"],
-                key="piece_lot"
-            )
-            st.caption("La quantité achetée/entrée est enregistrée dans le lot et reprise dans le rapport PDF.")
-            if st.form_submit_button("Enregistrer le Lot", use_container_width=True):
-                if lot.strip():
-                    fichier_path, nom_fichier = save_uploaded_evidence(
-                        preuve_lot, f"lot_champ_{champ_id_actif}_{lot.strip().replace(' ','_')}"
-                    )
-                    data_lot = {
-                        "champ_id": champ_id_actif,
-                        "lot_code": lot.strip(),
-                        "culture": cult_tr,
-                        "date_recolte": str(date.today()),
-                        "norme_certification": norme,
-                        "acheteur": acheteur,
-                        "quantite_achetee": qte_lot,
-                        "unite_quantite": unite_lot.strip(),
-                        "prix_achat_unitaire": prix_lot,
-                        "fournisseur": fournisseur_lot.strip(),
-                        "piece_jointe_path": fichier_path,
-                        "piece_jointe_nom": nom_fichier or "",
-                    }
-                    optional_insert(
-                        "tracabilite", data_lot,
-                        optional_keys=[
-                            "quantite_achetee", "unite_quantite", "prix_achat_unitaire",
-                            "fournisseur", "piece_jointe_path", "piece_jointe_nom"
-                        ],
-                        action_desc=f"Lot '{lot}' — quantité {qte_lot} {unite_lot}",
-                        user_info=tech
-                    )
-                    st.success("✅ Lot enregistré avec quantité achetée et justificatif si fourni !")
-                    st.rerun()
-                else:
-                    st.warning("⚠️ Indiquez le code du lot.")
-
-        df_trac = load_table('tracabilite')
-        df_trac_champ = df_trac[df_trac['champ_id'] == champ_id_actif] if not df_trac.empty and 'champ_id' in df_trac.columns else pd.DataFrame()
-        st.markdown("---")
-        st.subheader("Lots enregistrés")
-        if not df_trac_champ.empty and 'id' in df_trac_champ.columns:
-            for _, tr in df_trac_champ.iterrows():
-                ctr1, ctr2 = st.columns([4, 1])
-                ctr1.write(
-                    f"🏷️ **{tr.get('lot_code','')}** ({tr.get('culture','')}) — "
-                    f"Acheteur : {tr.get('acheteur','')} — "
-                    f"Quantité achetée : {tr.get('quantite_achetee','Non renseignée')} "
-                    f"{tr.get('unite_quantite','')}"
-                )
-                piece = tr.get("piece_jointe_path", "")
-                if piece and isinstance(piece, str) and os.path.exists(piece):
-                    if piece.lower().endswith((".png",".jpg",".jpeg",".webp")):
-                        ctr1.image(piece, width=280)
-                    else:
-                        with open(piece, "rb") as f:
-                            ctr1.download_button(
-                                "📎 Télécharger le justificatif du lot", f,
-                                file_name=os.path.basename(piece),
-                                key=f"dl_lot_piece_{tr['id']}"
-                            )
-                if ctr2.button("🗑️", key=f"del_tr_{tr['id']}"):
-                    execute_query("DELETE", "tracabilite", match_col="id", match_val=tr['id'], action_desc=f"Suppression lot '{tr.get('lot_code','')}'", user_info=tech)
-                    st.success("Lot supprimé !")
-                    st.rerun()
-        else:
-            st.info("Aucun lot enregistré.")
+# ============================================================
+# 20. IRRIGATION
+# ============================================================
 
 elif menu == "💧 Irrigation & Eau":
-    st.title(f"💧 Irrigation & Eau — {champ_selectionne}")
-    if champ_id_actif:
-        with st.form("form_irrig"):
-            vol_eau = st.number_input("Volume d'eau (m3)", min_value=0.0, value=50.0)
-            methode = st.selectbox("Méthode d'irrigation", ["Goutte-à-goutte", "Aspersion", "Gravitaire"])
-            duree = st.number_input("Durée (heures)", min_value=0.1, value=2.0)
-            if st.form_submit_button("Enregistrer", use_container_width=True):
-                execute_query("INSERT", "irrigation", data={"champ_id": champ_id_actif, "date": str(date.today()), "volume_eau_m3": vol_eau, "methode": methode, "duree_heures": duree}, action_desc=f"Irrigation {vol_eau}m3", user_info=tech)
-                st.success("✅ Enregistré !")
+    st.title(f"💧 Irrigation & Eau — {champ_name}")
+    if champ_id is not None:
+        with st.form("irrigation_form"):
+            c1,c2,c3 = st.columns(3)
+            with c1:
+                d = st.date_input("Date", value=date.today())
+                volume = st.number_input("Volume d'eau (m³)", min_value=0.0)
+            with c2:
+                method = st.selectbox("Méthode", ["Goutte-à-goutte","Aspersion","Gravitaire","Autre"])
+                duration = st.number_input("Durée (heures)", min_value=0.0)
+            with c3:
+                source = st.text_input("Source d'eau")
+                operator = st.text_input("Opérateur")
+            remark = st.text_area("Observation")
+            if st.form_submit_button("💾 Enregistrer", type="primary", use_container_width=True):
+                db_insert(
+                    "irrigation",
+                    {
+                        "champ_id": champ_id,
+                        "date": str(d),
+                        "volume_eau_m3": volume,
+                        "methode": method,
+                        "duree_heures": duration,
+                        "source_eau": source.strip(),
+                        "operateur": operator.strip(),
+                        "remarque": remark.strip(),
+                    },
+                    f"Irrigation {volume} m³ — {champ_name}",
+                )
+                st.success("Irrigation enregistrée.")
                 st.rerun()
-                
-        df_irrig = load_table('irrigation')
-        df_irrig_champ = df_irrig[df_irrig['champ_id'] == champ_id_actif] if not df_irrig.empty and 'champ_id' in df_irrig.columns else pd.DataFrame()
-        st.markdown("---")
-        st.subheader("Historique des irrigations")
-        if not df_irrig_champ.empty and 'id' in df_irrig_champ.columns:
-            for _, ir in df_irrig_champ.iterrows():
-                cir1, cir2 = st.columns([4, 1])
-                cir1.write(f"💧 {ir.get('date','')} — **{ir.get('volume_eau_m3','')} m³** ({ir.get('methode','')}, {ir.get('duree_heures','')}h)")
-                if cir2.button("🗑️", key=f"del_ir_{ir['id']}"):
-                    execute_query("DELETE", "irrigation", match_col="id", match_val=ir['id'], action_desc="Suppression irrigation", user_info=tech)
-                    st.success("Irrigation supprimée !")
+        df = filter_by_champ(load_table("irrigation"), champ_id)
+        if not df.empty:
+            st.metric("Eau cumulée", f"{safe_num(df,'volume_eau_m3'):,.1f} m³")
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+# ============================================================
+# 21. INCIDENTS & OBSERVATIONS + PHOTOS STORAGE
+# ============================================================
+
+elif menu == "⚠️ Incidents & Observations":
+    st.title(f"⚠️ Incidents & Observations — {champ_name}")
+    if champ_id is not None:
+        with st.form("incident_form"):
+            c1,c2 = st.columns(2)
+            with c1:
+                d = st.date_input("Date", value=date.today())
+                category = st.selectbox(
+                    "Catégorie",
+                    ["Maladie","Ravageur","Dégât climatique","Irrigation",
+                     "Matériel","Sécurité","Travail","Autre"]
+                )
+                severity = st.selectbox("Gravité", ["Faible","Modérée","Élevée","Critique"])
+            with c2:
+                status = st.selectbox("Statut", ["Ouvert","En analyse","Action engagée","Résolu"])
+                action = st.text_area("Action immédiate / recommandation")
+                photo = st.file_uploader(
+                    "📷 Photo d'évidence",
+                    type=["png","jpg","jpeg","webp"],
+                    key="incident_photo"
+                )
+            description = st.text_area("Description détaillée *")
+            if st.form_submit_button("🚨 Déclarer l'incident", type="primary", use_container_width=True):
+                if not description.strip():
+                    st.warning("Décrivez l'incident.")
+                else:
+                    # 1) créer le record pour obtenir l'id si disponible
+                    rec = db_insert(
+                        "incidents",
+                        {
+                            "champ_id": champ_id,
+                            "date": str(d),
+                            "categorie": category,
+                            "description": description.strip(),
+                            "gravite": severity,
+                            "statut": status,
+                            "action": action.strip(),
+                        },
+                        f"Incident {category} — {severity} — {champ_name}",
+                    )
+                    if rec and photo is not None:
+                        meta = storage_upload(photo, "incidents", rec.get("id", "new"))
+                        if meta:
+                            db_update(
+                                "incidents",
+                                "id", rec.get("id"),
+                                meta,
+                                f"Photo incident ajoutée — {champ_name}"
+                            )
+                    st.success("Incident enregistré avec l'évidence dans Supabase Storage.")
                     st.rerun()
-        else:
-            st.info("Aucune irrigation enregistrée.")
 
-elif menu == "🌤️ Risques & Météo":
-    st.title(f"🌤️ Risques & Météo — {champ_selectionne}")
-    if champ_id_actif:
-        with st.form("form_meteo"):
-            risque = st.selectbox("Type de risque", ["Sécheresse", "Inondation", "Vents violents", "Attaque parasitaire"])
-            niveau = st.selectbox("Niveau d'alerte", ["Faible", "Modéré", "Élevé", "Critique"])
-            reco = st.text_area("Recommandations techniques")
-            if st.form_submit_button("Enregistrer Alerte", use_container_width=True):
-                execute_query("INSERT", "alertes_meteo", data={"champ_id": champ_id_actif, "date": str(date.today()), "type_risque": risque, "niveau_alerte": niveau, "recommandation_ts": reco}, action_desc=f"Alerte '{risque}'", user_info=tech)
-                st.success("✅ Alerte enregistrée !")
-                st.rerun()
-                
-        df_meteo = load_table('alertes_meteo')
-        df_meteo_champ = df_meteo[df_meteo['champ_id'] == champ_id_actif] if not df_meteo.empty and 'champ_id' in df_meteo.columns else pd.DataFrame()
-        st.markdown("---")
-        st.subheader("Alertes météo enregistrées")
-        if not df_meteo_champ.empty and 'id' in df_meteo_champ.columns:
-            for _, alt in df_meteo_champ.iterrows():
-                cal1, cal2 = st.columns([4, 1])
-                cal1.write(f"🌤️ [{alt.get('niveau_alerte','')}] **{alt.get('type_risque','')}** ({alt.get('date','')}) — {alt.get('recommandation_ts','')}")
-                if cal2.button("🗑️", key=f"del_alt_{alt['id']}"):
-                    execute_query("DELETE", "alertes_meteo", match_col="id", match_val=alt['id'], action_desc="Suppression alerte météo", user_info=tech)
-                    st.success("Alerte supprimée !")
-                    st.rerun()
-        else:
-            st.info("Aucune alerte enregistrée.")
+        df = filter_by_champ(load_table("incidents"), champ_id)
+        if not df.empty:
+            for _, row in df.iloc[::-1].iterrows():
+                with st.container(border=True):
+                    st.markdown(
+                        f"**{row.get('date','')} · {row.get('categorie','')} · "
+                        f"{row.get('gravite','')} · {row.get('statut','')}**"
+                    )
+                    st.write(row.get("description",""))
+                    if nonempty(row.get("action","")):
+                        st.caption(f"Action : {row.get('action')}")
+                    render_attachment(row)
 
-elif menu == "📈 Rentabilité & ROI":
-    st.title(f"📈 Rentabilité & ROI — {champ_selectionne} (Espace Gestionnaire)")
-    if champ_id_actif:
-        df_d = load_table('depenses')
-        df_r = load_table('recoltes')
-        df_d_champ = df_d[df_d['champ_id'] == champ_id_actif] if not df_d.empty and 'champ_id' in df_d.columns else pd.DataFrame()
-        df_r_champ = df_r[df_r['champ_id'] == champ_id_actif] if not df_r.empty and 'champ_id' in df_r.columns else pd.DataFrame()
-        
-        total_dep = df_d_champ['montant'].sum() if not df_d_champ.empty and 'montant' in df_d_champ.columns else 0
-        total_rec = (df_r_champ['quantite_kg'] * df_r_champ['prix_unitaire']).sum() if not df_r_champ.empty and 'quantite_kg' in df_r_champ.columns and 'prix_unitaire' in df_r_champ.columns else 0
-        marge = total_rec - total_dep
-        
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Dépenses", f"{total_dep:,.0f} FCFA")
-        col2.metric("Ventes", f"{total_rec:,.0f} FCFA")
-        col3.metric("Marge Nette", f"{marge:,.0f} FCFA")
-    else:
-        st.warning("Sélectionnez une parcelle active.")
 
-elif menu == "💬 Espace Collaboration & Workspace":
-    st.title("💬 Espace Collaboration & Espace de Travail Multimédia")
-    
-    st.markdown("<div class='card-container'>", unsafe_allow_html=True)
-    st.subheader("📹 Réunions en Ligne & Liens Google Meet")
-    col_meet1, col_meet2 = st.columns(2)
-    with col_meet1:
-        st.link_button("🚀 Créer une nouvelle réunion Google Meet", "https://meet.google.com/new", use_container_width=True)
-    with col_meet2:
-        custom_meet_link = st.text_input("Ou coller/partager un lien Google Meet personnalisé :", placeholder="Ex: https://meet.google.com/abc-defg-hij")
-        if custom_meet_link.strip():
-            st.markdown(f"🔗 **Lien prêt à rejoindre :** [{custom_meet_link}]({custom_meet_link})")
-    st.markdown("</div>", unsafe_allow_html=True)
-    
-    st.divider()
-    
-    st.subheader("📁 Partager un rapport, une photo, une vidéo ou un document")
-    
-    df_users_wl = load_table('whitelist_users')
-    emails_disponibles = df_users_wl['email'].tolist() if not df_users_wl.empty and 'email' in df_users_wl.columns else []
-    
-    with st.form("form_workspace_media", clear_on_submit=False):
-        col_c1, col_c2, col_c3 = st.columns(3)
-        with col_c1:
-            destinataire = st.selectbox("Destinataire visé (Cible) :", ["Tous", "Techniciens", "Gestionnaires", "Propriétaires", "Utilisateur Spécifique"])
-        with col_c2:
-            priorite = st.selectbox("Priorité :", ["Normal", "Important ⚠️", "Urgent 🚨"])
-        with col_c3:
-            type_contenu = st.selectbox("Type de contenu :", ["Note textuelle", "Rapport PDF", "Photo 📷", "Vidéo 🎥", "Document 📄", "Lien Réunion 📹"])
-            
-        destinataire_email = ""
-        if destinataire == "Utilisateur Spécifique":
-            if emails_disponibles:
-                destinataire_email = st.selectbox("Sélectionner l'E-mail du Destinataire :", emails_disponibles)
-            else:
-                destinataire_email = st.text_input("Saisir l'E-mail du destinataire :", placeholder="destinataire@exemple.com")
-        
-# S'assure de charger ou d'utiliser le bon DataFrame (df_champs)
-        noms_champs_list = db_champs['nom'].values.tolist() if 'db_champs' in locals() and not db_champs.empty and 'nom' in db_champs.columns else []
-        champ_concerne = st.selectbox("Parcelle liée (Optionnel) :", ["Aucune"] + noms_champs_list)
-        texte_message = st.text_area("Légende / Message descriptif ou lien Google Meet collé :", placeholder="Ex: Rapport d'inspection ou collez le lien de la réunion ici...")
-        
-        uploaded_file = st.file_uploader("Joindre un fichier (Photos, Vidéos, Docs, Rapports)", type=["png", "jpg", "jpeg", "mp4", "pdf", "docx", "xlsx"])
-        
-        st.markdown("---")
-        st.markdown("### 🔍 Vérification & Confirmation avant envoi")
-        confirmer_envoi = st.checkbox("✅ Je confirme l'exactitude des informations et l'envoi/publication vers les destinataires sélectionnés.")
-        
-        submit_msg = st.form_submit_button("📤 Valider et Publier dans l'Espace", use_container_width=True, type="primary")
-        
-        if submit_msg:
-            if not confirmer_envoi:
-                st.warning("⚠️ Veuillez cocher la case de confirmation avant de valider l'envoi.")
-            else:
-                fichier_path = ""
-                nom_fichier = ""
-                if uploaded_file is not None:
-                    nom_fichier = uploaded_file.name
-                    fichier_path = os.path.join(UPLOAD_DIR, nom_fichier)
-                    with open(fichier_path, "wb") as f:
-                        f.write(uploaded_file.getbuffer())
-                
-                if texte_message.strip() or uploaded_file is not None:
-                    auteur_complet = f"{tech.get('prenom', '')} {tech.get('nom', '')}".strip()
-                    date_heure_actuelle = datetime.now().strftime("%d/%m/%Y à %H:%M")
-                    
-                    data_msg = {
-                        "auteur": auteur_complet,
-                        "email": email_connecte,
-                        "role": role_tech,
-                        "destinataire": destinataire,
-                        "destinataire_email": destinataire_email,
-                        "priorite": priorite,
-                        "texte": texte_message.strip(),
-                        "date_heure": date_heure_actuelle,
-                        "type_contenu": type_contenu,
-                        "fichier_path": fichier_path,
-                        "nom_fichier": nom_fichier,
-                        "champ_concerne": champ_concerne
-                    }
-                    execute_query("INSERT", "messages_workspace", data=data_msg, action_desc=f"Publication workspace ({type_contenu}) pour {destinataire}", user_info=tech)
-                    st.success(f"✅ Publication validée et partagée avec succès depuis l'e-mail **{email_connecte}** vers **{destinataire}** !")
+# ============================================================
+# 22. TRAÇABILITÉ
+# ============================================================
+
+elif menu == "🏷️ Traçabilité & Lots":
+    st.title(f"🏷️ Traçabilité & Lots — {champ_name}")
+    if champ_id is not None:
+        with st.form("lot_form"):
+            c1,c2 = st.columns(2)
+            with c1:
+                lot = st.text_input("Code du lot *")
+                culture = st.text_input("Culture")
+                standard = st.text_input("Norme / certification")
+                harvest_date = st.date_input("Date de production / récolte", value=date.today())
+            with c2:
+                buyer = st.text_input("Acheteur / destination")
+                supplier = st.text_input("Fournisseur / origine")
+                quantity = st.number_input("Quantité", min_value=0.0)
+                unit = st.text_input("Unité (kg, sac, caisse, L...)")
+            proof = st.file_uploader(
+                "📎 Preuve : certificat, étiquette, facture ou photo",
+                type=["png","jpg","jpeg","webp","pdf"],
+                key="lot_proof"
+            )
+            if st.form_submit_button("💾 Enregistrer le lot", type="primary", use_container_width=True):
+                if lot.strip():
+                    rec = db_insert(
+                        "tracabilite",
+                        {
+                            "champ_id": champ_id,
+                            "lot_code": lot.strip(),
+                            "culture": culture.strip(),
+                            "date_recolte": str(harvest_date),
+                            "norme_certification": standard.strip(),
+                            "acheteur": buyer.strip(),
+                            "fournisseur": supplier.strip(),
+                            "quantite_achetee": quantity,
+                            "unite_quantite": unit.strip(),
+                        },
+                        f"Lot {lot.strip()} — {champ_name}",
+                    )
+                    if rec and proof is not None:
+                        meta = storage_upload(proof, "tracabilite", rec.get("id","new"))
+                        if meta:
+                            db_update("tracabilite","id",rec.get("id"),meta,"Preuve lot ajoutée")
+                    st.success("Lot enregistré.")
                     st.rerun()
                 else:
-                    st.warning("⚠️ Veuillez saisir un message ou joindre un fichier.")
+                    st.warning("Le code du lot est obligatoire.")
 
-    st.divider()
-    st.subheader("📜 Fil d'actualité, Médias, Rapports & Consignes de l'Exploitation")
-    df_messages = load_table('messages_workspace')
-    if not df_messages.empty and 'id' in df_messages.columns:
-        for _, msg in df_messages.iloc[::-1].iterrows():
-            m_auteur = msg.get('auteur', 'Inconnu')
-            m_email = msg.get('email', 'Email non spécifié')
-            m_role = msg.get('role', 'Rôle')
-            m_dest = msg.get('destinataire', 'Tous')
-            m_dest_email = msg.get('destinataire_email', '')
-            m_priorite = msg.get('priorite', 'Normal')
-            m_texte = msg.get('texte', '')
-            m_date = msg.get('date_heure', '')
-            m_champ = msg.get('champ_concerne', 'Aucune')
-            m_id = msg.get('id', 0)
-            
-            dest_affichage = f"<b>{m_dest}</b>"
-            if m_dest_email and str(m_dest_email).strip() != "" and str(m_dest_email).strip() != "None":
-                dest_affichage += f" (E-mail destinataire : &lt;{m_dest_email}&gt;)"
-            
-            col_m1, col_m2 = st.columns([10, 1])
-            with col_m1:
-                st.markdown(f"""
-                    <div style="background: white; padding: 15px; border-radius: 10px; border-left: 4px solid #10b981; margin-bottom: 5px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
-                        <div style="display: flex; justify-content: space-between;">
-                            <small style="color: #6b7280;"><b>{m_auteur}</b> &lt;{m_email}&gt; ({m_role}) ➔ Cible : {dest_affichage} {f"| 📍 <i>{m_champ}</i>" if m_champ != 'Aucune' else ''}</small>
-                            <small style="color: #ef4444; font-weight: bold;">{m_priorite}</small>
-                        </div>
-                        <p style="margin: 10px 0; color: #1f2937; font-size: 14px;">{m_texte}</p>
-                """, unsafe_allow_html=True)
-                
-                f_path = msg.get('fichier_path', '')
-                f_name = msg.get('nom_fichier', '')
-                f_type = msg.get('type_contenu', '')
-                
-                if f_path and isinstance(f_path, str) and os.path.exists(f_path):
-                    if f_type == "Photo 📷" or f_name.lower().endswith(('.png', '.jpg', '.jpeg')):
-                        st.image(f_path, caption=f_name, width=400)
-                    elif f_type == "Vidéo 🎥" or f_name.lower().endswith(('.mp4', '.mov')):
-                        st.video(f_path)
-                    else:
-                        with open(f_path, "rb") as file_download:
-                            st.download_button(
-                                label=f"📥 Télécharger le fichier joint : {f_name}",
-                                data=file_download,
-                                file_name=f_name,
-                                key=f"dl_ws_{m_id}"
-                            )
-                
-                st.markdown(f"""
-                        <div style="text-align: right; margin-top: 5px;"><small style="color: #9ca3af; font-size: 11px;">{m_date}</small></div>
-                    </div>
-                """, unsafe_allow_html=True)
-            
-            with col_m2:
-                st.write("")
-                if st.button("🗑️", key=f"del_msg_{m_id}", help="Supprimer cette publication"):
-                    execute_query("DELETE", "messages_workspace", match_col="id", match_val=m_id, action_desc="Suppression publication workspace", user_info=tech)
-                    st.success("Publication supprimée !")
-                    st.rerun()
-    else:
-        st.info("Aucun contenu dans l'espace de travail.")
+        df = filter_by_champ(load_table("tracabilite"), champ_id)
+        if not df.empty:
+            st.dataframe(df, use_container_width=True, hide_index=True)
+            for _, row in df.iterrows():
+                render_attachment(row)
 
-elif menu == "📜 Historique des Modifications":
-    if not is_general_admin():
-        st.error("🔒 Accès réservé à l'administrateur général.")
-        st.session_state.selected_menu = accessibles[0] if accessibles else "📊 Tableau de Bord"
-        st.rerun()
-    st.title("📜 Historique des Modifications — Administration Générale")
-    st.caption("Cet espace est strictement réservé à l'administrateur général. Il n'est jamais inclus dans les rapports PDF YAM.")
-    if st.button("🔄 Actualiser l'historique", use_container_width=True):
-        synchroniser_donnees()
-        st.rerun()
-    df_h = load_table('historique_modifications')
-    if not df_h.empty:
-        # Les identifiants techniques restent éventuellement visibles ici car cet espace est interne à l'administration générale.
-        st.dataframe(df_h.iloc[::-1].reset_index(drop=True), use_container_width=True, hide_index=True)
-    else:
-        st.info("Aucune modification enregistrée ou table d'historique non encore alimentée.")
 
-elif menu == "🔐 Paramètres & Liste Blanche":
-    st.title("🔐 Paramètres, Liste Blanche & Synchronisation Supabase (Administration)")
-    
-    st.markdown("<div class='card-container'>", unsafe_allow_html=True)
-    st.subheader("☁️ Statut de la Connexion Supabase")
-    st.write("Votre application est connectée à votre base PostgreSQL Supabase. Les caches des modules sont invalidés après chaque écriture et une synchronisation manuelle est disponible.")
-    if st.button("🔄 SYNCHRONISER TOUS LES MODULES", use_container_width=True, type="primary"):
-        synchroniser_donnees()
-        st.success("✅ Données rechargées depuis Supabase pour tous les espaces.")
-        st.rerun()
-    st.caption(f"Dernière synchronisation : {st.session_state.get('last_sync', 'À l’ouverture')}")
-    st.markdown("</div>", unsafe_allow_html=True)
-    
-    st.markdown("<br>", unsafe_allow_html=True)
-    with st.form("form_add_user"):
-        st.subheader("Ajouter un nouvel utilisateur / rôle (Propriétaire, Gestionnaire, etc.)")
-        mail_new = st.text_input("E-mail professionnel")
-        pwd_new = st.text_input("Mot de passe", type="password")
-        prenom_new = st.text_input("Prénom")
-        nom_new = st.text_input("Nom")
-        role_new = st.selectbox("Rôle attribué", ["Administration", "Gestionnaire", "Propriétaire", "Technicien Supérieur", "Technicien", "Stagiaire"])
-        if st.form_submit_button("Enregistrer l'utilisateur", use_container_width=True):
-            if mail_new.strip():
-                data_usr = {
-                    "email": mail_new.strip().lower(),
-                    "password": pwd_new,
-                    "prenom": prenom_new,
-                    "nom": nom_new,
-                    "role": role_new,
-                    "modules_autorises": "TOUS"
-                }
-                execute_query("INSERT", "whitelist_users", data=data_usr, action_desc=f"Ajout utilisateur {mail_new}", user_info=tech)
-                st.success("✅ Utilisateur ajouté avec succès sur Supabase !")
+# ============================================================
+# 23. INTRANTS & STOCKS
+# ============================================================
+
+elif menu == "📦 Intrants & Stocks":
+    st.title("📦 Intrants & Stocks — gestion achats, consommation et seuils")
+    with st.form("stock_form"):
+        c1,c2,c3 = st.columns(3)
+        with c1:
+            name = st.text_input("Intrant *")
+            category = st.selectbox("Catégorie", ["Semence","Engrais","Phytosanitaire","Carburant","Autre"])
+            unit = st.text_input("Unité")
+        with c2:
+            purchased = st.number_input("Quantité achetée", min_value=0.0)
+            current = st.number_input("Stock actuel", min_value=0.0)
+            threshold = st.number_input("Seuil d'alerte", min_value=0.0)
+        with c3:
+            price = st.number_input("Prix unitaire (FCFA)", min_value=0.0)
+            supplier = st.text_input("Fournisseur")
+            purchase_date = st.date_input("Date d'achat", value=date.today())
+        proof = st.file_uploader(
+            "📷 Facture / bon / photo",
+            type=["png","jpg","jpeg","webp","pdf"],
+            key="stock_proof"
+        )
+        if st.form_submit_button("💾 Ajouter / réceptionner", type="primary", use_container_width=True):
+            if name.strip():
+                rec = db_insert(
+                    "intrants",
+                    {
+                        "nom": name.strip(),
+                        "categorie": category,
+                        "stock_actuel": current,
+                        "seuil_alerte": threshold,
+                        "unite": unit.strip(),
+                        "quantite_achetee": purchased,
+                        "prix_achat_unitaire": price,
+                        "fournisseur": supplier.strip(),
+                        "date_achat": str(purchase_date),
+                    },
+                    f"Intrant {name.strip()} — réception {purchased}",
+                )
+                if rec and proof is not None:
+                    meta = storage_upload(proof, "intrants", rec.get("id","new"))
+                    if meta:
+                        db_update("intrants","id",rec.get("id"),meta,"Justificatif intrant ajouté")
+                st.success("Stock enregistré.")
                 st.rerun()
-                
-    st.markdown("---")
-    st.info("🔐 Isolation parcellaire active : Administration voit toutes les parcelles ; chaque autre compte ne voit que les parcelles dont son e-mail est le créateur. La colonne `champs.createur_email` est obligatoire.")
-    st.subheader("Utilisateurs autorisés")
-    df_wl = load_table('whitelist_users')
-    if not df_wl.empty and 'id' in df_wl.columns:
-        for _, usr in df_wl.iterrows():
-            cu1, cu2 = st.columns([4, 1])
-            cu1.write(f"👤 **{usr.get('prenom','')} {usr.get('nom','')}** ({usr.get('email','')}) — Rôle : **{usr.get('role','')}**")
-            if str(usr.get('email','')).lower() != "iy@2012":
-                if cu2.button("🗑️ Supprimer", key=f"del_usr_{usr['id']}"):
-                    execute_query("DELETE", "whitelist_users", match_col="id", match_val=usr['id'], action_desc=f"Suppression utilisateur '{usr.get('email','')}'", user_info=tech)
-                    st.success("Utilisateur supprimé !")
-                    st.rerun()
-            else:
-                cu2.text("Admin Principal")
-    else:
-        st.info("Aucun utilisateur.")
 
-elif menu == "📑 EXPORT RAPPORT PARCELLE":
-    st.title(f"📑 Export Rapport A4 — {champ_selectionne} (Espace Technicien)")
-    date_exp = st.date_input("Date officielle du rapport", value=date.today())
-    if champ_selectionne and champ_selectionne != "Aucune parcelle" and require_champ_access(champ_id_actif):
-        pdf_bytes = export_parcelle_pdf(champ_selectionne, date_exp)
-        col_dl1, col_dl2 = st.columns(2)
-        with col_dl1:
-            st.markdown(f"""<div class="yam-download-zone"><div class="yam-download-title">📥 RAPPORT YAM — TÉLÉCHARGEMENT XXL</div><div class="yam-download-subtitle">Rapport complet de suivi • {champ_selectionne} • PDF A4 professionnel</div>""", unsafe_allow_html=True)
+    df = load_table("intrants")
+    if not df.empty:
+        for _, row in df.iterrows():
+            stock = float(pd.to_numeric(pd.Series([row.get("stock_actuel",0)]), errors="coerce").fillna(0).iloc[0])
+            threshold = float(pd.to_numeric(pd.Series([row.get("seuil_alerte",0)]), errors="coerce").fillna(0).iloc[0])
+            if threshold and stock <= threshold:
+                st.warning(f"⚠️ Stock bas : {row.get('nom','')} — {stock} {row.get('unite','')}")
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+# ============================================================
+# 24. MATÉRIEL & MAINTENANCE
+# ============================================================
+
+elif menu == "🚜 Matériel & Maintenance":
+    st.title("🚜 Matériel & Maintenance")
+    with st.form("equipment_form"):
+        c1,c2,c3 = st.columns(3)
+        with c1:
+            name = st.text_input("Équipement *")
+            category = st.selectbox("Catégorie", ["Tracteur","Motopompe","Semoir","Pulvérisateur","Véhicule","Autre"])
+        with c2:
+            status = st.selectbox("État", ["Opérationnel","En révision","En panne","Hors service"])
+            last = st.date_input("Dernière révision", value=date.today())
+        with c3:
+            next_rev = st.date_input("Prochaine révision", value=date.today())
+            meter = st.number_input("Compteur / heures machine", min_value=0.0)
+        notes = st.text_area("Observations")
+        photo = st.file_uploader(
+            "📷 Photo / preuve maintenance",
+            type=["png","jpg","jpeg","webp","pdf"],
+            key="equipment_photo"
+        )
+        if st.form_submit_button("💾 Enregistrer", type="primary", use_container_width=True):
+            if name.strip():
+                rec = db_insert(
+                    "materiel",
+                    {
+                        "nom_equipement": name.strip(),
+                        "categorie": category,
+                        "statut_marche": status,
+                        "date_derniere_revision": str(last),
+                        "prochaine_revision": str(next_rev),
+                        "compteur_heures": meter,
+                        "observations": notes.strip(),
+                    },
+                    f"Matériel {name.strip()}",
+                )
+                if rec and photo is not None:
+                    meta = storage_upload(photo, "materiel", rec.get("id","new"))
+                    if meta:
+                        db_update("materiel","id",rec.get("id"),meta,"Photo matériel ajoutée")
+                st.success("Matériel enregistré.")
+                st.rerun()
+
+    df = load_table("materiel")
+    if not df.empty:
+        st.dataframe(df, use_container_width=True, hide_index=True)
+        for _, row in df.iterrows():
+            render_attachment(row)
+
+
+# ============================================================
+# 25. FINANCES & COÛTS
+# ============================================================
+
+elif menu == "💰 Finances & Coûts":
+    st.title(f"💰 Finances & Coûts — {champ_name}")
+    if champ_id is not None:
+        with st.form("expense_form"):
+            c1,c2,c3 = st.columns(3)
+            with c1:
+                kind = st.text_input("Nature de la dépense *")
+                d = st.date_input("Date", value=date.today())
+            with c2:
+                amount = st.number_input("Montant (FCFA)", min_value=0.0)
+                supplier = st.text_input("Fournisseur")
+            with c3:
+                payment = st.selectbox("Mode de paiement", ["Espèces","Virement","Mobile Money","Crédit","Autre"])
+                ref = st.text_input("Référence")
+            note = st.text_area("Observation")
+            proof = st.file_uploader(
+                "📷 Facture / reçu / justificatif",
+                type=["png","jpg","jpeg","webp","pdf"],
+                key="expense_proof"
+            )
+            if st.form_submit_button("💾 Enregistrer la dépense", type="primary", use_container_width=True):
+                if kind.strip():
+                    rec = db_insert(
+                        "depenses",
+                        {
+                            "champ_id": champ_id,
+                            "type": kind.strip(),
+                            "montant": amount,
+                            "date": str(d),
+                            "fournisseur": supplier.strip(),
+                            "mode_paiement": payment,
+                            "reference": ref.strip(),
+                            "remarque": note.strip(),
+                        },
+                        f"Dépense {kind.strip()} — {amount} FCFA — {champ_name}",
+                    )
+                    if rec and proof is not None:
+                        meta = storage_upload(proof, "depenses", rec.get("id","new"))
+                        if meta:
+                            db_update("depenses","id",rec.get("id"),meta,"Justificatif dépense ajouté")
+                    st.success("Dépense enregistrée dans Supabase.")
+                    st.rerun()
+
+        df = filter_by_champ(load_table("depenses"), champ_id)
+        if not df.empty:
+            st.metric("Coûts cumulés", f"{safe_num(df,'montant'):,.0f} FCFA")
+            st.dataframe(df, use_container_width=True, hide_index=True)
+            for _, row in df.iterrows():
+                render_attachment(row)
+
+
+# ============================================================
+# 26. ROI
+# ============================================================
+
+elif menu == "📈 Rentabilité & ROI":
+    st.title(f"📈 Rentabilité & ROI — {champ_name}")
+    if champ_id is not None:
+        dep = filter_by_champ(load_table("depenses"), champ_id)
+        rec = filter_by_champ(load_table("recoltes"), champ_id)
+        costs = safe_num(dep, "montant")
+        sales = (
+            float((
+                pd.to_numeric(rec.get("quantite_kg",pd.Series(dtype=float)),errors="coerce").fillna(0)
+                * pd.to_numeric(rec.get("prix_unitaire",pd.Series(dtype=float)),errors="coerce").fillna(0)
+            ).sum()) if not rec.empty else 0
+        )
+        margin = sales-costs
+        roi = (margin/costs*100) if costs else None
+
+        a,b,c,d = st.columns(4)
+        a.metric("Coûts", f"{costs:,.0f} FCFA")
+        b.metric("Valeur récoltes", f"{sales:,.0f} FCFA")
+        c.metric("Marge", f"{margin:,.0f} FCFA")
+        d.metric("ROI", f"{roi:.1f}%" if roi is not None else "—")
+
+        st.markdown("### 📊 Lecture")
+        if roi is None:
+            st.info("ROI non calculable : aucune dépense enregistrée.")
+        elif roi < 0:
+            st.error("Marge négative : analysez les postes de coût et le rendement.")
+        elif roi < 20:
+            st.warning("Rentabilité faible : demandez une analyse IA ciblée.")
+        else:
+            st.success("Rentabilité positive sur les données enregistrées.")
+
+
+# ============================================================
+# 27. RISQUES & MÉTÉO
+# ============================================================
+
+elif menu == "🌤️ Risques & Météo":
+    st.title(f"🌤️ Risques & Météo — {champ_name}")
+    if champ_id is not None:
+        with st.form("risk_form"):
+            c1,c2 = st.columns(2)
+            with c1:
+                risk = st.selectbox(
+                    "Risque",
+                    ["Sécheresse","Inondation","Vents violents",
+                     "Ravageur","Maladie","Chaleur","Autre"]
+                )
+                level = st.selectbox("Niveau", ["Faible","Modéré","Élevé","Critique"])
+            with c2:
+                expected = st.date_input("Date / période de suivi", value=date.today())
+                source = st.text_input("Source de l'information")
+            recommendation = st.text_area("Recommandation technique")
+            if st.form_submit_button("💾 Enregistrer", type="primary", use_container_width=True):
+                db_insert(
+                    "alertes_meteo",
+                    {
+                        "champ_id": champ_id,
+                        "date": str(expected),
+                        "type_risque": risk,
+                        "niveau_alerte": level,
+                        "recommandation_ts": recommendation.strip(),
+                        "source": source.strip(),
+                    },
+                    f"Alerte {risk} — {level} — {champ_name}",
+                )
+                st.success("Alerte enregistrée.")
+                st.rerun()
+
+        df = filter_by_champ(load_table("alertes_meteo"), champ_id)
+        if not df.empty:
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+# ============================================================
+# 28. IA AGRICOLE
+# ============================================================
+
+elif menu == "🤖 IA Agricole":
+    st.title(f"🤖 YAM AGRI-EXPERT — analyse intelligente de {champ_name}")
+    if champ_id is None:
+        st.warning("Sélectionnez une parcelle.")
+    else:
+        if not ai_available():
+            st.warning(
+                "IA non activée. Ajoutez OPENAI_API_KEY dans Streamlit secrets. "
+                "Le reste de l'application fonctionne sans l'IA."
+            )
+
+        st.markdown(
+            """
+<div class="ai-box">
+<b>🧠 Ce que l'IA analyse :</b>
+parcelle, culture, travaux, temps de travail, pluie, eau, incidents,
+intrants, coûts, récoltes, matériel, risques et, si vous les sélectionnez,
+les photos stockées dans Supabase Storage.
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+
+        question = st.text_area(
+            "Question / mission de l'expert",
+            value=(
+                "Analyse l'état de la parcelle, détecte les problèmes prioritaires "
+                "et propose un plan d'action concret à 48 h et 7 jours."
+            ),
+        )
+
+        # Sélection d'images depuis les incidents.
+        incident_df = filter_by_champ(load_table("incidents"), champ_id)
+        image_rows = []
+        if not incident_df.empty:
+            image_candidates = []
+            for idx, row in incident_df.iterrows():
+                if local_or_storage_bytes(row):
+                    label = (
+                        f"{row.get('date','')} — {row.get('categorie','')} — "
+                        f"{row.get('description','')[:70]}"
+                    )
+                    image_candidates.append((idx, label))
+            selected_indices = st.multiselect(
+                "📷 Photos à analyser par vision",
+                [x[0] for x in image_candidates],
+                format_func=lambda x: dict(image_candidates).get(x, str(x)),
+            )
+            image_rows = [incident_df.loc[i] for i in selected_indices]
+
+        if st.button("🧠 Lancer l'analyse agricole", type="primary", use_container_width=True):
+            with st.spinner("YAM AGRI-EXPERT analyse les données et les évidences..."):
+                analysis = ai_analyse_agricole(
+                    champ_id, champ_name, question, image_rows=image_rows
+                )
+            st.session_state.ai_last = analysis
+
+        if st.session_state.get("ai_last"):
+            st.markdown("### 📝 Avis de l'expert")
+            st.markdown(st.session_state.ai_last)
+            st.caption(f"Modèle : {ai_model()} · Analyse fondée sur les données disponibles.")
+
+
+# ============================================================
+# 29. RAPPORTS PROFESSIONNELS
+# ============================================================
+
+elif menu == "📑 Rapports Professionnels":
+    st.title(f"📑 Rapport professionnel — {champ_name}")
+    if champ_id is None:
+        st.warning("Sélectionnez une parcelle.")
+    else:
+        report_date = st.date_input("Date officielle du rapport", value=date.today())
+
+        include_ai = st.checkbox(
+            "🤖 Inclure l'avis YAM AGRI-EXPERT dans le rapport",
+            value=True,
+        )
+        ai_text = ""
+        if include_ai:
+            if st.session_state.get("ai_last"):
+                ai_text = st.session_state.ai_last
+            else:
+                st.info(
+                    "Aucun avis IA déjà calculé. Vous pouvez générer le rapport "
+                    "sans IA ou lancer une analyse dans le module IA."
+                )
+
+        if st.button("📄 Générer le rapport A4 professionnel", type="primary", use_container_width=True):
+            with st.spinner("Génération du rapport..."):
+                pdf = generate_pdf_report(
+                    champ_id, champ_name, report_date, ai_text=ai_text
+                )
+            st.session_state.report_pdf = pdf
+            st.session_state.report_name = (
+                f"Rapport_YAM_{safe_filename(champ_name)}_{report_date}.pdf"
+            )
+            st.success("Rapport généré.")
+
+        if st.session_state.get("report_pdf"):
             st.download_button(
-                label=f"📄 TÉLÉCHARGER LE RAPPORT COMPLET — {champ_selectionne}",
-                data=pdf_bytes,
-                file_name=f"rapport_YAM_{champ_selectionne}.pdf",
+                "📥 TÉLÉCHARGER LE RAPPORT PDF",
+                st.session_state.report_pdf,
+                file_name=st.session_state.report_name,
                 mime="application/pdf",
                 use_container_width=True,
-                type="primary"
+                type="primary",
             )
-            st.markdown("</div>", unsafe_allow_html=True)
-        with col_dl2:
-            if st.button("📤 Envoyer & Archiver ce Rapport dans l'Espace de Travail", use_container_width=True):
-                nom_fic_pdf = f"Rapport_{champ_selectionne}_{date.today().strftime('%Y%m%d')}.pdf"
-                f_path = os.path.join(UPLOAD_DIR, nom_fic_pdf)
-                with open(f_path, "wb") as f:
-                    f.write(pdf_bytes)
-                
-                auteur_complet = f"{tech.get('prenom', '')} {tech.get('nom', '')}".strip()
-                date_heure_actuelle = datetime.now().strftime("%d/%m/%Y à %H:%M")
-                
-                data_arch = {
-                    "auteur": auteur_complet,
-                    "email": email_connecte,
-                    "role": role_tech,
-                    "destinataire": "Tous",
-                    "destinataire_email": "",
-                    "priorite": "Important ⚠️",
-                    "texte": f"Rapport technique officiel généré pour la parcelle {champ_selectionne}.",
-                    "date_heure": date_heure_actuelle,
-                    "type_contenu": "Rapport PDF",
-                    "fichier_path": f_path,
-                    "nom_fichier": nom_fic_pdf,
-                    "champ_concerne": champ_selectionne
-                }
-                execute_query("INSERT", "messages_workspace", data=data_arch, action_desc=f"Archivage rapport PDF {champ_selectionne} dans workspace", user_info=tech)
-                st.success("✅ Rapport envoyé et archivé avec succès dans l'Espace Collaboration & Workspace !")
+
+            if st.button("☁️ Archiver le rapport dans Supabase Storage"):
+                fake = type(
+                    "UploadLike",
+                    (),
+                    {
+                        "name": st.session_state.report_name,
+                        "type": "application/pdf",
+                        "getvalue": lambda self: st.session_state.report_pdf,
+                    },
+                )()
+                meta = storage_upload(fake, "rapports", champ_id)
+                if meta:
+                    db_insert(
+                        "messages_workspace",
+                        {
+                            "auteur": f"{prenom} {nom}".strip(),
+                            "email": user_email(),
+                            "role": role,
+                            "destinataire": "Tous",
+                            "priorite": "Important",
+                            "texte": f"Rapport professionnel {champ_name}",
+                            "date_heure": datetime.now().isoformat(timespec="seconds"),
+                            "type_contenu": "Rapport PDF",
+                            "champ_concerne": champ_name,
+                            **meta,
+                        },
+                        f"Archivage rapport {champ_name}",
+                    )
+                    st.success("Rapport archivé dans Supabase Storage.")
+
+
+# ============================================================
+# 30. COLLABORATION & WORKSPACE
+# ============================================================
+
+elif menu == "💬 Collaboration & Workspace":
+    st.title("💬 Collaboration & Workspace")
+    st.link_button(
+        "🚀 Créer une réunion Google Meet",
+        "https://meet.google.com/new",
+        use_container_width=True,
+    )
+
+    with st.form("workspace_form"):
+        c1,c2 = st.columns(2)
+        with c1:
+            target = st.selectbox(
+                "Destinataire",
+                ["Tous","Techniciens","Gestionnaires","Propriétaires","Utilisateur spécifique"]
+            )
+            priority = st.selectbox("Priorité", ["Normal","Important","Urgent"])
+        with c2:
+            content_type = st.selectbox(
+                "Type", ["Note","Photo","Vidéo","Document","Rapport PDF","Lien"]
+            )
+            target_email = st.text_input("E-mail cible (si nécessaire)")
+        linked_champ = (
+            st.selectbox(
+                "Parcelle liée",
+                ["Aucune"] + db_champs["nom"].astype(str).tolist()
+                if not db_champs.empty and "nom" in db_champs.columns else ["Aucune"]
+            )
+        )
+        text = st.text_area("Message / consigne / lien")
+        attachment = st.file_uploader(
+            "Joindre un fichier",
+            type=["png","jpg","jpeg","webp","mp4","pdf","docx","xlsx"],
+            key="workspace_file",
+        )
+        confirm = st.checkbox("Je confirme la publication.")
+        if st.form_submit_button("📤 Publier", type="primary", use_container_width=True):
+            if confirm and (text.strip() or attachment is not None):
+                meta = storage_upload(
+                    attachment, "workspace", datetime.now().strftime("%Y%m%d")
+                ) if attachment is not None else {}
+                db_insert(
+                    "messages_workspace",
+                    {
+                        "auteur": f"{prenom} {nom}".strip(),
+                        "email": user_email(),
+                        "role": role,
+                        "destinataire": target,
+                        "destinataire_email": target_email.strip(),
+                        "priorite": priority,
+                        "texte": text.strip(),
+                        "date_heure": datetime.now().isoformat(timespec="seconds"),
+                        "type_contenu": content_type,
+                        "champ_concerne": linked_champ,
+                        **meta,
+                    },
+                    f"Publication workspace {content_type}",
+                )
+                st.success("Publication enregistrée.")
+                st.rerun()
+            else:
+                st.warning("Confirmez et saisissez un message ou joignez un fichier.")
+
+    st.subheader("📜 Fil de travail")
+    df = load_table("messages_workspace")
+    if not df.empty:
+        for _, row in df.iloc[::-1].iterrows():
+            with st.container(border=True):
+                st.markdown(
+                    f"**{row.get('auteur','')}** · {row.get('role','')} · "
+                    f"{row.get('date_heure','')} · {row.get('priorite','')}"
+                )
+                if nonempty(row.get("champ_concerne","")):
+                    st.caption(f"Parcelle : {row.get('champ_concerne')}")
+                st.write(row.get("texte",""))
+                render_attachment(row)
+
+
+# ============================================================
+# 31. LISTE BLANCHE & ADMINISTRATION
+# ============================================================
+
+elif menu == "🔐 Liste Blanche & Administration":
+    if not is_admin():
+        st.error("🔒 Accès réservé à l'administration.")
+        st.stop()
+
+    st.title("🔐 Liste Blanche, rôles, modules et paramètres")
+    st.info(
+        "La liste blanche détermine les comptes autorisés. "
+        "Le rôle définit le socle fonctionnel et modules_autorises peut encore restreindre ce socle."
+    )
+
+    with st.form("new_user"):
+        c1,c2,c3 = st.columns(3)
+        with c1:
+            email = st.text_input("E-mail *")
+            password = st.text_input("Mot de passe", type="password")
+            first = st.text_input("Prénom")
+        with c2:
+            last = st.text_input("Nom")
+            new_role = st.selectbox("Rôle", ROLES)
+            modules = st.multiselect(
+                "Modules autorisés",
+                list(MODULES.keys()),
+                default=DEFAULT_ROLE_MODULES.get(new_role, []),
+            )
+        with c3:
+            st.markdown("**Droits du rôle**")
+            st.write({
+                "Niveau": ROLE_LEVEL.get(new_role, 0),
+                "Nombre de modules": len(modules),
+            })
+
+        if st.form_submit_button("➕ Ajouter à la liste blanche", type="primary", use_container_width=True):
+            if email.strip():
+                db_insert(
+                    "whitelist_users",
+                    {
+                        "email": email.strip().lower(),
+                        "password": password,
+                        "prenom": first.strip(),
+                        "nom": last.strip(),
+                        "role": new_role,
+                        "modules_autorises": json.dumps(modules, ensure_ascii=False),
+                    },
+                    f"Ajout utilisateur {email.strip().lower()}",
+                )
+                st.success("Utilisateur ajouté.")
+                st.rerun()
+
+    df = load_table("whitelist_users")
+    if not df.empty:
+        display_cols = [c for c in ["id","email","prenom","nom","role","modules_autorises"] if c in df.columns]
+        st.dataframe(df[display_cols], use_container_width=True, hide_index=True)
+
+        if "id" in df.columns:
+            for _, row in df.iterrows():
+                if str(row.get("email","")).lower() == "iy@2012":
+                    continue
+                if st.button(
+                    f"🗑️ Supprimer {row.get('email','')}",
+                    key=f"delete_user_{row['id']}",
+                ):
+                    db_delete(
+                        "whitelist_users","id",row["id"],
+                        f"Suppression utilisateur {row.get('email','')}"
+                    )
+                    st.rerun()
+
+
+# ============================================================
+# 32. JOURNAL D'AUDIT
+# ============================================================
+
+elif menu == "📜 Journal d'Audit":
+    if not is_admin():
+        st.error("🔒 Accès réservé à l'administration.")
+        st.stop()
+
+    st.title("📜 Journal d'Audit")
+    df = load_table("historique_modifications")
+    if not df.empty:
+        st.dataframe(
+            df.iloc[::-1].reset_index(drop=True),
+            use_container_width=True,
+            hide_index=True,
+        )
     else:
-        st.warning("⚠️ Veuillez sélectionner une parcelle active valide pour générer le rapport.")
+        st.info("Aucun événement d'audit enregistré.")
+
+
+# ============================================================
+# 33. FIN
+# ============================================================
+
+st.markdown("---")
+st.caption(
+    "YAM — plateforme de travail agricole centralisée. "
+    "Les données non renseignées ne sont pas inventées dans les rapports. "
+    "Les pièces jointes nouvelles sont stockées dans Supabase Storage."
+)
