@@ -64,6 +64,8 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# Interface applicative sans les contrôles de partage/édition de Streamlit.
+# Ces éléments appartiennent à l'enveloppe Streamlit/Cloud et non à YAM.
 try:
     st.set_option("client.toolbarMode", "minimal")
 except Exception:
@@ -184,6 +186,16 @@ MODULE_ALIASES = {
 st.markdown(
     """
 <style>
+/* Ne pas exposer l'enveloppe Streamlit aux utilisateurs de YAM. */
+[data-testid="stHeader"],
+[data-testid="stToolbar"],
+[data-testid="stDecoration"],
+[data-testid="stStatusWidget"],
+[data-testid="stAppDeployButton"] {
+    display: none !important;
+    visibility: hidden !important;
+}
+footer {display:none !important;}
 .stApp {
     background: linear-gradient(135deg,#f6faf7 0%,#edf5ef 100%);
     color:#17251d;
@@ -579,14 +591,45 @@ def champ_access(champ_id: Any) -> bool:
 
 
 def selected_champ() -> Tuple[Optional[int], str, pd.Series]:
-    df = load_accessible_champs()
+    """
+    Sélection de parcelle basée sur l'ID réel.
+    Ne jamais utiliser le nom comme clé : deux parcelles peuvent avoir le même nom,
+    et Streamlit peut conserver l'ancien état du selectbox après un rerun.
+    """
+    df = load_accessible_champs().copy()
     if df.empty or "id" not in df.columns or "nom" not in df.columns:
         return None, "Aucune parcelle", pd.Series(dtype=object)
 
-    names = df["nom"].astype(str).tolist()
-    name = st.selectbox("📍 Parcelle active", names, key="active_champ")
-    row = df[df["nom"].astype(str) == name].iloc[0]
-    return row.get("id"), name, row
+    df["id"] = pd.to_numeric(df["id"], errors="coerce")
+    df = df.dropna(subset=["id"]).copy()
+    df["id"] = df["id"].astype(int)
+    if df.empty:
+        return None, "Aucune parcelle", pd.Series(dtype=object)
+
+    # L'ID est la valeur réelle du widget ; le nom n'est qu'un affichage.
+    ids = df["id"].tolist()
+    labels = {
+        int(row["id"]): f'{row["nom"]} — ID {int(row["id"])}'
+        for _, row in df.iterrows()
+    }
+
+    previous = st.session_state.get("active_champ_id")
+    default_index = ids.index(int(previous)) if previous is not None and int(previous) in ids else 0
+
+    selected_id = st.selectbox(
+        "📍 Parcelle active",
+        ids,
+        index=default_index,
+        format_func=lambda x: labels.get(int(x), str(x)),
+        key="active_champ_id",
+    )
+
+    row_df = df[df["id"] == int(selected_id)]
+    if row_df.empty:
+        return None, "Aucune parcelle", pd.Series(dtype=object)
+
+    row = row_df.iloc[0]
+    return int(selected_id), str(row.get("nom", f"Parcelle {selected_id}")), row
 
 
 # ============================================================
@@ -1066,14 +1109,27 @@ def generate_pdf_report(
         rightMargin=28, leftMargin=28, topMargin=30, bottomMargin=35
     )
 
+    # Sécurité : le rapport ne peut être produit que pour une parcelle réellement
+    # accessible au compte courant. Le nom affiché dans l'interface n'est jamais
+    # utilisé pour retrouver la parcelle.
+    try:
+        champ_id = int(champ_id)
+    except Exception:
+        raise ValueError("Identifiant de parcelle invalide.")
+
+    if not champ_access(champ_id):
+        raise PermissionError("Cette parcelle n'est pas accessible à cet utilisateur.")
+
     champs = load_accessible_champs()
     champ_info = pd.DataFrame()
     if not champs.empty and "id" in champs.columns:
-        tmp = champs[
-            pd.to_numeric(champs["id"], errors="coerce") == int(champ_id)
-        ]
+        champs = champs.copy()
+        champs["id"] = pd.to_numeric(champs["id"], errors="coerce")
+        tmp = champs[champs["id"] == champ_id]
         if not tmp.empty:
             champ_info = tmp.iloc[[0]]
+            # Le nom canonique provient de Supabase, pas de l'ancien état du widget.
+            champ_name = str(champ_info.iloc[0].get("nom", champ_name))
 
     table_titles = [
         ("time_entries", "TEMPS & ACTIVITÉS HUMAINES"),
@@ -2347,15 +2403,39 @@ elif menu == "📑 Rapports Professionnels":
         report_date = st.date_input("Date officielle du rapport", value=date.today())
 
         if st.button("📄 Générer le rapport A4 professionnel", type="primary", use_container_width=True):
+            # Relecture immédiate de l'ID sélectionné : impossible de générer
+            # le PDF avec une ancienne parcelle conservée dans l'état Streamlit.
+            active_id = st.session_state.get("active_champ_id", champ_id)
+            try:
+                active_id = int(active_id)
+            except Exception:
+                active_id = None
+
+            if active_id is None or not champ_access(active_id):
+                st.error("🔒 Parcelle invalide ou non autorisée.")
+                st.stop()
+
+            current = load_accessible_champs()
+            current_row = current[
+                pd.to_numeric(current["id"], errors="coerce") == active_id
+            ] if not current.empty and "id" in current.columns else pd.DataFrame()
+
+            if current_row.empty:
+                st.error("La parcelle sélectionnée n'existe plus ou n'est plus accessible.")
+                st.stop()
+
+            canonical_name = str(current_row.iloc[0].get("nom", f"Parcelle {active_id}"))
+
             with st.spinner("Génération du rapport..."):
                 pdf = generate_pdf_report(
-                    champ_id, champ_name, report_date
+                    active_id, canonical_name, report_date
                 )
+
             st.session_state.report_pdf = pdf
             st.session_state.report_name = (
-                f"Rapport_YAM_{safe_filename(champ_name)}_{report_date}.pdf"
+                f"Rapport_YAM_{safe_filename(canonical_name)}_{report_date}.pdf"
             )
-            st.success("Rapport généré.")
+            st.success(f"Rapport généré pour : {canonical_name}")
 
         if st.session_state.get("report_pdf"):
             st.download_button(
