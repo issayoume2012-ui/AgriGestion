@@ -293,12 +293,33 @@ def clear_caches():
         pass
 
 
+def json_safe(value: Any) -> Any:
+    """Convertit les scalaires NumPy/Pandas en types JSON natifs avant Supabase."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [json_safe(v) for v in value]
+    # numpy.int64, numpy.float64, pandas scalars, etc.
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return json_safe(item())
+        except Exception:
+            pass
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    return value
+
+
 def db_insert(table: str, data: Dict[str, Any], action: str = "") -> Optional[Dict]:
     try:
-        res = supabase.table(table).insert(data).execute()
+        safe_data = json_safe(data)
+        res = supabase.table(table).insert(safe_data).execute()
         clear_caches()
         if action:
-            audit_log(action, table, "INSERT", data)
+            audit_log(action, table, "INSERT", safe_data)
         return (res.data or [None])[0]
     except Exception as exc:
         st.error(f"Erreur Supabase — {table}: {db_error_message(exc)}")
@@ -310,10 +331,12 @@ def db_update(
     data: Dict[str, Any], action: str = ""
 ) -> bool:
     try:
-        supabase.table(table).update(data).eq(match_col, match_val).execute()
+        safe_data = json_safe(data)
+        safe_match = json_safe(match_val)
+        supabase.table(table).update(safe_data).eq(match_col, safe_match).execute()
         clear_caches()
         if action:
-            audit_log(action, table, "UPDATE", data)
+            audit_log(action, table, "UPDATE", safe_data)
         return True
     except Exception as exc:
         st.error(f"Erreur Supabase — {table}: {db_error_message(exc)}")
