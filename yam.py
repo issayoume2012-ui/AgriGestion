@@ -26,8 +26,6 @@ import re
 import json
 import math
 import hashlib
-import smtplib
-from email.message import EmailMessage
 from datetime import datetime, date, time, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -112,7 +110,6 @@ MODULES = {
     "📈 Rentabilité & ROI": "roi",
     "🌤️ Risques & Météo": "risques",
     "💬 Collaboration & Workspace": "workspace",
-    "📧 Mails": "mails",
     "👥 Membres & Équipes": "membres",
     "📑 Rapports Professionnels": "rapports",
     "🔐 Liste Blanche & Administration": "admin",
@@ -2603,8 +2600,6 @@ elif menu == "💬 Collaboration & Workspace":
                 render_record_attachments("depenses", row, champ_id)
 
 
-# ============================================================
-# 30. MAILS — ENVOI GMAIL
 # ============================================================
 
 elif menu == "📧 Mails":
