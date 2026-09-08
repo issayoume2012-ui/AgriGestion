@@ -26,6 +26,9 @@ import re
 import json
 import math
 import hashlib
+import smtplib
+import uuid
+from email.message import EmailMessage
 from datetime import datetime, date, time, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -94,7 +97,6 @@ ROLE_LEVEL = {
 
 # Titres/modules de la liste blanche.
 MODULES = {
-    "🏠 Journal d'Accueil": "accueil",
     "📊 Tableau de Bord": "pilotage",
     "🧭 Centre Opérations": "operations",
     "🌱 Cartographie & Parcelles": "parcelles",
@@ -111,6 +113,7 @@ MODULES = {
     "📈 Rentabilité & ROI": "roi",
     "🌤️ Risques & Météo": "risques",
     "💬 Collaboration & Workspace": "workspace",
+    "📧 Mails": "mails",
     "👥 Membres & Équipes": "membres",
     "📑 Rapports Professionnels": "rapports",
     "🔐 Liste Blanche & Administration": "admin",
@@ -120,17 +123,15 @@ MODULES = {
 DEFAULT_ROLE_MODULES = {
     "Administration": list(MODULES.keys()),
     "Propriétaire": [
-        "🏠 Journal d'Accueil",
         "📊 Tableau de Bord", "🧭 Centre Opérations",
         "🌱 Cartographie & Parcelles", "📅 Planning & Travaux",
         "🌾 Récoltes & Rendements", "📦 Intrants & Stocks",
         "🚜 Matériel & Maintenance", "💰 Finances & Coûts",
         "📈 Rentabilité & ROI", "🌤️ Risques & Météo",
-        "💬 Collaboration & Workspace",
+        "💬 Collaboration & Workspace", "📧 Mails",
         "📑 Rapports Professionnels",
         "👥 Membres & Équipes"    ],
     "Gestionnaire": [
-        "🏠 Journal d'Accueil",
         "📊 Tableau de Bord", "🧭 Centre Opérations",
         "🌱 Cartographie & Parcelles", "⏰ Temps & Pointage",
         "📅 Planning & Travaux", "🌾 Récoltes & Rendements",
@@ -139,10 +140,9 @@ DEFAULT_ROLE_MODULES = {
         "📦 Intrants & Stocks", "🚜 Matériel & Maintenance",
         "💰 Finances & Coûts", "📈 Rentabilité & ROI",
         "🌤️ Risques & Météo",
-        "💬 Collaboration & Workspace", "📑 Rapports Professionnels",
+        "💬 Collaboration & Workspace", "📧 Mails", "📑 Rapports Professionnels",
         "👥 Membres & Équipes"    ],
     "Technicien Supérieur": [
-        "🏠 Journal d'Accueil",
         "📊 Tableau de Bord", "🧭 Centre Opérations",
         "🌱 Cartographie & Parcelles", "⏰ Temps & Pointage",
         "📅 Planning & Travaux", "🌾 Récoltes & Rendements",
@@ -150,24 +150,22 @@ DEFAULT_ROLE_MODULES = {
         "⚠️ Incidents & Observations", "🏷️ Traçabilité & Lots",
         "📦 Intrants & Stocks", "🚜 Matériel & Maintenance",
         "🌤️ Risques & Météo",
-        "💬 Collaboration & Workspace", "📑 Rapports Professionnels",
+        "💬 Collaboration & Workspace", "📧 Mails", "📑 Rapports Professionnels",
     ],
     "Technicien": [
-        "🏠 Journal d'Accueil",
         "🧭 Centre Opérations", "🌱 Cartographie & Parcelles",
         "⏰ Temps & Pointage", "📅 Planning & Travaux",
         "🌾 Récoltes & Rendements", "🌧️ Pluviométrie",
         "💧 Irrigation & Eau", "⚠️ Incidents & Observations",
         "🏷️ Traçabilité & Lots", "📦 Intrants & Stocks",
         "🌤️ Risques & Météo",
-        "💬 Collaboration & Workspace", "📑 Rapports Professionnels",
+        "💬 Collaboration & Workspace", "📧 Mails", "📑 Rapports Professionnels",
     ],
     "Stagiaire": [
-        "🏠 Journal d'Accueil",
         "🧭 Centre Opérations", "🌱 Cartographie & Parcelles",
         "⏰ Temps & Pointage", "📅 Planning & Travaux",
         "⚠️ Incidents & Observations", "🌧️ Pluviométrie",
-        "💬 Collaboration & Workspace",
+        "💬 Collaboration & Workspace", "📧 Mails",
     ],
 }
 
@@ -419,19 +417,26 @@ def parse_modules(value: Any) -> List[str]:
     return result
 
 
+def is_audit_owner() -> bool:
+    return user_email() == "iy@2012"
+
+
 def allowed_modules() -> List[str]:
     if is_admin():
-        return list(MODULES.keys())
-
-    stored = parse_modules(current_user().get("modules_autorises"))
-    if "TOUS" in [x.upper() for x in stored]:
-        return list(MODULES.keys())
-
-    role_defaults = DEFAULT_ROLE_MODULES.get(user_role(), [])
-    # La liste blanche est une restriction supplémentaire.
-    if stored:
-        return [m for m in role_defaults if m in stored]
-    return role_defaults
+        modules = list(MODULES.keys())
+    else:
+        stored = parse_modules(current_user().get("modules_autorises"))
+        if "TOUS" in [x.upper() for x in stored]:
+            modules = list(MODULES.keys())
+        else:
+            role_defaults = DEFAULT_ROLE_MODULES.get(user_role(), [])
+            modules = [m for m in role_defaults if m in stored] if stored else list(role_defaults)
+    # Le Journal d'Audit est invisible pour tous sauf le propriétaire.
+    if not is_audit_owner():
+        modules = [m for m in modules if m != "📜 Journal d'Audit"]
+    elif "📜 Journal d'Audit" not in modules:
+        modules.append("📜 Journal d'Audit")
+    return modules
 
 
 def module_allowed(module: str) -> bool:
@@ -488,6 +493,7 @@ Plateforme professionnelle de centralisation et de pilotage agricole
                             "role": record.get("role", "Technicien"),
                             "modules_autorises": record.get("modules_autorises", "TOUS"),
                         }
+                        st.session_state.audit_session_id = uuid.uuid4().hex
                         st.rerun()
                     else:
                         st.error("Identifiants incorrects ou compte non autorisé.")
@@ -496,31 +502,44 @@ Plateforme professionnelle de centralisation et de pilotage agricole
     return False
 
 
-if not authenticate():
-    st.stop()
-
-
 # ============================================================
 # 5. AUDIT
 # ============================================================
 
 def audit_log(action: str, table: str = "", operation: str = "", details: Any = None):
+    """Enregistre toute action métier significative de l'utilisateur authentifié."""
     try:
         u = current_user()
+        d = details if isinstance(details, dict) else {"details": details}
+        d = dict(d or {})
+        d.setdefault("session_id", st.session_state.get("audit_session_id", ""))
+        d.setdefault("module", st.session_state.get("selected_menu", ""))
+        d.setdefault("parcelle_active", st.session_state.get("active_champ_id"))
         payload = {
             "date_heure": datetime.now().isoformat(timespec="seconds"),
-            "utilisateur": f"{u.get('prenom','')} {u.get('nom','')}".strip(),
+            "utilisateur": f"{u.get('prenom','')} {u.get('nom','')}".strip() or "Utilisateur",
             "email": u.get("email", ""),
             "role": u.get("role", ""),
-            "action": action,
-            "table_cible": table,
-            "operation": operation,
-            "details": json.dumps(details, ensure_ascii=False, default=str)[:4000],
+            "action": str(action)[:500],
+            "table_cible": str(table)[:150],
+            "operation": str(operation)[:50],
+            "details": json.dumps(json_safe(d), ensure_ascii=False, default=str)[:4000],
         }
         supabase.table("historique_modifications").insert(payload).execute()
     except Exception:
-        # L'audit ne doit jamais casser une opération métier.
         pass
+
+
+def audit_ui_action(action: str, operation: str = "UI", details: Any = None):
+    audit_log(action, "interface", operation, details)
+
+
+if not authenticate():
+    st.stop()
+
+if not st.session_state.get("audit_login_logged"):
+    audit_log("Connexion réussie", "whitelist_users", "LOGIN", {"email": user_email()})
+    st.session_state.audit_login_logged = True
 
 
 # ============================================================
@@ -1373,7 +1392,7 @@ if st.session_state.selected_menu not in accessible:
 # Navigation en groupes.
 groups = {
     "🏠 PILOTAGE": [
-        "🏠 Journal d'Accueil", "📊 Tableau de Bord", "🧭 Centre Opérations", "📑 Rapports Professionnels",
+        "📊 Tableau de Bord", "🧭 Centre Opérations", "📑 Rapports Professionnels",
         "👥 Membres & Équipes"
     ],
     "🌱 EXPLOITATION": [
@@ -1388,7 +1407,7 @@ groups = {
     ],
     "💼 GESTION": [
         "💰 Finances & Coûts", "📈 Rentabilité & ROI",
-        "💬 Collaboration & Workspace", "👥 Membres & Équipes"
+        "💬 Collaboration & Workspace", "📧 Mails", "👥 Membres & Équipes"
     ],
     "🔐 ADMIN": [
         "🔐 Liste Blanche & Administration", "📜 Journal d'Audit"
@@ -1406,6 +1425,7 @@ for tab, group_name in zip(tabs, groups):
         for i, item in enumerate(items):
             with cols[i % len(cols)]:
                 if st.button(item, key=f"nav_{group_name}_{i}", use_container_width=True):
+                    audit_ui_action(f"Navigation vers {item}", "CLICK", {"groupe": group_name})
                     st.session_state.selected_menu = item
                     st.rerun()
 
@@ -1426,11 +1446,13 @@ with c1:
     )
 with c2:
     if st.button("🔄 Synchroniser tout", use_container_width=True):
+        audit_ui_action("Synchronisation manuelle", "SYNC", {"module": menu})
         clear_caches()
         sync_all_tables()
         st.rerun()
 with c3:
     if st.button("🚪 Déconnexion", use_container_width=True):
+        audit_log("Déconnexion", "whitelist_users", "LOGOUT", {"module": menu})
         st.session_state.clear()
         st.rerun()
 
@@ -1445,8 +1467,8 @@ champ_name = "Aucune parcelle"
 champ_row = pd.Series(dtype=object)
 
 if menu not in (
-    "🏠 Journal d'Accueil", "🌱 Cartographie & Parcelles",
-    "🔐 Liste Blanche & Administration", "📜 Journal d'Audit"
+    "🌱 Cartographie & Parcelles",
+    "🔐 Liste Blanche & Administration", "📜 Journal d'Audit", "📧 Mails"
 ):
     if not db_champs.empty:
         champ_id, champ_name, champ_row = selected_champ()
@@ -1456,68 +1478,6 @@ if menu not in (
 
 # ============================================================
 # 13. JOURNAL D'ACCUEIL
-# ============================================================
-
-if menu == "🏠 Journal d'Accueil":
-    st.title("🏠 Journal d'Accueil — activité synchronisée")
-    st.caption(
-        "Cette page relit directement les données Supabase accessibles à votre compte. "
-        "Le journal n'utilise pas une copie locale permanente."
-    )
-
-    c1, c2, c3 = st.columns([1, 1, 4])
-    with c1:
-        if st.button("🔄 Actualiser le journal", type="primary", use_container_width=True):
-            clear_caches()
-            st.session_state.last_sync = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-            st.rerun()
-    with c2:
-        st.metric("Parcelles accessibles", len(load_accessible_champs()))
-    with c3:
-        st.caption(
-            f"Dernière synchronisation : **{st.session_state.get('last_sync', 'À l’ouverture')}**"
-        )
-
-    journal = load_home_journal(60)
-    if journal.empty:
-        st.info("Aucune activité enregistrée dans les tables accessibles.")
-    else:
-        st.subheader("📜 Dernières activités")
-        st.dataframe(
-            journal,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Date": st.column_config.TextColumn("Date", width="small"),
-                "Module": st.column_config.TextColumn("Module", width="small"),
-                "Événement": st.column_config.TextColumn("Événement", width="large"),
-                "Parcelle ID": st.column_config.TextColumn("Parcelle", width="small"),
-                "Source": st.column_config.TextColumn("Table", width="small"),
-            },
-        )
-
-    st.markdown("### 📊 État des modules")
-    module_counts = []
-    for table, label, _ in [
-        ("taches", "📅 Travaux", None),
-        ("recoltes", "🌾 Récoltes", None),
-        ("incidents", "⚠️ Incidents", None),
-        ("depenses", "💰 Dépenses", None),
-        ("irrigation", "💧 Irrigation", None),
-        ("pluviometrie", "🌧️ Pluviométrie", None),
-        ("messages_workspace", "💬 Workspace", None),
-    ]:
-        try:
-            module_counts.append((label, len(load_table(table))))
-        except Exception:
-            module_counts.append((label, 0))
-    cols = st.columns(len(module_counts))
-    for col, (label, count) in zip(cols, module_counts):
-        col.metric(label, count)
-
-
-# ============================================================
-# 14. TABLEAU DE BORD
 # ============================================================
 
 elif menu == "📊 Tableau de Bord":
@@ -2630,93 +2590,102 @@ elif menu == "📑 Rapports Professionnels":
 
 elif menu == "💬 Collaboration & Workspace":
     st.title("💬 Collaboration & Workspace")
-    st.link_button(
-        "🚀 Créer une réunion Google Meet",
-        "https://meet.google.com/new",
-        use_container_width=True,
-    )
-
-    with st.form("workspace_form"):
-        c1,c2 = st.columns(2)
-        with c1:
-            target = st.selectbox(
-                "Destinataire",
-                ["Tous","Techniciens","Gestionnaires","Propriétaires","Utilisateur spécifique"]
-            )
-            priority = st.selectbox("Priorité", ["Normal","Important","Urgent"])
-        with c2:
-            content_type = st.selectbox(
-                "Type", ["Note","Photo","Vidéo","Document","Rapport PDF","Lien"]
-            )
-            target_email = st.text_input("E-mail cible (si nécessaire)")
-        linked_champ = (
-            st.selectbox(
-                "Parcelle liée",
-                ["Aucune"] + db_champs["nom"].astype(str).tolist()
-                if not db_champs.empty and "nom" in db_champs.columns else ["Aucune"]
-            )
-        )
-        text = st.text_area("Message / consigne / lien")
-        attachment = st.file_uploader(
-            "Joindre un fichier",
-            type=["png","jpg","jpeg","webp","mp4","pdf","docx","xlsx"],
-            key="workspace_file",
-        )
-        confirm = st.checkbox("Je confirme la publication.")
-        if st.form_submit_button("📤 Publier", type="primary", use_container_width=True):
-            if confirm and (text.strip() or attachment is not None):
-                meta = storage_upload(
-                    attachment, "workspace", datetime.now().strftime("%Y%m%d")
-                ) if attachment is not None else {}
-                workspace_record = db_insert(
-                    "messages_workspace",
-                    {
-                        "auteur": f"{prenom} {nom}".strip(),
+    if not require_module(menu):
+        st.stop()
+    st.subheader("🎥 Réunion Google Meet")
+    st.link_button("🚀 Créer une nouvelle réunion Google Meet", "https://meet.google.com/new", use_container_width=False)
+    meet_link = st.text_input("🔗 Coller le lien Google Meet", placeholder="https://meet.google.com/xxx-xxxx-xxx")
+    if meet_link.strip():
+        if not meet_link.strip().startswith(("https://meet.google.com/", "http://meet.google.com/")):
+            st.warning("Le lien doit être un lien Google Meet valide.")
+        else:
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("🎥 Ouvrir la réunion", use_container_width=True):
+                    audit_ui_action("Ouverture d'un lien Google Meet", "MEET_OPEN", {"url": meet_link.strip()})
+                    st.link_button("Ouvrir Google Meet", meet_link.strip())
+            with c2:
+                if st.button("📌 Publier le lien", type="primary", use_container_width=True):
+                    db_insert("messages_workspace", {
+                        "auteur_email": user_email(),
                         "email": user_email(),
-                        "role": role,
-                        "destinataire": target,
-                        "destinataire_email": target_email.strip(),
-                        "priorite": priority,
-                        "texte": text.strip(),
+                        "texte": f"Réunion Google Meet : {meet_link.strip()}",
+                        "champ_id": champ_id,
+                        "champ_nom": champ_name,
                         "date_heure": datetime.now().isoformat(timespec="seconds"),
-                        "type_contenu": content_type,
-                        "champ_concerne": linked_champ,
-                        "champ_id": next(
-                            (int(r["id"]) for _, r in db_champs.iterrows()
-                             if str(r.get("nom","")) == linked_champ), None
-                        ) if linked_champ != "Aucune" else None,
-                        **meta,
-                    },
-                    f"Publication workspace {content_type}",
-                )
-                if workspace_record and meta:
-                    save_media_record(
-                        meta, "messages_workspace", workspace_record.get("id"),
-                        champ_id if linked_champ != "Aucune" else None, "workspace"
-                    )
-                st.success("Publication enregistrée.")
+                    }, "Publication d'un lien Google Meet")
+                    st.success("Lien Google Meet publié dans la collaboration.")
+                    st.rerun()
+    st.markdown("---")
+    st.subheader("💬 Messages de collaboration")
+    with st.form("workspace_message_form", clear_on_submit=True):
+        text = st.text_area("Message / consigne")
+        if st.form_submit_button("📤 Publier le message", type="primary"):
+            if text.strip():
+                db_insert("messages_workspace", {
+                    "auteur_email": user_email(),
+                    "email": user_email(),
+                    "texte": text.strip(),
+                    "champ_id": champ_id,
+                    "champ_nom": champ_name,
+                    "date_heure": datetime.now().isoformat(timespec="seconds"),
+                }, "Publication d'un message Workspace")
+                st.success("Message publié.")
                 st.rerun()
+    messages = load_table("messages_workspace")
+    if champ_id is not None and not messages.empty and "champ_id" in messages.columns:
+        messages = filter_by_champ(messages, champ_id)
+    if not messages.empty:
+        st.dataframe(messages.sort_values("date_heure", ascending=False) if "date_heure" in messages.columns else messages, use_container_width=True, hide_index=True)
+    else:
+        st.info("Aucun message pour le périmètre courant.")
+
+
+elif menu == "📧 Mails":
+    st.title("📧 Mails — envoi direct")
+    if not require_module(menu):
+        st.stop()
+    st.caption("Envoyez un e-mail directement depuis YAM. Les envois et erreurs sont inscrits dans le Journal d'Audit.")
+    with st.form("mail_send_form"):
+        recipients = st.text_input("Destinataires *", placeholder="nom1@example.com, nom2@example.com")
+        subject = st.text_input("Objet *")
+        body = st.text_area("Message *", height=220)
+        attachment = st.file_uploader("Pièce jointe (optionnelle)", type=["pdf","png","jpg","jpeg","docx","xlsx","csv"])
+        send = st.form_submit_button("📤 Envoyer le mail", type="primary", use_container_width=True)
+    if send:
+        to_list = [x.strip() for x in recipients.split(",") if x.strip()]
+        if not to_list or not subject.strip() or not body.strip():
+            st.error("Destinataire, objet et message sont obligatoires.")
+        else:
+            host = st.secrets.get("SMTP_HOST", os.getenv("SMTP_HOST", ""))
+            port = int(st.secrets.get("SMTP_PORT", os.getenv("SMTP_PORT", "587")))
+            smtp_user = st.secrets.get("SMTP_USER", os.getenv("SMTP_USER", ""))
+            smtp_password = st.secrets.get("SMTP_PASSWORD", os.getenv("SMTP_PASSWORD", ""))
+            smtp_from = st.secrets.get("SMTP_FROM", os.getenv("SMTP_FROM", smtp_user))
+            if not host or not smtp_user or not smtp_password:
+                st.error("Configuration SMTP manquante : SMTP_HOST, SMTP_USER et SMTP_PASSWORD sont nécessaires.")
+                audit_log("Échec d'envoi e-mail : configuration SMTP manquante", "emails", "EMAIL_ERROR", {"destinataires": to_list, "objet": subject.strip()})
             else:
-                st.warning("Confirmez et saisissez un message ou joignez un fichier.")
+                try:
+                    msg = EmailMessage()
+                    msg["From"] = smtp_from
+                    msg["To"] = ", ".join(to_list)
+                    msg["Subject"] = subject.strip()
+                    msg.set_content(body.strip())
+                    if attachment is not None:
+                        msg.add_attachment(attachment.getvalue(), maintype=(attachment.type or "application").split("/")[0], subtype=(attachment.type or "application/octet-stream").split("/")[-1], filename=attachment.name)
+                    with smtplib.SMTP(host, port, timeout=30) as smtp:
+                        smtp.ehlo()
+                        smtp.starttls()
+                        smtp.ehlo()
+                        smtp.login(smtp_user, smtp_password)
+                        smtp.send_message(msg)
+                    audit_log("E-mail envoyé", "emails", "EMAIL_SEND", {"destinataires": to_list, "objet": subject.strip(), "piece_jointe": attachment.name if attachment else ""})
+                    st.success("✅ E-mail envoyé avec succès.")
+                except Exception as exc:
+                    audit_log("Échec d'envoi e-mail", "emails", "EMAIL_ERROR", {"destinataires": to_list, "objet": subject.strip(), "erreur": db_error_message(exc)})
+                    st.error(f"Envoi impossible : {db_error_message(exc)}")
 
-    st.subheader("📜 Fil de travail")
-    df = load_table("messages_workspace")
-    if not df.empty:
-        for _, row in df.iloc[::-1].iterrows():
-            with st.container(border=True):
-                st.markdown(
-                    f"**{row.get('auteur','')}** · {row.get('role','')} · "
-                    f"{row.get('date_heure','')} · {row.get('priorite','')}"
-                )
-                if nonempty(row.get("champ_concerne","")):
-                    st.caption(f"Parcelle : {row.get('champ_concerne')}")
-                st.write(row.get("texte",""))
-                render_record_attachments("messages_workspace", row, champ_id)
-
-
-# ============================================================
-# 30. LISTE BLANCHE & ADMINISTRATION
-# ============================================================
 
 elif menu == "🔐 Liste Blanche & Administration":
     if not is_admin():
@@ -2863,29 +2832,33 @@ elif menu == "🔐 Liste Blanche & Administration":
 # ============================================================
 
 elif menu == "📜 Journal d'Audit":
-    if not is_admin():
-        st.error("🔒 Accès réservé à l'administration.")
+    if not is_audit_owner():
+        st.error("🔐 Accès refusé : ce journal est strictement réservé au propriétaire.")
         st.stop()
-
-    st.title("📜 Journal d'Audit")
-    df = load_table("historique_modifications")
+    if st.session_state.get("audit_view_session") != st.session_state.get("audit_session_id"):
+        audit_log("Consultation du Journal d'Audit", "historique_modifications", "VIEW", {"confidentiel": True})
+        st.session_state.audit_view_session = st.session_state.get("audit_session_id")
+    st.title("📜 Journal d'Audit — CONFIDENTIEL")
+    st.warning("🔐 Zone privée : seul le propriétaire peut consulter toutes les traces d'activité.")
+    try:
+        df = pd.DataFrame(supabase.table("historique_modifications").select("*").order("date_heure", desc=True).execute().data or [])
+    except Exception as exc:
+        df = pd.DataFrame()
+        st.error(f"Lecture du journal impossible : {db_error_message(exc)}")
     if not df.empty:
-        st.dataframe(
-            df.iloc[::-1].reset_index(drop=True),
-            use_container_width=True,
-            hide_index=True,
-        )
+        c1,c2,c3 = st.columns(3)
+        users = ["Tous"] + sorted(df["email"].dropna().astype(str).unique().tolist()) if "email" in df.columns else ["Tous"]
+        ops = ["Toutes"] + sorted(df["operation"].dropna().astype(str).unique().tolist()) if "operation" in df.columns else ["Toutes"]
+        with c1: selected_user = st.selectbox("Utilisateur", users)
+        with c2: selected_op = st.selectbox("Opération", ops)
+        with c3: search_audit = st.text_input("Recherche")
+        view = df.copy()
+        if selected_user != "Tous" and "email" in view.columns: view = view[view["email"].astype(str) == selected_user]
+        if selected_op != "Toutes" and "operation" in view.columns: view = view[view["operation"].astype(str) == selected_op]
+        if search_audit.strip():
+            mask = view.astype(str).apply(lambda col: col.str.contains(search_audit.strip(), case=False, na=False)).any(axis=1)
+            view = view[mask]
+        st.metric("Événements enregistrés", len(view))
+        st.dataframe(view.reset_index(drop=True), use_container_width=True, hide_index=True)
     else:
         st.info("Aucun événement d'audit enregistré.")
-
-
-# ============================================================
-# 32. FIN
-# ============================================================
-
-st.markdown("---")
-st.caption(
-    "YAM — plateforme de travail agricole centralisée. "
-    "Les données non renseignées ne sont pas inventées dans les rapports. "
-    "Les pièces jointes nouvelles sont stockées dans Supabase Storage."
-)
