@@ -94,6 +94,7 @@ ROLE_LEVEL = {
 
 # Titres/modules de la liste blanche.
 MODULES = {
+    "🏠 Journal d'Accueil": "accueil",
     "📊 Tableau de Bord": "pilotage",
     "🧭 Centre Opérations": "operations",
     "🌱 Cartographie & Parcelles": "parcelles",
@@ -119,6 +120,7 @@ MODULES = {
 DEFAULT_ROLE_MODULES = {
     "Administration": list(MODULES.keys()),
     "Propriétaire": [
+        "🏠 Journal d'Accueil",
         "📊 Tableau de Bord", "🧭 Centre Opérations",
         "🌱 Cartographie & Parcelles", "📅 Planning & Travaux",
         "🌾 Récoltes & Rendements", "📦 Intrants & Stocks",
@@ -128,6 +130,7 @@ DEFAULT_ROLE_MODULES = {
         "📑 Rapports Professionnels",
         "👥 Membres & Équipes"    ],
     "Gestionnaire": [
+        "🏠 Journal d'Accueil",
         "📊 Tableau de Bord", "🧭 Centre Opérations",
         "🌱 Cartographie & Parcelles", "⏰ Temps & Pointage",
         "📅 Planning & Travaux", "🌾 Récoltes & Rendements",
@@ -139,6 +142,7 @@ DEFAULT_ROLE_MODULES = {
         "💬 Collaboration & Workspace", "📑 Rapports Professionnels",
         "👥 Membres & Équipes"    ],
     "Technicien Supérieur": [
+        "🏠 Journal d'Accueil",
         "📊 Tableau de Bord", "🧭 Centre Opérations",
         "🌱 Cartographie & Parcelles", "⏰ Temps & Pointage",
         "📅 Planning & Travaux", "🌾 Récoltes & Rendements",
@@ -149,6 +153,7 @@ DEFAULT_ROLE_MODULES = {
         "💬 Collaboration & Workspace", "📑 Rapports Professionnels",
     ],
     "Technicien": [
+        "🏠 Journal d'Accueil",
         "🧭 Centre Opérations", "🌱 Cartographie & Parcelles",
         "⏰ Temps & Pointage", "📅 Planning & Travaux",
         "🌾 Récoltes & Rendements", "🌧️ Pluviométrie",
@@ -158,6 +163,7 @@ DEFAULT_ROLE_MODULES = {
         "💬 Collaboration & Workspace", "📑 Rapports Professionnels",
     ],
     "Stagiaire": [
+        "🏠 Journal d'Accueil",
         "🧭 Centre Opérations", "🌱 Cartographie & Parcelles",
         "⏰ Temps & Pointage", "📅 Planning & Travaux",
         "⚠️ Incidents & Observations", "🌧️ Pluviométrie",
@@ -977,6 +983,71 @@ def sync_all_tables() -> Dict[str, pd.DataFrame]:
     return data
 
 
+def load_home_journal(limit: int = 60) -> pd.DataFrame:
+    """
+    Journal d'accueil réellement synchronisé avec Supabase.
+    Il ne dépend pas d'une copie locale en session : chaque entrée est reconstruite
+    à partir des tables métier accessibles à l'utilisateur.
+    """
+    sources = [
+        ("time_entries", "⏰ Pointage", ("date", "date_heure", "created_at")),
+        ("taches", "📅 Travail", ("date_tache", "date", "created_at")),
+        ("recoltes", "🌾 Récolte", ("date_recolte", "date", "created_at")),
+        ("pluviometrie", "🌧️ Pluie", ("date", "created_at")),
+        ("irrigation", "💧 Irrigation", ("date", "created_at")),
+        ("incidents", "⚠️ Incident", ("date", "created_at")),
+        ("tracabilite", "🏷️ Traçabilité", ("date_recolte", "date", "created_at")),
+        ("intrants", "📦 Intrant", ("date_achat", "date", "created_at")),
+        ("materiel", "🚜 Matériel", ("date_derniere_revision", "created_at")),
+        ("depenses", "💰 Dépense", ("date", "created_at")),
+        ("alertes_meteo", "🌤️ Alerte météo", ("date", "created_at")),
+        ("messages_workspace", "💬 Workspace", ("date_heure", "created_at")),
+    ]
+    rows = []
+    for table, label, date_fields in sources:
+        try:
+            df = load_table(table)
+        except Exception:
+            continue
+        if df is None or df.empty:
+            continue
+        for _, r in df.iterrows():
+            dt = None
+            for field in date_fields:
+                if field in df.columns and nonempty(r.get(field)):
+                    candidate = pd.to_datetime(r.get(field), errors="coerce")
+                    if pd.notna(candidate):
+                        dt = candidate
+                        break
+            if dt is None:
+                dt = pd.Timestamp.min
+            champ = r.get("champ_id", "") if "champ_id" in df.columns else ""
+            nom = (
+                r.get("champ_nom") or r.get("champ_concerne") or
+                r.get("nom") or r.get("type_travail") or r.get("categorie") or
+                r.get("type") or r.get("texte") or r.get("description") or
+                r.get("nom_equipement") or r.get("lot_code") or "Événement enregistré"
+            )
+            rows.append({
+                "Date": dt,
+                "Module": label,
+                "Événement": str(nom)[:220],
+                "Parcelle ID": champ if nonempty(champ) else "—",
+                "Source": table,
+            })
+
+    if not rows:
+        return pd.DataFrame(columns=["Date", "Module", "Événement", "Parcelle ID", "Source"])
+
+    out = pd.DataFrame(rows)
+    out = out.sort_values("Date", ascending=False).head(limit).copy()
+    out["Date"] = out["Date"].apply(
+        lambda x: x.strftime("%d/%m/%Y %H:%M") if isinstance(x, pd.Timestamp) and x != pd.Timestamp.min
+        else "Date non renseignée"
+    )
+    return out.reset_index(drop=True)
+
+
 # ============================================================
 # 10. RAPPORT PDF PROFESSIONNEL
 # ============================================================
@@ -1302,7 +1373,7 @@ if st.session_state.selected_menu not in accessible:
 # Navigation en groupes.
 groups = {
     "🏠 PILOTAGE": [
-        "📊 Tableau de Bord", "🧭 Centre Opérations", "📑 Rapports Professionnels",
+        "🏠 Journal d'Accueil", "📊 Tableau de Bord", "🧭 Centre Opérations", "📑 Rapports Professionnels",
         "👥 Membres & Équipes"
     ],
     "🌱 EXPLOITATION": [
@@ -1373,7 +1444,8 @@ champ_id = None
 champ_name = "Aucune parcelle"
 champ_row = pd.Series(dtype=object)
 
-if menu != "🌱 Cartographie & Parcelles" and menu not in (
+if menu not in (
+    "🏠 Journal d'Accueil", "🌱 Cartographie & Parcelles",
     "🔐 Liste Blanche & Administration", "📜 Journal d'Audit"
 ):
     if not db_champs.empty:
@@ -1383,10 +1455,72 @@ if menu != "🌱 Cartographie & Parcelles" and menu not in (
 
 
 # ============================================================
-# 13. TABLEAU DE BORD
+# 13. JOURNAL D'ACCUEIL
 # ============================================================
 
-if menu == "📊 Tableau de Bord":
+if menu == "🏠 Journal d'Accueil":
+    st.title("🏠 Journal d'Accueil — activité synchronisée")
+    st.caption(
+        "Cette page relit directement les données Supabase accessibles à votre compte. "
+        "Le journal n'utilise pas une copie locale permanente."
+    )
+
+    c1, c2, c3 = st.columns([1, 1, 4])
+    with c1:
+        if st.button("🔄 Actualiser le journal", type="primary", use_container_width=True):
+            clear_caches()
+            st.session_state.last_sync = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+            st.rerun()
+    with c2:
+        st.metric("Parcelles accessibles", len(load_accessible_champs()))
+    with c3:
+        st.caption(
+            f"Dernière synchronisation : **{st.session_state.get('last_sync', 'À l’ouverture')}**"
+        )
+
+    journal = load_home_journal(60)
+    if journal.empty:
+        st.info("Aucune activité enregistrée dans les tables accessibles.")
+    else:
+        st.subheader("📜 Dernières activités")
+        st.dataframe(
+            journal,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Date": st.column_config.TextColumn("Date", width="small"),
+                "Module": st.column_config.TextColumn("Module", width="small"),
+                "Événement": st.column_config.TextColumn("Événement", width="large"),
+                "Parcelle ID": st.column_config.TextColumn("Parcelle", width="small"),
+                "Source": st.column_config.TextColumn("Table", width="small"),
+            },
+        )
+
+    st.markdown("### 📊 État des modules")
+    module_counts = []
+    for table, label, _ in [
+        ("taches", "📅 Travaux", None),
+        ("recoltes", "🌾 Récoltes", None),
+        ("incidents", "⚠️ Incidents", None),
+        ("depenses", "💰 Dépenses", None),
+        ("irrigation", "💧 Irrigation", None),
+        ("pluviometrie", "🌧️ Pluviométrie", None),
+        ("messages_workspace", "💬 Workspace", None),
+    ]:
+        try:
+            module_counts.append((label, len(load_table(table))))
+        except Exception:
+            module_counts.append((label, 0))
+    cols = st.columns(len(module_counts))
+    for col, (label, count) in zip(cols, module_counts):
+        col.metric(label, count)
+
+
+# ============================================================
+# 14. TABLEAU DE BORD
+# ============================================================
+
+elif menu == "📊 Tableau de Bord":
     if not require_module(menu):
         st.stop()
 
@@ -2266,7 +2400,7 @@ elif menu == "🚜 Matériel & Maintenance":
     if not df.empty:
         st.dataframe(df, use_container_width=True, hide_index=True)
         for _, row in df.iterrows():
-            render_record_attachments("intrants", row, champ_id)
+            render_record_attachments("materiel", row, champ_id)
 
 
 # ============================================================
@@ -2321,7 +2455,7 @@ elif menu == "💰 Finances & Coûts":
             st.metric("Coûts cumulés", f"{safe_num(df,'montant'):,.0f} FCFA")
             st.dataframe(df, use_container_width=True, hide_index=True)
             for _, row in df.iterrows():
-                render_record_attachments("materiel", row, champ_id)
+                render_record_attachments("depenses", row, champ_id)
 
 
 # ============================================================
@@ -2577,7 +2711,7 @@ elif menu == "💬 Collaboration & Workspace":
                 if nonempty(row.get("champ_concerne","")):
                     st.caption(f"Parcelle : {row.get('champ_concerne')}")
                 st.write(row.get("texte",""))
-                render_record_attachments("depenses", row, champ_id)
+                render_record_attachments("messages_workspace", row, champ_id)
 
 
 # ============================================================
