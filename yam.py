@@ -2611,7 +2611,7 @@ elif menu == "📧 Mails":
     st.title("📧 Mails")
     st.caption("Envoi direct depuis l'adresse Gmail professionnelle de YAM.")
 
-    GMAIL_SENDER = "issayoume2012@gmail.com"
+    GMAIL_SENDER = "issayoume1801@gmail.com"
     GMAIL_APP_PASSWORD = st.secrets.get(
         "GMAIL_APP_PASSWORD", os.getenv("GMAIL_APP_PASSWORD", "")
     )
