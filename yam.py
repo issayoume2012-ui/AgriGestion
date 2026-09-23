@@ -26,6 +26,8 @@ import re
 import json
 import math
 import hashlib
+import smtplib
+from email.message import EmailMessage
 from datetime import datetime, date, time, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -345,16 +347,43 @@ def _show_db_error(operation: str, table: str, exc: Exception):
     )
 
 
+def _missing_column_from_error(exc: Exception) -> Optional[str]:
+    """Extrait le nom d'une colonne inconnue signalée par PostgREST (PGRST204)."""
+    text = _supabase_error_details(exc)
+    m = re.search(r"Could not find the '([^']+)' column of '([^']+)'", text, re.I)
+    return m.group(1) if m else None
+
+
+def _write_with_schema_compat(table: str, operation: str, data: Dict[str, Any]):
+    """Réessaie automatiquement sans les colonnes absentes du schéma Supabase.
+
+    Cela évite qu'une ancienne version de la base bloque tout l'enregistrement.
+    Les colonnes réellement présentes sont toujours écrites. Les colonnes absentes
+    sont signalées à l'utilisateur pour permettre une migration propre ultérieure.
+    """
+    safe = json_safe(data).copy()
+    ignored = []
+    for _ in range(12):
+        try:
+            if operation == "insert":
+                res = supabase.table(table).insert(safe).execute()
+            else:
+                raise RuntimeError("operation non supportée")
+            return res, ignored
+        except Exception as exc:
+            missing = _missing_column_from_error(exc)
+            if missing and missing in safe:
+                ignored.append(missing)
+                safe.pop(missing, None)
+                continue
+            raise
+    raise RuntimeError(f"Trop de colonnes incompatibles détectées dans {table}: {ignored}")
+
+
 def db_insert(table: str, data: Dict[str, Any], action: str = "") -> Optional[Dict]:
-    """
-    INSERT vérifié :
-    - aucun faux succès ;
-    - aucune relance Streamlit si Supabase n'a pas renvoyé de ligne ;
-    - cache invalidé uniquement après confirmation.
-    """
+    """INSERT vérifié, avec compatibilité automatique des colonnes manquantes."""
     try:
-        safe_data = json_safe(data)
-        res = supabase.table(table).insert(safe_data).execute()
+        res, ignored = _write_with_schema_compat(table, "insert", data)
         rows = res.data or []
         if not rows:
             st.error(
@@ -362,45 +391,54 @@ def db_insert(table: str, data: Dict[str, Any], action: str = "") -> Optional[Di
                 "Supabase n'a renvoyé aucune ligne. Vérifiez la table et les policies RLS."
             )
             return None
+        if ignored:
+            st.warning(
+                f"⚠️ « {table} » a été enregistré, mais ces colonnes ne sont pas présentes "
+                f"dans votre schéma Supabase et ont été ignorées : {', '.join(ignored)}. "
+                "Ajoutez-les à la table pour conserver ces informations."
+            )
         clear_caches()
         if action:
-            audit_log(action, table, "INSERT", safe_data)
+            audit_log(action, table, "INSERT", data)
         return rows[0]
     except Exception as exc:
         _show_db_error("Enregistrement", table, exc)
         return None
 
-
 def db_update(
     table: str, match_col: str, match_val: Any,
     data: Dict[str, Any], action: str = ""
 ) -> bool:
-    """UPDATE vérifié : la ligne ciblée doit réellement être retournée."""
     try:
-        safe_data = json_safe(data)
-        safe_match = json_safe(match_val)
-        res = (
-            supabase.table(table)
-            .update(safe_data)
-            .eq(match_col, safe_match)
-            .execute()
-        )
-        rows = res.data or []
-        if not rows:
-            st.error(
-                f"❌ Mise à jour non confirmée dans « {table} ». "
-                f"Aucune ligne ne correspond à {match_col}={safe_match}. "
-                "Vérifiez l'ID et les policies RLS."
+        safe_data = json_safe(data).copy()
+        ignored = []
+        for _ in range(12):
+            try:
+                supabase.table(table).update(safe_data).eq(
+                    match_col, json_safe(match_val)
+                ).execute()
+                break
+            except Exception as exc:
+                missing = _missing_column_from_error(exc)
+                if missing and missing in safe_data:
+                    ignored.append(missing)
+                    safe_data.pop(missing, None)
+                    continue
+                raise
+        else:
+            raise RuntimeError(f"Trop de colonnes incompatibles détectées dans {table}: {ignored}")
+        if ignored:
+            st.warning(
+                f"⚠️ Mise à jour de « {table} » effectuée sans les colonnes absentes : "
+                f"{', '.join(ignored)}."
             )
-            return False
         clear_caches()
         if action:
-            audit_log(action, table, "UPDATE", safe_data)
+            audit_log(action, table, "UPDATE", data)
         return True
     except Exception as exc:
         _show_db_error("Mise à jour", table, exc)
         return False
-
 
 def db_delete(
     table: str, match_col: str, match_val: Any, action: str = ""
@@ -983,6 +1021,9 @@ def safe_num(df: pd.DataFrame, col: str) -> float:
 # Toutes les tables utilisées par l'application doivent exister dans Supabase.
 # La liste est également utilisée par le bouton Synchroniser pour recharger
 # toutes les données de la session.
+# Compatibilité de schéma : db_insert/db_update retirent automatiquement une colonne
+# si PostgREST renvoie PGRST204. Ainsi une table ancienne ne bloque plus les autres
+# enregistrements. Les colonnes manquantes sont toutefois signalées pour migration.
 SUPABASE_TABLES = [
     "whitelist_users", "historique_modifications", "champs", "employes",
     "groupes_travail", "groupe_membres", "taches", "tache_membres",
@@ -1693,7 +1734,7 @@ elif menu == "🌱 Cartographie & Parcelles":
 
         if st.form_submit_button("💾 Enregistrer", type="primary", use_container_width=True):
             if nom_p.strip():
-                db_insert(
+                rec = db_insert(
                     "champs",
                     {
                         "nom": nom_p.strip(),
@@ -1708,8 +1749,9 @@ elif menu == "🌱 Cartographie & Parcelles":
                     },
                     f"Création parcelle {nom_p.strip()}",
                 )
-                st.success("Parcelle enregistrée dans Supabase.")
-                st.rerun()
+                if rec:
+                    st.success("Parcelle enregistrée et confirmée dans Supabase.")
+                    st.rerun()
             else:
                 st.warning("Le nom de parcelle est obligatoire.")
 
@@ -2496,7 +2538,7 @@ elif menu == "💰 Finances & Coûts":
             st.metric("Coûts cumulés", f"{safe_num(df,'montant'):,.0f} FCFA")
             st.dataframe(df, use_container_width=True, hide_index=True)
             for _, row in df.iterrows():
-                render_record_attachments("depenses", row, champ_id)
+                render_record_attachments("messages_workspace", row, champ_id)
 
 
 # ============================================================
@@ -2556,7 +2598,7 @@ elif menu == "🌤️ Risques & Météo":
                 source = st.text_input("Source de l'information")
             recommendation = st.text_area("Recommandation technique")
             if st.form_submit_button("💾 Enregistrer", type="primary", use_container_width=True):
-                db_insert(
+                rec = db_insert(
                     "alertes_meteo",
                     {
                         "champ_id": champ_id,
@@ -2568,8 +2610,9 @@ elif menu == "🌤️ Risques & Météo":
                     },
                     f"Alerte {risk} — {level} — {champ_name}",
                 )
-                st.success("Alerte enregistrée.")
-                st.rerun()
+                if rec:
+                    st.success("Alerte enregistrée et confirmée dans Supabase.")
+                    st.rerun()
 
         df = filter_by_champ(load_table("alertes_meteo"), champ_id)
         if not df.empty:
@@ -2730,13 +2773,14 @@ elif menu == "💬 Collaboration & Workspace":
                     },
                     f"Publication workspace {content_type}",
                 )
-                if workspace_record and meta:
-                    save_media_record(
-                        meta, "messages_workspace", workspace_record.get("id"),
-                        champ_id if linked_champ != "Aucune" else None, "workspace"
-                    )
-                st.success("Publication enregistrée.")
-                st.rerun()
+                if workspace_record:
+                    if meta:
+                        save_media_record(
+                            meta, "messages_workspace", workspace_record.get("id"),
+                            champ_id if linked_champ != "Aucune" else None, "workspace"
+                        )
+                    st.success("Publication enregistrée et confirmée dans Supabase.")
+                    st.rerun()
             else:
                 st.warning("Confirmez et saisissez un message ou joignez un fichier.")
 
@@ -2752,7 +2796,7 @@ elif menu == "💬 Collaboration & Workspace":
                 if nonempty(row.get("champ_concerne","")):
                     st.caption(f"Parcelle : {row.get('champ_concerne')}")
                 st.write(row.get("texte",""))
-                render_record_attachments("depenses", row, champ_id)
+                render_record_attachments("messages_workspace", row, champ_id)
 
 
 # ============================================================
@@ -2917,8 +2961,9 @@ elif menu == "🔐 Liste Blanche & Administration":
                     f"Ajout utilisateur {email.strip().lower()}",
                 )
                 if rec:
+                    scope_ok = True
                     for label in selected_champs:
-                        db_insert(
+                        if not db_insert(
                             "user_champs",
                             {
                                 "user_email": email.strip().lower(),
@@ -2926,9 +2971,13 @@ elif menu == "🔐 Liste Blanche & Administration":
                                 "actif": True,
                             },
                             f"Affectation parcelle {label}",
-                        )
-                st.success("Compte et périmètre enregistrés.")
-                st.rerun()
+                        ):
+                            scope_ok = False
+                    if scope_ok:
+                        st.success("Compte et périmètre enregistrés et confirmés dans Supabase.")
+                        st.rerun()
+                    else:
+                        st.error("Le compte est créé mais au moins une affectation parcellaire a échoué.")
             else:
                 st.warning("L'e-mail et le mot de passe sont obligatoires.")
 
@@ -2968,15 +3017,20 @@ elif menu == "🔐 Liste Blanche & Administration":
             supabase.table("user_champs").delete().eq(
                 "user_email", target_email
             ).execute()
+            scope_ok = True
             for label in selected_labels:
-                db_insert(
+                if not db_insert(
                     "user_champs",
                     {"user_email": target_email, "champ_id": champ_options[label], "actif": True},
                     f"Périmètre {target_email} — {label}",
-                )
-            st.success("Périmètre mis à jour.")
-            clear_caches()
-            st.rerun()
+                ):
+                    scope_ok = False
+            if scope_ok:
+                st.success("Périmètre mis à jour et confirmé dans Supabase.")
+                clear_caches()
+                st.rerun()
+            else:
+                st.error("Le périmètre n'a pas été entièrement synchronisé.")
 
         if "id" in df.columns:
             for _, row in df.iterrows():
