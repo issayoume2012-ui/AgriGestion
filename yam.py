@@ -325,16 +325,49 @@ def json_safe(value: Any) -> Any:
     return value
 
 
+def _supabase_error_details(exc: Exception) -> str:
+    """Retourne un message utile sans masquer l'erreur PostgreSQL/Supabase."""
+    raw = str(exc).replace("\n", " ").strip()
+    # Les erreurs Supabase contiennent souvent code/message/details/hint.
+    parts = []
+    for attr in ("code", "message", "details", "hint"):
+        value = getattr(exc, attr, None)
+        if value and str(value) not in parts:
+            parts.append(str(value))
+    detail = " | ".join(parts) if parts else raw
+    return detail[:1200] or "Erreur Supabase inconnue."
+
+
+def _show_db_error(operation: str, table: str, exc: Exception):
+    st.error(
+        f"❌ {operation} impossible dans « {table} ». "
+        f"Supabase/PostgreSQL : {_supabase_error_details(exc)}"
+    )
+
+
 def db_insert(table: str, data: Dict[str, Any], action: str = "") -> Optional[Dict]:
+    """
+    INSERT vérifié :
+    - aucun faux succès ;
+    - aucune relance Streamlit si Supabase n'a pas renvoyé de ligne ;
+    - cache invalidé uniquement après confirmation.
+    """
     try:
         safe_data = json_safe(data)
         res = supabase.table(table).insert(safe_data).execute()
+        rows = res.data or []
+        if not rows:
+            st.error(
+                f"❌ Insertion non confirmée dans « {table} ». "
+                "Supabase n'a renvoyé aucune ligne. Vérifiez la table et les policies RLS."
+            )
+            return None
         clear_caches()
         if action:
             audit_log(action, table, "INSERT", safe_data)
-        return (res.data or [None])[0]
+        return rows[0]
     except Exception as exc:
-        st.error(f"Erreur Supabase — {table}: {db_error_message(exc)}")
+        _show_db_error("Enregistrement", table, exc)
         return None
 
 
@@ -342,30 +375,58 @@ def db_update(
     table: str, match_col: str, match_val: Any,
     data: Dict[str, Any], action: str = ""
 ) -> bool:
+    """UPDATE vérifié : la ligne ciblée doit réellement être retournée."""
     try:
         safe_data = json_safe(data)
         safe_match = json_safe(match_val)
-        supabase.table(table).update(safe_data).eq(match_col, safe_match).execute()
+        res = (
+            supabase.table(table)
+            .update(safe_data)
+            .eq(match_col, safe_match)
+            .execute()
+        )
+        rows = res.data or []
+        if not rows:
+            st.error(
+                f"❌ Mise à jour non confirmée dans « {table} ». "
+                f"Aucune ligne ne correspond à {match_col}={safe_match}. "
+                "Vérifiez l'ID et les policies RLS."
+            )
+            return False
         clear_caches()
         if action:
             audit_log(action, table, "UPDATE", safe_data)
         return True
     except Exception as exc:
-        st.error(f"Erreur Supabase — {table}: {db_error_message(exc)}")
+        _show_db_error("Mise à jour", table, exc)
         return False
 
 
 def db_delete(
     table: str, match_col: str, match_val: Any, action: str = ""
 ) -> bool:
+    """DELETE vérifié : la suppression doit retourner la ligne supprimée."""
     try:
-        supabase.table(table).delete().eq(match_col, match_val).execute()
+        safe_match = json_safe(match_val)
+        res = (
+            supabase.table(table)
+            .delete()
+            .eq(match_col, safe_match)
+            .execute()
+        )
+        rows = res.data or []
+        if not rows:
+            st.error(
+                f"❌ Suppression non confirmée dans « {table} ». "
+                f"Aucune ligne ne correspond à {match_col}={safe_match}."
+            )
+            return False
         clear_caches()
         if action:
-            audit_log(action, table, "DELETE", {"match": match_val})
+            audit_log(action, table, "DELETE", {"match_col": match_col, "match": safe_match})
         return True
     except Exception as exc:
-        st.error(f"Erreur Supabase — {table}: {db_error_message(exc)}")
+        _show_db_error("Suppression", table, exc)
         return False
 
 
@@ -540,7 +601,6 @@ def audit_ui_action(action: str, operation: str = "UI", details: Any = None):
 # 6. PARCELLES / PÉRIMÈTRE
 # ============================================================
 
-@st.cache_data(ttl=15)
 def load_accessible_champs() -> pd.DataFrame:
     """
     Périmètre réel de l'utilisateur.
@@ -942,7 +1002,6 @@ CHAMP_SCOPED_TABLES = {
 # Tables globales : on ne les expose pas indistinctement à tous les comptes.
 CREATOR_SCOPED_TABLES = {"employes", "groupes_travail"}
 
-@st.cache_data(ttl=5)
 def sync_table(table_name: str) -> pd.DataFrame:
     try:
         q = supabase.table(table_name).select("*")
@@ -989,10 +1048,25 @@ def load_table(table_name: str) -> pd.DataFrame:
 
 
 def sync_all_tables() -> Dict[str, pd.DataFrame]:
+    """
+    Force une relecture complète depuis Supabase.
+    Les lectures ne sont volontairement pas mises en cache : la priorité est
+    la cohérence immédiate après un enregistrement.
+    """
+    clear_caches()
     data = {}
+    errors = []
     for table in SUPABASE_TABLES:
-        data[table] = load_table(table)
+        try:
+            data[table] = load_table(table)
+        except Exception as exc:
+            data[table] = pd.DataFrame()
+            errors.append(f"{table}: {_supabase_error_details(exc)}")
     st.session_state.last_sync = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    if errors:
+        st.session_state.sync_errors = errors
+    else:
+        st.session_state.sync_errors = []
     return data
 
 
@@ -1383,6 +1457,12 @@ with c3:
         st.session_state.clear()
         st.rerun()
 
+if st.session_state.get("sync_errors"):
+    st.warning(
+        "⚠️ Certaines tables n'ont pas pu être relues depuis Supabase : "
+        + " ; ".join(st.session_state["sync_errors"])
+    )
+
 
 # ============================================================
 # 12. SÉLECTION DE PARCELLE
@@ -1757,19 +1837,36 @@ elif menu == "👥 Membres & Équipes":
             
             if st.form_submit_button("➕ Ajouter le membre", type="primary", use_container_width=True):
                 if first.strip() and last.strip():
-                    db_insert("employes", {
-                        "prenom": first.strip(), 
-                        "nom": last.strip(), 
+                    member_data = {
+                        "prenom": first.strip(),
+                        "nom": last.strip(),
                         "email": email.strip().lower(),
-                        "telephone": phone.strip(), 
-                        "fonction": job.strip(), 
+                        "telephone": phone.strip(),
+                        "fonction": job.strip(),
                         "tarif_journalier": daily_rate,
                         "statut": status,
-                        "observation": note.strip(), 
-                        "createur_email": user_email()
-                    }, f"Ajout membre {first.strip()} {last.strip()}")
-                    st.success("Membre et tarif ajoutés dans Supabase.")
-                    st.rerun()
+                        "observation": note.strip(),
+                        "createur_email": user_email(),
+                    }
+                    duplicate = (
+                        employees[
+                            employees["prenom"].astype(str).str.strip().str.lower().eq(first.strip().lower())
+                            & employees["nom"].astype(str).str.strip().str.lower().eq(last.strip().lower())
+                        ]
+                        if not employees.empty and "prenom" in employees.columns and "nom" in employees.columns
+                        else pd.DataFrame()
+                    )
+                    if not duplicate.empty:
+                        st.warning("Ce membre existe déjà dans votre périmètre.")
+                    else:
+                        rec = db_insert(
+                            "employes",
+                            member_data,
+                            f"Ajout membre {first.strip()} {last.strip()}"
+                        )
+                        if rec:
+                            st.success("Membre et tarif ajoutés et confirmés dans Supabase.")
+                            st.rerun()
                 else:
                     st.warning("Le prénom et le nom sont obligatoires.")
                     
@@ -1782,9 +1879,9 @@ elif menu == "👥 Membres & Équipes":
                 key="member_delete_select",
             )
             if member_to_delete is not None and st.button("🗑️ Supprimer le membre", key="delete_member_btn"):
-                db_delete("employes", "id", member_to_delete, f"Suppression membre {member_to_delete}")
-                st.success("Membre supprimé et affectations liées nettoyées.")
-                st.rerun()
+                if db_delete("employes", "id", member_to_delete, f"Suppression membre {member_to_delete}"):
+                    st.success("Membre supprimé dans Supabase.")
+                    st.rerun()
 
     with tab2:
         with st.form("group_form", clear_on_submit=True):
@@ -1793,12 +1890,13 @@ elif menu == "👥 Membres & Équipes":
             group_desc = st.text_area("Description")
             if st.form_submit_button("➕ Créer le groupe", type="primary", use_container_width=True):
                 if group_name.strip():
-                    db_insert("groupes_travail", {
+                    rec = db_insert("groupes_travail", {
                         "nom": group_name.strip(), "travail_principal": group_work.strip(),
                         "description": group_desc.strip(), "responsable_email": user_email(), "actif": True
                     }, f"Création groupe {group_name.strip()}")
-                    st.success("Groupe créé.")
-                    st.rerun()
+                    if rec:
+                        st.success("Groupe créé et confirmé dans Supabase.")
+                        st.rerun()
                 else:
                     st.warning("Le nom du groupe est obligatoire.")
         if not groups_df.empty:
@@ -1810,9 +1908,9 @@ elif menu == "👥 Membres & Équipes":
                 key="group_delete_select",
             )
             if group_to_delete is not None and st.button("🗑️ Supprimer le groupe", key="delete_group_btn"):
-                db_delete("groupes_travail", "id", group_to_delete, f"Suppression groupe {group_to_delete}")
-                st.success("Groupe supprimé et affectations liées nettoyées.")
-                st.rerun()
+                if db_delete("groupes_travail", "id", group_to_delete, f"Suppression groupe {group_to_delete}"):
+                    st.success("Groupe supprimé dans Supabase.")
+                    st.rerun()
 
     with tab3:
         if employees.empty:
@@ -1827,13 +1925,23 @@ elif menu == "👥 Membres & Équipes":
                 mids = st.multiselect("Membres du groupe", list(emp_options), format_func=lambda x: emp_options[x])
                 if st.form_submit_button("💾 Enregistrer les membres du groupe", type="primary", use_container_width=True):
                     existing = memberships[memberships["groupe_id"].astype(str) == str(gid)] if not memberships.empty and "groupe_id" in memberships.columns else pd.DataFrame()
+                    sync_ok = True
                     if not existing.empty and "id" in existing.columns:
                         for rid in existing["id"].tolist():
-                            db_delete("groupe_membres", "id", rid, f"Retrait membre groupe {gid}")
+                            if not db_delete("groupe_membres", "id", rid, f"Retrait membre groupe {gid}"):
+                                sync_ok = False
                     for mid in mids:
-                        db_insert("groupe_membres", {"groupe_id": gid, "employe_id": mid}, f"Affectation membre {mid} au groupe {gid}")
-                    st.success("Composition du groupe synchronisée.")
-                    st.rerun()
+                        if not db_insert(
+                            "groupe_membres",
+                            {"groupe_id": gid, "employe_id": mid},
+                            f"Affectation membre {mid} au groupe {gid}"
+                        ):
+                            sync_ok = False
+                    if sync_ok:
+                        st.success("Composition du groupe synchronisée dans Supabase.")
+                        st.rerun()
+                    else:
+                        st.error("La composition du groupe n'a pas été entièrement synchronisée.")
             st.subheader("Composition actuelle")
             memberships = load_table("groupe_membres")
             if not memberships.empty:
@@ -1893,10 +2001,23 @@ elif menu == "📅 Planning & Travaux":
                     f"Planification {task_type} sur {champ_name}",
                 )
                 if task_rec and task_rec.get("id"):
+                    assignment_ok = True
                     for mid in selected_members:
-                        db_insert("tache_membres", {"tache_id": task_rec["id"], "employe_id": mid}, f"Affectation membre {mid} au travail {task_rec['id']}")
-                st.success("Travail planifié et membres synchronisés.")
-                st.rerun()
+                        child = db_insert(
+                            "tache_membres",
+                            {"tache_id": task_rec["id"], "employe_id": mid},
+                            f"Affectation membre {mid} au travail {task_rec['id']}"
+                        )
+                        if not child:
+                            assignment_ok = False
+                    if assignment_ok:
+                        st.success("Travail planifié et synchronisé dans Supabase.")
+                        st.rerun()
+                    else:
+                        st.error(
+                            "Le travail principal a été enregistré, mais au moins une "
+                            "affectation membre n'a pas été synchronisée."
+                        )
 
         df = filter_by_champ(load_table("taches"), champ_id)
         if not df.empty:
@@ -1945,7 +2066,7 @@ elif menu == "🌾 Récoltes & Rendements":
                 lot = st.text_input("Lot associé (optionnel)")
             remark = st.text_area("Observation")
             if st.form_submit_button("💾 Enregistrer la récolte", type="primary", use_container_width=True):
-                db_insert(
+                rec = db_insert(
                     "recoltes",
                     {
                         "champ_id": champ_id,
@@ -1959,8 +2080,9 @@ elif menu == "🌾 Récoltes & Rendements":
                     },
                     f"Récolte {culture} — {quantity} kg — {champ_name}",
                 )
-                st.success("Récolte enregistrée.")
-                st.rerun()
+                if rec:
+                    st.success("Récolte enregistrée et confirmée dans Supabase.")
+                    st.rerun()
 
         df = filter_by_champ(load_table("recoltes"), champ_id)
         if not df.empty:
@@ -1988,7 +2110,7 @@ elif menu == "🌧️ Pluviométrie":
             method = st.text_input("Méthode / station / source")
             remark = st.text_area("Observation")
             if st.form_submit_button("💾 Enregistrer", type="primary", use_container_width=True):
-                db_insert(
+                rec = db_insert(
                     "pluviometrie",
                     {
                         "champ_id": champ_id,
@@ -1999,8 +2121,9 @@ elif menu == "🌧️ Pluviométrie":
                     },
                     f"Pluie {mm} mm — {champ_name}",
                 )
-                st.success("Relevé enregistré.")
-                st.rerun()
+                if rec:
+                    st.success("Relevé enregistré et confirmé dans Supabase.")
+                    st.rerun()
         df = filter_by_champ(load_table("pluviometrie"), champ_id)
         if not df.empty:
             st.metric("Pluie cumulée enregistrée", f"{safe_num(df,'pluie_mm'):.1f} mm")
@@ -2027,7 +2150,7 @@ elif menu == "💧 Irrigation & Eau":
                 operator = st.text_input("Opérateur")
             remark = st.text_area("Observation")
             if st.form_submit_button("💾 Enregistrer", type="primary", use_container_width=True):
-                db_insert(
+                rec = db_insert(
                     "irrigation",
                     {
                         "champ_id": champ_id,
@@ -2041,8 +2164,9 @@ elif menu == "💧 Irrigation & Eau":
                     },
                     f"Irrigation {volume} m³ — {champ_name}",
                 )
-                st.success("Irrigation enregistrée.")
-                st.rerun()
+                if rec:
+                    st.success("Irrigation enregistrée et confirmée dans Supabase.")
+                    st.rerun()
         df = filter_by_champ(load_table("irrigation"), champ_id)
         if not df.empty:
             st.metric("Eau cumulée", f"{safe_num(df,'volume_eau_m3'):,.1f} m³")
@@ -2093,17 +2217,17 @@ elif menu == "⚠️ Incidents & Observations":
                         },
                         f"Incident {category} — {severity} — {champ_name}",
                     )
-                    if rec and photo is not None:
-                        meta = storage_save(photo, "incidents", "incidents", rec.get("id", "new"), champ_id)
-                        if meta:
-                            db_update(
-                                "incidents",
-                                "id", rec.get("id"),
-                                meta,
+                    if rec:
+                        attachment_ok = True
+                        if photo is not None:
+                            meta = storage_save(photo, "incidents", "incidents", rec.get("id"), champ_id)
+                            attachment_ok = bool(meta) and db_update(
+                                "incidents", "id", rec.get("id"), meta,
                                 f"Photo incident ajoutée — {champ_name}"
                             )
-                    st.success("Incident enregistré avec l'évidence dans Supabase Storage.")
-                    st.rerun()
+                        if attachment_ok:
+                            st.success("Incident enregistré et confirmé dans Supabase.")
+                            st.rerun()
 
         df = filter_by_champ(load_table("incidents"), champ_id)
         if not df.empty:
@@ -2160,12 +2284,28 @@ elif menu == "🏷️ Traçabilité & Lots":
                         },
                         f"Lot {lot.strip()} — {champ_name}",
                     )
-                    if rec and proof is not None:
-                        meta = storage_save(proof, "tracabilite", "tracabilite", rec.get("id","new"), champ_id)
-                        if meta:
-                            db_update("tracabilite","id",rec.get("id"),meta,"Preuve lot ajoutée")
-                    st.success("Lot enregistré.")
-                    st.rerun()
+                    if rec:
+                        attachment_ok = True
+                        if proof is not None:
+                            meta = storage_save(
+                                proof, "tracabilite", "tracabilite",
+                                rec.get("id"), champ_id
+                            )
+                            if meta:
+                                attachment_ok = db_update(
+                                    "tracabilite", "id", rec.get("id"),
+                                    meta, "Preuve lot ajoutée"
+                                )
+                            else:
+                                attachment_ok = False
+                        if attachment_ok:
+                            st.success("Lot enregistré et confirmé dans Supabase.")
+                            st.rerun()
+                        else:
+                            st.error(
+                                "Le lot a été créé, mais la preuve jointe n'a pas pu "
+                                "être synchronisée. Le lot n'est pas déclaré comme entièrement synchronisé."
+                            )
                 else:
                     st.warning("Le code du lot est obligatoire.")
 
@@ -2219,12 +2359,17 @@ elif menu == "📦 Intrants & Stocks":
                     },
                     f"Intrant {name.strip()} — réception {purchased}",
                 )
-                if rec and proof is not None:
-                    meta = storage_save(proof, "intrants", "intrants", rec.get("id","new"), champ_id)
-                    if meta:
-                        db_update("intrants","id",rec.get("id"),meta,"Justificatif intrant ajouté")
-                st.success("Stock enregistré.")
-                st.rerun()
+                if rec:
+                    attachment_ok = True
+                    if proof is not None:
+                        meta = storage_save(proof, "intrants", "intrants", rec.get("id"), champ_id)
+                        attachment_ok = bool(meta) and db_update(
+                            "intrants", "id", rec.get("id"), meta,
+                            "Justificatif intrant ajouté"
+                        )
+                    if attachment_ok:
+                        st.success("Stock enregistré et confirmé dans Supabase.")
+                        st.rerun()
 
     df = load_table("intrants")
     if not df.empty:
@@ -2275,18 +2420,23 @@ elif menu == "🚜 Matériel & Maintenance":
                     },
                     f"Matériel {name.strip()}",
                 )
-                if rec and photo is not None:
-                    meta = storage_save(photo, "materiel", "materiel", rec.get("id","new"), champ_id)
-                    if meta:
-                        db_update("materiel","id",rec.get("id"),meta,"Photo matériel ajoutée")
-                st.success("Matériel enregistré.")
-                st.rerun()
+                if rec:
+                    attachment_ok = True
+                    if photo is not None:
+                        meta = storage_save(photo, "materiel", "materiel", rec.get("id"), champ_id)
+                        attachment_ok = bool(meta) and db_update(
+                            "materiel", "id", rec.get("id"), meta,
+                            "Photo matériel ajoutée"
+                        )
+                    if attachment_ok:
+                        st.success("Matériel enregistré et confirmé dans Supabase.")
+                        st.rerun()
 
     df = load_table("materiel")
     if not df.empty:
         st.dataframe(df, use_container_width=True, hide_index=True)
         for _, row in df.iterrows():
-            render_record_attachments("intrants", row, champ_id)
+            render_record_attachments("materiel", row, champ_id)
 
 
 # ============================================================
@@ -2329,19 +2479,24 @@ elif menu == "💰 Finances & Coûts":
                         },
                         f"Dépense {kind.strip()} — {amount} FCFA — {champ_name}",
                     )
-                    if rec and proof is not None:
-                        meta = storage_save(proof, "depenses", "depenses", rec.get("id","new"), champ_id)
-                        if meta:
-                            db_update("depenses","id",rec.get("id"),meta,"Justificatif dépense ajouté")
-                    st.success("Dépense enregistrée dans Supabase.")
-                    st.rerun()
+                    if rec:
+                        attachment_ok = True
+                        if proof is not None:
+                            meta = storage_save(proof, "depenses", "depenses", rec.get("id"), champ_id)
+                            attachment_ok = bool(meta) and db_update(
+                                "depenses", "id", rec.get("id"), meta,
+                                "Justificatif dépense ajouté"
+                            )
+                        if attachment_ok:
+                            st.success("Dépense enregistrée et confirmée dans Supabase.")
+                            st.rerun()
 
         df = filter_by_champ(load_table("depenses"), champ_id)
         if not df.empty:
             st.metric("Coûts cumulés", f"{safe_num(df,'montant'):,.0f} FCFA")
             st.dataframe(df, use_container_width=True, hide_index=True)
             for _, row in df.iterrows():
-                render_record_attachments("materiel", row, champ_id)
+                render_record_attachments("depenses", row, champ_id)
 
 
 # ============================================================
