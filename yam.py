@@ -1230,11 +1230,47 @@ def add_storage_images(elements, rows: List[pd.Series], styles, max_images=8):
             continue
 
 
+def _filter_report_daily(df: pd.DataFrame, report_date: date, table: str) -> pd.DataFrame:
+    """Conserve uniquement les enregistrements de la date demandée."""
+    if df is None or df.empty:
+        return pd.DataFrame() if df is None else df
+
+    date_columns = {
+        "time_entries": ["date", "date_entree", "date_pointage", "created_at"],
+        "taches": ["date_tache", "date", "created_at"],
+        "recoltes": ["date_recolte", "date", "created_at"],
+        "depenses": ["date_depense", "date", "created_at"],
+        "intrants": ["date_achat", "date", "created_at"],
+        "materiel": ["date", "date_intervention", "created_at"],
+        "pluviometrie": ["date", "date_releve", "created_at"],
+        "incidents": ["date", "date_incident", "created_at"],
+        "tracabilite": ["date_recolte", "date", "created_at"],
+        "irrigation": ["date", "date_irrigation", "created_at"],
+        "alertes_meteo": ["date", "date_alerte", "created_at"],
+    }
+    candidates = [c for c in date_columns.get(table, []) if c in df.columns]
+    if not candidates:
+        return df.iloc[0:0].copy()
+
+    target = pd.Timestamp(report_date).date()
+    mask = pd.Series(False, index=df.index)
+    for col in candidates:
+        parsed = pd.to_datetime(df[col], errors="coerce", dayfirst=False)
+        mask = mask | parsed.dt.date.eq(target)
+    return df.loc[mask].copy()
+
+
 def generate_pdf_report(
     champ_id: Any,
     champ_name: str,
     report_date: date,
+    report_mode: str = "global",
 ) -> bytes:
+    """Génère un rapport pour UNE parcelle, soit journalier, soit global.
+
+    - journalier : uniquement les données de la parcelle correspondant à report_date.
+    - global : toutes les données disponibles de cette même parcelle.
+    """
     buffer = io.BytesIO()
     styles = pdf_styles()
 
@@ -1243,9 +1279,6 @@ def generate_pdf_report(
         rightMargin=28, leftMargin=28, topMargin=30, bottomMargin=35
     )
 
-    # Sécurité : le rapport ne peut être produit que pour une parcelle réellement
-    # accessible au compte courant. Le nom affiché dans l'interface n'est jamais
-    # utilisé pour retrouver la parcelle.
     try:
         champ_id = int(champ_id)
     except Exception:
@@ -1253,6 +1286,9 @@ def generate_pdf_report(
 
     if not champ_access(champ_id):
         raise PermissionError("Cette parcelle n'est pas accessible à cet utilisateur.")
+
+    if report_mode not in ("journalier", "global"):
+        raise ValueError("Mode de rapport invalide.")
 
     champs = load_accessible_champs()
     champ_info = pd.DataFrame()
@@ -1262,7 +1298,6 @@ def generate_pdf_report(
         tmp = champs[champs["id"] == champ_id]
         if not tmp.empty:
             champ_info = tmp.iloc[[0]]
-            # Le nom canonique provient de Supabase, pas de l'ancien état du widget.
             champ_name = str(champ_info.iloc[0].get("nom", champ_name))
 
     table_titles = [
@@ -1281,11 +1316,13 @@ def generate_pdf_report(
 
     collected = {}
     for table, title in table_titles:
-        collected[table] = filter_by_champ(load_table(table), champ_id)
+        df = filter_by_champ(load_table(table), champ_id)
+        if report_mode == "journalier":
+            df = _filter_report_daily(df, report_date, table)
+        collected[table] = df
 
-    # Évidences venant des tables métier.
     evidence_rows = []
-    for table in ["depenses","intrants","materiel","incidents","tracabilite"]:
+    for table in ["depenses", "intrants", "materiel", "incidents", "tracabilite"]:
         df = collected.get(table, pd.DataFrame())
         if not df.empty:
             for _, row in df.iterrows():
@@ -1307,6 +1344,13 @@ def generate_pdf_report(
     )
     margin = value - total_dep
 
+    mode_label = "RAPPORT JOURNALIER" if report_mode == "journalier" else "RAPPORT GLOBAL"
+    mode_detail = (
+        f"Journée du {report_date.strftime('%d/%m/%Y')}"
+        if report_mode == "journalier"
+        else "Synthèse globale de toutes les données enregistrées pour cette parcelle"
+    )
+
     def footer(canvas, doc_obj):
         canvas.saveState()
         canvas.setStrokeColor(colors.HexColor("#d7e7dc"))
@@ -1323,22 +1367,18 @@ def generate_pdf_report(
     el.append(Spacer(1, 8))
     el.append(Paragraph("YouAgronoMe (YAM)", styles["title"]))
     el.append(Paragraph(
-        "RAPPORT PROFESSIONNEL DE SUIVI AGRICOLE",
-        ParagraphStyle(
-            "cover", parent=styles["subtitle"], alignment=1,
-            fontSize=11, spaceBefore=0
-        )
+        mode_label,
+        ParagraphStyle("cover", parent=styles["subtitle"], alignment=1, fontSize=13, spaceBefore=0)
     ))
     el.append(Paragraph(
         f"PARCELLE : <b>{esc(champ_name).upper()}</b>",
         ParagraphStyle("cover2", parent=styles["subtitle"], alignment=1)
     ))
+    el.append(Paragraph(mode_detail, styles["small"]))
+    el.append(Spacer(1, 8))
 
     kpi = Table(
-        [[
-            "Récolte", "Dépenses", "Valeur récoltes", "Marge estimative",
-            "Incidents"
-        ],[
+        [["Récolte", "Dépenses", "Valeur récoltes", "Marge estimative", "Incidents"], [
             f"{total_kg:,.2f} kg",
             f"{total_dep:,.0f} FCFA",
             f"{value:,.0f} FCFA",
@@ -1362,26 +1402,22 @@ def generate_pdf_report(
     el.append(kpi)
     el.append(Spacer(1, 10))
     el.append(Paragraph(
-        f"Édité le {report_date.strftime('%d/%m/%Y')} à "
-        f"{datetime.now().strftime('%H:%M')}. "
-        "Seules les informations réellement renseignées sont présentées.",
+        f"Édité le {datetime.now().strftime('%d/%m/%Y')} à {datetime.now().strftime('%H:%M')}. "
+        + ("Les données affichées correspondent uniquement à la journée sélectionnée."
+           if report_mode == "journalier" else
+           "Les données affichées couvrent l'ensemble de l'historique disponible de cette parcelle.")
+        + " Seules les informations réellement renseignées sont présentées.",
         styles["small"]
     ))
 
     add_clean_df(el, "1. IDENTIFICATION DE LA PARCELLE", champ_info, styles)
-
     for table, title in table_titles:
         add_clean_df(el, title, collected[table], styles)
-
     add_storage_images(el, evidence_rows, styles)
 
-    # Validation/signatures.
     el.append(Paragraph("VALIDATION PROFESSIONNELLE", styles["subtitle"]))
     sig = Table(
-        [[
-            "RESPONSABLE DU SUIVI",
-            "SUPERVISION / PROPRIÉTAIRE"
-        ],[
+        [["RESPONSABLE DU SUIVI", "SUPERVISION / PROPRIÉTAIRE"], [
             "Nom : ______________________\nSignature : __________________\nDate : ____ / ____ / ______",
             "Nom : ______________________\nSignature : __________________\nDate : ____ / ____ / ______"
         ]],
@@ -2624,88 +2660,178 @@ elif menu == "🌤️ Risques & Météo":
 # ============================================================
 
 elif menu == "📑 Rapports Professionnels":
-    st.title(f"📑 Rapport professionnel — {champ_name}")
+    st.title(f"📑 Rapports professionnels — {champ_name}")
+    st.caption(
+        "Pour la parcelle sélectionnée, vous pouvez télécharger séparément "
+        "un rapport journalier ou un rapport global."
+    )
+
     if champ_id is None:
         st.warning("Sélectionnez une parcelle.")
     else:
-        report_date = st.date_input("Date officielle du rapport", value=date.today())
+        active_id = st.session_state.get("active_champ_id", champ_id)
+        try:
+            active_id = int(active_id)
+        except Exception:
+            active_id = None
 
-        if st.button("📄 Générer le rapport A4 professionnel", type="primary", use_container_width=True):
-            # Relecture immédiate de l'ID sélectionné : impossible de générer
-            # le PDF avec une ancienne parcelle conservée dans l'état Streamlit.
-            active_id = st.session_state.get("active_champ_id", champ_id)
-            try:
-                active_id = int(active_id)
-            except Exception:
-                active_id = None
+        if active_id is None or not champ_access(active_id):
+            st.error("🔒 Parcelle invalide ou non autorisée.")
+            st.stop()
 
-            if active_id is None or not champ_access(active_id):
-                st.error("🔒 Parcelle invalide ou non autorisée.")
-                st.stop()
+        current = load_accessible_champs()
+        current_row = (
+            current[pd.to_numeric(current["id"], errors="coerce") == active_id]
+            if not current.empty and "id" in current.columns else pd.DataFrame()
+        )
+        if current_row.empty:
+            st.error("La parcelle sélectionnée n'existe plus ou n'est plus accessible.")
+            st.stop()
 
-            current = load_accessible_champs()
-            current_row = current[
-                pd.to_numeric(current["id"], errors="coerce") == active_id
-            ] if not current.empty and "id" in current.columns else pd.DataFrame()
+        canonical_name = str(current_row.iloc[0].get("nom", f"Parcelle {active_id}"))
+        report_date = st.date_input(
+            "📅 Date du rapport journalier",
+            value=date.today(),
+            key="report_daily_date",
+        )
 
-            if current_row.empty:
-                st.error("La parcelle sélectionnée n'existe plus ou n'est plus accessible.")
-                st.stop()
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button(
+                "📅 Générer le rapport JOURNALIER",
+                type="primary",
+                use_container_width=True,
+            ):
+                try:
+                    with st.spinner("Génération du rapport journalier..."):
+                        pdf = generate_pdf_report(
+                            active_id, canonical_name, report_date, "journalier"
+                        )
+                    st.session_state.report_daily_pdf = pdf
+                    st.session_state.report_daily_name = (
+                        f"Rapport_Journalier_YAM_{safe_filename(canonical_name)}_"
+                        f"{report_date.strftime('%Y-%m-%d')}.pdf"
+                    )
+                    st.success(
+                        f"Rapport journalier généré pour {canonical_name} — "
+                        f"{report_date.strftime('%d/%m/%Y')}."
+                    )
+                except Exception as exc:
+                    st.error(f"Échec de génération du rapport journalier : {db_error_message(exc)}")
 
-            canonical_name = str(current_row.iloc[0].get("nom", f"Parcelle {active_id}"))
+        with c2:
+            if st.button(
+                "📊 Générer le rapport GLOBAL",
+                type="primary",
+                use_container_width=True,
+            ):
+                try:
+                    with st.spinner("Génération du rapport global..."):
+                        pdf = generate_pdf_report(
+                            active_id, canonical_name, report_date, "global"
+                        )
+                    st.session_state.report_global_pdf = pdf
+                    st.session_state.report_global_name = (
+                        f"Rapport_Global_YAM_{safe_filename(canonical_name)}.pdf"
+                    )
+                    st.success(f"Rapport global généré pour {canonical_name}.")
+                except Exception as exc:
+                    st.error(f"Échec de génération du rapport global : {db_error_message(exc)}")
 
-            with st.spinner("Génération du rapport..."):
-                pdf = generate_pdf_report(
-                    active_id, canonical_name, report_date
+        st.divider()
+        d1, d2 = st.columns(2)
+
+        with d1:
+            st.subheader("📅 Rapport journalier")
+            st.caption(
+                f"Parcelle : {canonical_name} · Date : {report_date.strftime('%d/%m/%Y')}"
+            )
+            if st.session_state.get("report_daily_pdf"):
+                st.download_button(
+                    "📥 Télécharger le rapport journalier",
+                    st.session_state.report_daily_pdf,
+                    file_name=st.session_state.report_daily_name,
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="download_daily_report",
                 )
 
-            st.session_state.report_pdf = pdf
-            st.session_state.report_name = (
-                f"Rapport_YAM_{safe_filename(canonical_name)}_{report_date}.pdf"
-            )
-            st.success(f"Rapport généré pour : {canonical_name}")
+        with d2:
+            st.subheader("📊 Rapport global")
+            st.caption(f"Parcelle : {canonical_name} · Historique complet disponible")
+            if st.session_state.get("report_global_pdf"):
+                st.download_button(
+                    "📥 Télécharger le rapport global",
+                    st.session_state.report_global_pdf,
+                    file_name=st.session_state.report_global_name,
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="download_global_report",
+                )
 
-        if st.session_state.get("report_pdf"):
-            st.download_button(
-                "📥 TÉLÉCHARGER LE RAPPORT PDF",
-                st.session_state.report_pdf,
-                file_name=st.session_state.report_name,
-                mime="application/pdf",
-                use_container_width=True,
-                type="primary",
-            )
+        st.info(
+            "💡 Les deux rapports concernent la même parcelle sélectionnée : "
+            "le rapport journalier se limite à la date choisie, tandis que le "
+            "rapport global reprend tout l'historique disponible de cette parcelle."
+        )
 
-            if st.button("☁️ Archiver le rapport dans Supabase Storage"):
-                fake = type(
-                    "UploadLike",
-                    (),
-                    {
-                        "name": st.session_state.report_name,
-                        "type": "application/pdf",
-                        "getvalue": lambda self: st.session_state.report_pdf,
-                    },
-                )()
-                meta = storage_upload(fake, "rapports", champ_id)
-                if meta:
-                    report_msg = db_insert(
-                        "messages_workspace",
+        st.subheader("☁️ Archivage dans Supabase Storage")
+        archive_choice = st.selectbox(
+            "Rapport à archiver",
+            ["Aucun", "Journalier", "Global"],
+            key="archive_report_choice",
+        )
+        if st.button("☁️ Archiver le rapport sélectionné", use_container_width=True):
+            if archive_choice == "Aucun":
+                st.warning("Sélectionnez d'abord Journalier ou Global.")
+            else:
+                pdf = (
+                    st.session_state.get("report_daily_pdf")
+                    if archive_choice == "Journalier"
+                    else st.session_state.get("report_global_pdf")
+                )
+                filename = (
+                    st.session_state.get("report_daily_name")
+                    if archive_choice == "Journalier"
+                    else st.session_state.get("report_global_name")
+                )
+                if not pdf:
+                    st.warning("Générez d'abord le rapport à archiver.")
+                else:
+                    fake = type(
+                        "UploadLike",
+                        (),
                         {
-                            "auteur": f"{prenom} {nom}".strip(),
-                            "email": user_email(),
-                            "role": role,
-                            "destinataire": "Tous",
-                            "priorite": "Important",
-                            "texte": f"Rapport professionnel {champ_name}",
-                            "date_heure": datetime.now().isoformat(timespec="seconds"),
-                            "type_contenu": "Rapport PDF",
-                            "champ_concerne": champ_name,
-                            **meta,
+                            "name": filename,
+                            "type": "application/pdf",
+                            "getvalue": lambda self: pdf,
                         },
-                        f"Archivage rapport {champ_name}",
-                    )
-                    if report_msg:
-                        save_media_record(meta, "messages_workspace", report_msg.get("id"), champ_id, "rapports")
-                    st.success("Rapport archivé dans Supabase Storage.")
+                    )()
+                    meta = storage_upload(fake, "rapports", active_id)
+                    if meta:
+                        report_msg = db_insert(
+                            "messages_workspace",
+                            {
+                                "auteur": f"{prenom} {nom}".strip(),
+                                "email": user_email(),
+                                "role": role,
+                                "destinataire": "Tous",
+                                "priorite": "Important",
+                                "texte": f"Rapport {archive_choice.lower()} — {canonical_name}",
+                                "date_heure": datetime.now().isoformat(timespec="seconds"),
+                                "type_contenu": f"Rapport PDF {archive_choice}",
+                                "champ_concerne": canonical_name,
+                                "champ_id": active_id,
+                                **meta,
+                            },
+                            f"Archivage rapport {archive_choice} {canonical_name}",
+                        )
+                        if report_msg:
+                            save_media_record(
+                                meta, "messages_workspace", report_msg.get("id"),
+                                active_id, "rapports"
+                            )
+                            st.success(f"Rapport {archive_choice.lower()} archivé dans Supabase Storage.")
 
 
 # ============================================================
